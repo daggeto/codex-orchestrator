@@ -1,0 +1,39 @@
+[skill]
+name = "refactor"
+description = "Refactor code while maintaining behavior"
+roles = ["implementer"]
+max_turns = 3
+tags = ["refactoring", "code-quality"]
+
+prompt_template = """Refactor the following:
+
+{target}
+
+Working directory: {cwd}
+
+Requirements:
+- Maintain all existing behavior
+- Run tests before AND after changes
+- Make one logical change per commit
+- Do not change public interfaces unless explicitly requested
+
+Report:
+- Files changed with description
+- Test results before and after
+- Commit hash(es)
+- Any risks or breaking changes"""
+
+[skill.input_schema]
+target = "What to refactor and how"
+cwd = "Working directory"
+
+output_expectations = [
+    "File changes",
+    "Test results before/after",
+    "Commit hashes"
+]
+
+verification = [
+    "Tests pass after refactor",
+    "Changes committed"
+]

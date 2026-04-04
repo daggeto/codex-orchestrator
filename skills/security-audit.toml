@@ -1,0 +1,44 @@
+[skill]
+name = "security-audit"
+description = "Run a security audit on code changes or a module"
+roles = ["reviewer", "architect"]
+max_turns = 2
+tags = ["security", "review"]
+
+prompt_template = """Perform a security audit on the following:
+
+{target}
+
+Working directory: {cwd}
+
+Check for:
+1. OWASP Top 10 vulnerabilities
+2. Input validation gaps
+3. Authentication/authorization issues
+4. Secrets or credentials in code
+5. SQL injection, XSS, CSRF
+6. Insecure dependencies
+7. Information disclosure
+
+For each finding:
+- SEVERITY: CRITICAL/HIGH/MEDIUM/LOW
+- File and line number
+- Description of vulnerability
+- Specific remediation
+
+End with a summary: total findings by severity."""
+
+[skill.input_schema]
+target = "Code, diff, or module to audit"
+cwd = "Working directory"
+
+output_expectations = [
+    "Findings with severity and file references",
+    "Remediation steps",
+    "Summary count"
+]
+
+verification = [
+    "Findings reference actual files",
+    "Severity levels are assigned"
+]
