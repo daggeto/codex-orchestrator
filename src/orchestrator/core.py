@@ -32,6 +32,7 @@ class Orchestrator:
     for external consumers (CLI, API).
 
     Includes:
+    - Audit: full turn-level logging with tokens, cost, timing, model, interactions
     - Supervision: ensures agents produce deliverables, not noise
     - HITL: approval gates, escalation, and human intervention
     - Skills: composable, reusable agent capabilities
@@ -48,14 +49,20 @@ class Orchestrator:
         self.hitl = HITLManager(self.bus)
         self.skills = create_default_registry()
         self.workspace = WorkspaceManager(self.config.data_dir / "worktrees")
+        self.audit: "AuditLog | None" = None
         self.roles: dict[str, RoleConfig] = {}
         self.workflows: dict[str, Workflow] = dict(BUILTIN_WORKFLOWS)
         self._running = False
         self._shutdown_event = asyncio.Event()
 
     async def start(self, restore: bool = True) -> None:
-        """Initialize store, load roles, skills, optionally restore agents."""
+        """Initialize store, audit log, load roles, skills, optionally restore agents."""
         await self.store.init()
+
+        # Init audit log on the same DB connection
+        from orchestrator.audit import AuditLog
+        self.audit = AuditLog(self.store._db)
+        await self.audit.init()
         self._load_roles()
         self._load_skills()
         self._load_custom_workflows()
@@ -266,6 +273,7 @@ class Orchestrator:
             await self._persist_thread(info)
 
         result = await agent.send_message(thread_id, message)
+        await self._audit_turn(agent, thread_id, message, result, cwd=cwd)
         return result.full_text
 
     async def send_to_agent(
@@ -286,6 +294,7 @@ class Orchestrator:
             await self._persist_thread(info)
 
         result = await agent.send_message(thread_id, message)
+        await self._audit_turn(agent, thread_id, message, result, cwd=cwd)
         return result.full_text
 
     async def _persist_thread(self, info: "ThreadInfo"):
@@ -298,6 +307,54 @@ class Orchestrator:
             status=info.status,
         )
         await self.store.save_thread(rec)
+
+    async def _audit_turn(
+        self,
+        agent: "Agent",
+        thread_id: str,
+        message: str,
+        result: "TurnResult",
+        cwd: str | None = None,
+        supervision_result: Any | None = None,
+        workflow_run_id: str | None = None,
+        workflow_step_id: str | None = None,
+    ):
+        """Record a turn in the audit log."""
+        if not self.audit:
+            return
+        from orchestrator.audit import TurnRecord
+
+        tu = result.token_usage
+        rec = TurnRecord(
+            agent_id=agent.agent_id,
+            role=agent.role.name,
+            thread_id=thread_id,
+            message=message,
+            response=result.full_text,
+            duration_ms=tu.get("duration_ms"),
+            input_tokens=tu.get("input_tokens"),
+            output_tokens=tu.get("output_tokens"),
+            cached_tokens=tu.get("cached_tokens"),
+            total_tokens=tu.get("total_tokens"),
+            model=agent.role.model,
+            files_changed=result.files_changed,
+            commands_run=result.commands_run,
+            error=result.error,
+            workflow_run_id=workflow_run_id,
+            workflow_step_id=workflow_step_id,
+            cwd=cwd,
+        )
+
+        if supervision_result:
+            rec.supervision_accepted = supervision_result.accepted
+            rec.supervision_noise_ratio = supervision_result.noise_ratio
+            rec.supervision_issues = supervision_result.issues
+            rec.deliverables = [
+                {"type": d.dtype.value, "evidence": d.evidence, "verified": d.verified}
+                for d in supervision_result.deliverables
+            ]
+
+        await self.audit.log_turn(rec)
 
     # ── Supervised Interaction ──────────────────────────────────────────
 

@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 import shutil
-import signal
 import time
 from typing import Any, AsyncIterator
 
@@ -415,7 +414,9 @@ class CodexAgent(Agent):
         events: list[StreamEvent] = []
         files_changed: list[str] = []
         commands_run: list[str] = []
+        token_usage: dict[str, int] = {}
         error: str | None = None
+        t0 = time.monotonic()
 
         async for event in self.stream_message(thread_id, message, model):
             events.append(event)
@@ -431,11 +432,37 @@ class CodexAgent(Agent):
                     commands_run.append(cmd if isinstance(cmd, str) else " ".join(cmd))
             if event.event_type == EventType.ERROR:
                 error = event.params.get("message", "Unknown error")
+            # Capture token usage from thread/tokenUsage/updated events
+            if event.method in ("thread/tokenUsage/updated", EventType.THREAD_TOKEN_USAGE):
+                usage = event.params.get("tokenUsage", {})
+                total = usage.get("total", {})
+                if total:
+                    token_usage = {
+                        "input_tokens": total.get("inputTokens", 0),
+                        "output_tokens": total.get("outputTokens", 0) + total.get("outputTokensDetails", {}).get("reasoningTokens", 0),
+                        "cached_tokens": total.get("cachedInputTokens", 0),
+                        "total_tokens": total.get("totalTokens", 0),
+                    }
+            # Also capture from turn/completed
+            if event.is_turn_completed:
+                turn_data = event.params.get("turn", {})
+                if "tokenUsage" in turn_data:
+                    tu = turn_data["tokenUsage"].get("total", {})
+                    if tu:
+                        token_usage = {
+                            "input_tokens": tu.get("inputTokens", 0),
+                            "output_tokens": tu.get("outputTokens", 0),
+                            "cached_tokens": tu.get("cachedInputTokens", 0),
+                            "total_tokens": tu.get("totalTokens", 0),
+                        }
+
+        duration_ms = int((time.monotonic() - t0) * 1000)
 
         return TurnResult(
             thread_id=thread_id,
             full_text="".join(full_text_parts),
             events=events,
+            token_usage={**token_usage, "duration_ms": duration_ms},
             files_changed=files_changed,
             commands_run=commands_run,
             error=error,

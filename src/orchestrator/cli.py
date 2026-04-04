@@ -388,5 +388,109 @@ async def _supervised_send(obj, role, message, cwd):
         await orch.stop()
 
 
+# ── Audit Commands ──────────────────────────────────────────────────────
+
+@main.group()
+def audit():
+    """View audit trail, costs, and quality reports."""
+
+
+@audit.command("turns")
+@click.option("--role", default=None, help="Filter by role")
+@click.option("--limit", "-n", default=20, help="Number of turns")
+@click.pass_context
+def audit_turns(ctx, role, limit):
+    """Show recent turns with timing and tokens."""
+    asyncio.run(_audit_turns(ctx.obj, role, limit))
+
+
+async def _audit_turns(obj, role, limit):
+    orch = _get_orch(obj.get("config_path"))
+    await orch.start(restore=False)
+    try:
+        timeline = await orch.audit.get_recent_timeline(limit=limit)
+        if not timeline:
+            click.echo("No audit data yet. Run some agent interactions first.")
+            return
+        click.echo(f"{'#':<4} {'Time':<12} {'Role':<13} {'Model':<16} {'In':>7} {'Out':>7} {'Cache':>7} {'Ms':>7} {'Len':>6} {'Sup':>4} {'Message'}")
+        click.echo("-" * 120)
+        for t in timeline:
+            ts = (t.get("timestamp") or "")[-12:-7]  # HH:MM
+            sup = ""
+            if t.get("supervision_accepted") is not None:
+                sup = "Y" if t["supervision_accepted"] else "N"
+            noise = ""
+            if t.get("supervision_noise_ratio") is not None:
+                noise = f"{t['supervision_noise_ratio']:.0%}"
+            click.echo(
+                f"{t['id']:<4} {ts:<12} {t.get('role','?'):<13} "
+                f"{(t.get('model') or '?'):<16} "
+                f"{t.get('input_tokens') or '-':>7} {t.get('output_tokens') or '-':>7} "
+                f"{'':>7} "
+                f"{t.get('duration_ms') or '-':>7} "
+                f"{t.get('response_length') or 0:>6} "
+                f"{sup:>4} "
+                f"{(t.get('message_preview') or '')[:40]}"
+            )
+    finally:
+        await orch.store.close()
+
+
+@audit.command("costs")
+@click.option("--role", default=None, help="Filter by role")
+@click.pass_context
+def audit_costs(ctx, role):
+    """Show cost summary."""
+    asyncio.run(_audit_costs(ctx.obj, role))
+
+
+async def _audit_costs(obj, role):
+    orch = _get_orch(obj.get("config_path"))
+    await orch.start(restore=False)
+    try:
+        summary = await orch.audit.get_cost_summary(role=role)
+        if not summary.get("turns"):
+            click.echo("No cost data yet.")
+            return
+        click.echo("=== Cost Summary ===")
+        click.echo(f"Turns:          {summary.get('turns', 0)}")
+        click.echo(f"Input tokens:   {summary.get('total_input', 0):,}")
+        click.echo(f"Output tokens:  {summary.get('total_output', 0):,}")
+        click.echo(f"Cached tokens:  {summary.get('total_cached', 0):,}")
+        click.echo(f"Total cost:     ${summary.get('total_cost', 0):.4f}")
+        click.echo(f"Avg per turn:   ${summary.get('avg_cost_per_turn', 0):.4f}")
+        click.echo(f"Max single turn:${summary.get('max_cost_turn', 0):.4f}")
+    finally:
+        await orch.store.close()
+
+
+@audit.command("quality")
+@click.option("--role", default=None, help="Filter by role")
+@click.pass_context
+def audit_quality(ctx, role):
+    """Show quality report (supervision acceptance rates, noise)."""
+    asyncio.run(_audit_quality(ctx.obj, role))
+
+
+async def _audit_quality(obj, role):
+    orch = _get_orch(obj.get("config_path"))
+    await orch.start(restore=False)
+    try:
+        report = await orch.audit.get_quality_report(role=role)
+        total = report.get("total_supervised") or 0
+        if not total:
+            click.echo("No supervised interactions yet.")
+            return
+        click.echo("=== Quality Report ===")
+        click.echo(f"Supervised turns:   {total}")
+        click.echo(f"Accepted:           {report.get('accepted', 0)} ({report.get('acceptance_rate', 0):.0%})")
+        click.echo(f"Rejected:           {total - (report.get('accepted') or 0)} ({report.get('rejection_rate', 0):.0%})")
+        click.echo(f"Avg noise ratio:    {report.get('avg_noise_ratio', 0):.1%}")
+        click.echo(f"Avg response len:   {report.get('avg_response_length', 0):.0f} chars")
+        click.echo(f"Avg duration:       {(report.get('avg_duration_ms') or 0) / 1000:.1f}s")
+    finally:
+        await orch.store.close()
+
+
 if __name__ == "__main__":
     main()

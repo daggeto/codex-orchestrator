@@ -47,6 +47,12 @@ def create_app(orch: Orchestrator) -> web.Application:
     app.router.add_post("/api/hitl/approvals/{request_id}", resolve_approval)
     app.router.add_post("/api/hitl/escalations/{escalation_id}", resolve_escalation)
 
+    # Audit
+    app.router.add_get("/api/audit/turns", audit_turns)
+    app.router.add_get("/api/audit/costs", audit_costs)
+    app.router.add_get("/api/audit/quality", audit_quality)
+    app.router.add_get("/api/audit/timeline", audit_timeline)
+
     # Workspaces
     app.router.add_get("/api/workspaces", list_workspaces)
     app.router.add_post("/api/workspaces", create_workspace)
@@ -428,6 +434,50 @@ async def resolve_escalation(request: web.Request) -> web.Response:
     response_text = body.get("response", "")
     orch.hitl.resolve_escalation(escalation_id, response_text)
     return _json({"escalation_id": escalation_id, "status": "resolved"})
+
+
+# ── Audit ───────────────────────────────────────────────────────────────
+
+async def audit_turns(request: web.Request) -> web.Response:
+    orch: Orchestrator = request.app["orch"]
+    if not orch.audit:
+        return _error("Audit not initialized", 500)
+    turns = await orch.audit.get_turns(
+        role=request.query.get("role"),
+        agent_id=request.query.get("agent_id"),
+        thread_id=request.query.get("thread_id"),
+        limit=int(request.query.get("limit", "50")),
+    )
+    return _json({"turns": turns})
+
+
+async def audit_costs(request: web.Request) -> web.Response:
+    orch: Orchestrator = request.app["orch"]
+    if not orch.audit:
+        return _error("Audit not initialized", 500)
+    summary = await orch.audit.get_cost_summary(
+        role=request.query.get("role"),
+        agent_id=request.query.get("agent_id"),
+    )
+    return _json(summary)
+
+
+async def audit_quality(request: web.Request) -> web.Response:
+    orch: Orchestrator = request.app["orch"]
+    if not orch.audit:
+        return _error("Audit not initialized", 500)
+    report = await orch.audit.get_quality_report(role=request.query.get("role"))
+    return _json(report)
+
+
+async def audit_timeline(request: web.Request) -> web.Response:
+    orch: Orchestrator = request.app["orch"]
+    if not orch.audit:
+        return _error("Audit not initialized", 500)
+    timeline = await orch.audit.get_recent_timeline(
+        limit=int(request.query.get("limit", "20")),
+    )
+    return _json({"timeline": timeline})
 
 
 # ── Workspaces ──────────────────────────────────────────────────────────
