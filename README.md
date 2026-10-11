@@ -142,3 +142,71 @@ src/orchestrator/
 ```
 
 See [GUIDE.md](GUIDE.md) for the full reference.
+
+## Local web monitor
+
+The read-only React monitor shows agents and their current activity, tasks,
+active and recent workflow runs, live SSE events, and committed branch diffs.
+It observes the orchestrator instance serving `http://127.0.0.1:8420`.
+
+Restart an existing API instance once to load the new observation fields and
+read-only endpoints. Start the API from your target project's directory so
+role discovery and agent context match that project. If no instance is running,
+use `orch start` (or `./.venv/bin/orch start` from this checkout).
+
+In a separate terminal, from this checkout:
+
+```sh
+cd web
+npm ci
+npm run dev
+```
+
+Open the loopback URL printed by Vite, normally `http://127.0.0.1:5173`.
+Node.js 20.19+ or 22.12+ is required. Both development and preview servers bind
+to `127.0.0.1` and proxy `/api` and `/health` to port 8420. The npm scripts
+use npm's own Node executable to avoid older Node binaries in parent directories
+shadowing the selected runtime. Scripts use a POSIX shell (macOS/Linux).
+
+```sh
+# Frontend checks, from web/
+npm test
+npm run typecheck
+npm run build
+npm run preview
+
+# Python API and observation regression checks, from the repo root
+./.venv/bin/python -m unittest discover -s tests -v
+```
+
+The monitor uses `GET /health`, `/api/agents`, `/api/work`,
+`/api/work/{item_id}`, `/api/workflows/runs`, `/api/workspaces`,
+`/api/workspaces/{id}/diff?full=true`, and one `/api/events` SSE connection.
+`/api/workflows` continues to list definitions. Run history includes all
+unfinished runs and the latest 50 terminal runs with their persisted step state.
+Snapshots reconcile every two seconds, after relevant events, and on SSE
+reconnection. Only the selected branch diff refreshes, every five seconds.
+Failed reads retain previous data with a stale indicator.
+
+Limitations:
+
+- “Branch diff” includes committed branch changes against the base branch only;
+  uncommitted and untracked files are excluded.
+- Activity is in memory and separate from process health. Agent lifecycle
+  statuses and scheduling are unchanged. Text and command events are forwarded
+  best-effort through a bounded queue; slow or failing observers cannot block turns.
+- SSE has no replay IDs and may drop events. The latest 1,000 events are retained
+  in the browser, and interruptions are marked as possible log gaps.
+- Workspace registration is in memory. Historical workspaces may be unavailable
+  after cleanup or restart. Task relationships use stored IDs and assignment
+  history, never role names or path guesses.
+- CLI commands that create a separate orchestrator instance are outside this
+  monitor's view. The UI adds no authentication or execution controls.
+
+Manual acceptance (requires a running instance with agents): open the monitor
+and check the connection status; send an agent work through the existing CLI or
+API and check idle/running transitions and live events; select a task and its
+workspace and inspect the branch diff; select an existing workflow run and
+reload to check persisted history. Stop the API and check the disconnected/stale
+state, then restart it and check automatic recovery and the log-gap notice.
+These browser checks are separate from the automated tests and build.
