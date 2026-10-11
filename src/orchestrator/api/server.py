@@ -214,6 +214,10 @@ async def list_work_items(request: web.Request) -> web.Response:
                 "item_id": i.item_id, "title": i.title, "status": i.status,
                 "priority": i.priority, "assigned_agent": i.assigned_agent,
                 "tags": i.tags,
+                "history": next(
+                    ([entry] for entry in reversed(i.history) if entry.get("action") == "assigned"),
+                    [],
+                ),
                 "created_at": i.created_at, "updated_at": i.updated_at,
                 "completed_at": i.completed_at,
             }

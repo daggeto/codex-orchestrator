@@ -49,10 +49,11 @@ describe('monitor data and events', () => {
     expect(taskRelationships({ ...task, assigned_agent: 'explicit' }, [])).toEqual({ agentId: 'explicit', workspaceIds: ['historical'] });
     expect(taskRelationships({ ...task, history: [] }, [{ ...workspace, work_item_id: 'different' }])).toEqual({ agentId: null, workspaceIds: [] });
   });
-  it('normalizes real snapshot envelopes and resolves active assignment history', async () => {
+  it.each(['in_progress', 'running', 'in_review', 'changes_requested', 'completed'])(
+    'resolves assignment history for %s without detail requests', async status => {
     vi.stubGlobal('fetch', vi.fn(async (path: string) => {
       const bodies: Record<string, unknown> = {
-        '/api/agents': { agents: [] }, '/api/work': { items: [task as Task] },
+        '/api/agents': { agents: [] }, '/api/work': { items: [{ ...task, status } as Task] },
         '/api/workflows/runs': { runs: [] }, '/api/workspaces': { worktrees: [workspace] },
         '/api/work/task': { item: task },
       };
@@ -62,6 +63,21 @@ describe('monitor data and events', () => {
     expect(data.tasks[0].history).toEqual(task.history);
     expect(data.workspaces).toEqual([workspace]);
     expect(data.agents).toEqual([]);
+    expect(taskRelationships(data.tasks[0], []).agentId).toBe('current');
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+  it('falls back to detail history for older summaries in review', async () => {
+    const { history: _history, ...summary } = { ...task, status: 'in_review' };
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => {
+      const bodies: Record<string, unknown> = {
+        '/api/agents': { agents: [] }, '/api/work': { items: [summary] },
+        '/api/workflows/runs': { runs: [] }, '/api/workspaces': { worktrees: [] },
+        '/api/work/task': { item: { ...task, status: 'in_review' } },
+      };
+      return new Response(JSON.stringify(bodies[path]));
+    }));
+    expect(taskRelationships((await snapshot()).tasks[0], []).agentId).toBe('current');
+    expect(fetch).toHaveBeenCalledTimes(5);
   });
   it('encodes selected IDs and distinguishes missing diffs', async () => {
     const fetch = vi.fn(async (_path: string, _options?: RequestInit) => new Response('{"error":"missing"}', { status: 404 }));

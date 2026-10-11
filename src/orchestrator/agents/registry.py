@@ -42,14 +42,16 @@ class AgentRegistry:
             self._observation_task = asyncio.create_task(self._forward_observations())
 
     async def _forward_observations(self):
-        while not self._observations.empty():
-            topic, payload = self._observations.get_nowait()
+        while True:
+            topic, payload = await self._observations.get()
             try:
                 await asyncio.wait_for(
                     self._bus.publish(topic, payload, source="registry"), timeout=0.25,
                 )
             except Exception:
                 logger.debug("Observation forwarding failed", exc_info=True)
+            finally:
+                self._observations.task_done()
 
     @property
     def agents(self) -> dict[str, Agent]:
@@ -85,7 +87,9 @@ class AgentRegistry:
         else:
             raise ValueError(f"Unknown backend: {role.backend}")
 
-        agent.set_observer(self._observe)
+        agent.set_observer(self._observations)
+        if self._observation_task is None or self._observation_task.done():
+            self._observation_task = asyncio.create_task(self._forward_observations())
         self._agents[aid] = agent
 
         record = AgentRecord(

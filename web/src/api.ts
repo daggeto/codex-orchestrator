@@ -35,7 +35,7 @@ export async function snapshot(signal?: AbortSignal): Promise<Snapshot> {
     get<{ worktrees: Workspace[] }>('/api/workspaces', signal),
   ]);
   const enriched = await Promise.all(tasks.items.map(async task => {
-    if (task.assigned_agent || !['in_progress', 'running'].includes(task.status)) return task;
+    if (task.history !== undefined) return task;
     try { return (await taskDetail(task.item_id, signal)).item; }
     catch (error) { if (signal?.aborted) throw error; return task; }
   }));

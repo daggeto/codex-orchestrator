@@ -38,7 +38,9 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_read_only_task_details_and_missing_record(self):
         rec = WorkItemRecord('task', 'Title', description='Details', input_data={'x': 1},
-                             history=[{'action': 'assigned', 'agent': 'agent-1'}])
+                             history=[{'action': 'assigned', 'agent': 'old'},
+                                      {'action': 'assigned', 'agent': 'agent-1'},
+                                      {'action': 'review_started'}])
         await self.store.save_work_item(rec)
         response = await self.client.get('/api/work/task')
         self.assertEqual(response.status, 200)
@@ -48,6 +50,7 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(item['history'], rec.history)
         summary = (await (await self.client.get('/api/work')).json())['items'][0]
         self.assertEqual(summary['created_at'], rec.created_at)
+        self.assertEqual(summary['history'], [rec.history[1]])
         self.assertEqual((await self.client.get('/api/work/missing')).status, 404)
         self.assertEqual((await self.store.get_work_item('task')).history, rec.history)
 
@@ -76,10 +79,10 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(agent['activity']['threads'][0]['workspace'], '/workspace')
         self.assertEqual(agent['name'], self.agent.name)
 
-    async def test_stream_observer_failure_and_completion(self):
-        def broken(*args):
-            raise RuntimeError('observer unavailable')
-        self.agent.set_observer(broken)
+    async def test_full_observer_queue_and_completion(self):
+        observations = asyncio.Queue(maxsize=1)
+        observations.put_nowait(('occupied', {}))
+        self.agent.set_observer(observations)
         async def send(message):
             self.assertEqual(self.agent.activity['state'], 'working')
             yield StreamEvent('item/agentMessage/delta', {'textDelta': 'hello'})
@@ -125,17 +128,18 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
         async def request(*args, **kwargs):
             return {}
         agent._request = request
-        observations = []
-        agent.set_observer(lambda topic, payload: observations.append((topic, payload)))
+        observations = asyncio.Queue(maxsize=256)
+        agent.set_observer(observations)
         self.assertEqual([event async for event in agent.stream_message('thread', 'work')], [])
         self.assertEqual(agent.activity['state'], 'error')
         self.assertEqual(agent.activity['threads'], [])
-        self.assertEqual([topic for topic, _ in observations], ['agent.activity', 'agent.activity'])
+        self.assertEqual([observations.get_nowait()[0] for _ in range(observations.qsize())],
+                         ['agent.activity', 'agent.activity'])
 
     async def test_codex_stream_preserves_and_forwards_events(self):
         agent = CodexAgent('codex', RoleConfig(name='implementer'), port=9001)
-        observed = []
-        agent.set_observer(lambda topic, payload: observed.append((topic, payload)))
+        observations = asyncio.Queue(maxsize=256)
+        agent.set_observer(observations)
         async def request(*args, **kwargs):
             queue = agent._event_queues['thread']
             queue.put_nowait(StreamEvent('item/agentMessage/delta', {'delta': 'hello'}))
@@ -144,6 +148,7 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
         agent._request = request
         events = [event async for event in agent.stream_message('thread', 'work')]
         self.assertEqual(len(events), 2)
+        observed = [observations.get_nowait() for _ in range(observations.qsize())]
         self.assertEqual(observed[1][1]['params'], {'delta': 'hello'})
         self.assertEqual(agent.activity['state'], 'error')
         self.assertEqual(agent.activity['threads'], [])
@@ -155,7 +160,7 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
             seen.append(event)
         await self.orch.bus.subscribe('agent.event', observe)
         registry._observe('agent.event', {'agent_id': 'agent-1', 'method': 'unknown', 'params': {}})
-        await registry._observation_task
+        await registry._observations.join()
         self.assertEqual(len(seen), 1)
         async def broken(*args, **kwargs):
             raise RuntimeError('bus unavailable')
@@ -163,5 +168,39 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
         for i in range(1000):
             registry._observe('agent.event', {'n': i})
         self.assertEqual(registry._observations.qsize(), 256)
-        await registry._observation_task
+        await registry._observations.join()
         await registry.shutdown()
+
+    async def test_observer_interface_rejects_callbacks_and_unbounded_queues(self):
+        for observer in (lambda *args: None, asyncio.Queue()):
+            with self.assertRaises(ValueError):
+                self.agent.set_observer(observer)
+
+    async def test_slow_forwarder_does_not_delay_turn(self):
+        registry = AgentRegistry(OrchestratorConfig(), self.store, self.orch.bus)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow(*args, **kwargs):
+            started.set()
+            await release.wait()
+
+        self.orch.bus.publish = slow
+        self.agent.set_observer(registry._observations)
+        registry._observe('agent.activity', {})
+        await started.wait()
+
+        async def send(message):
+            for _ in range(300):
+                yield StreamEvent('item/agentMessage/delta', {'textDelta': 'x'})
+            yield StreamEvent('turn/completed')
+
+        self.agent._sessions['thread'] = SimpleNamespace(send=send)
+        try:
+            result = await asyncio.wait_for(self.agent.send_message('thread', 'work'), 0.1)
+            self.assertEqual(result.full_text, 'x' * 300)
+            self.assertEqual(self.agent.activity['state'], 'idle')
+            self.assertEqual(registry._observations.qsize(), 256)
+        finally:
+            release.set()
+            await registry.shutdown()

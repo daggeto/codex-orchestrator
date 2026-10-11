@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime, timezone
 from functools import wraps
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator
 
 from orchestrator.protocol.events import StreamEvent
 from orchestrator.roles.loader import RoleConfig
@@ -107,7 +107,7 @@ class Agent(ABC):
         self._threads: dict[str, ThreadInfo] = {}
         self._active_turns: dict[str, dict[str, Any]] = {}
         self._activity_error: str | None = None
-        self._observer: Callable[[str, dict[str, Any]], None] | None = None
+        self._observer: asyncio.Queue[tuple[str, dict[str, Any]]] | None = None
         self._approval_policy = ApprovalPolicy(
             role.approval_policy or "on-failure"
         )
@@ -125,15 +125,24 @@ class Agent(ABC):
             "error": self._activity_error,
         }
 
-    def set_observer(self, observer: Callable[[str, dict[str, Any]], None] | None):
+    def set_observer(self, observer: asyncio.Queue[tuple[str, dict[str, Any]]] | None):
+        """Attach a bounded queue on the agent's event loop, never a callback.
+
+        Consumers forward observations independently. Full queues drop new
+        observations so slow consumers cannot delay backend event delivery.
+        """
+        if observer is not None and (
+            not isinstance(observer, asyncio.Queue) or observer.maxsize <= 0
+        ):
+            raise ValueError("Observer must be a bounded asyncio.Queue")
         self._observer = observer
 
     def _notify_observer(self, topic: str, payload: dict[str, Any]):
-        try:
-            if self._observer:
-                self._observer(topic, {"agent_id": self.agent_id, **payload})
-        except Exception:
-            logger.debug("Activity observer failed", exc_info=True)
+        if self._observer is not None:
+            try:
+                self._observer.put_nowait((topic, {"agent_id": self.agent_id, **payload}))
+            except asyncio.QueueFull:
+                pass
 
     def _begin_activity(self, thread_id: str, message: str):
         thread = self._get_thread(thread_id)
