@@ -29,6 +29,27 @@ class AgentRegistry:
         self._allocated_ports: set[int] = set()
         self._health_task: asyncio.Task | None = None
         self._shutdown = asyncio.Event()
+        self._observations: asyncio.Queue = asyncio.Queue(maxsize=256)
+        self._observation_task: asyncio.Task | None = None
+
+    def _observe(self, topic: str, payload: dict[str, Any]):
+        """Drop excess observations; never put event-bus latency on a turn."""
+        try:
+            self._observations.put_nowait((topic, payload))
+        except asyncio.QueueFull:
+            return
+        if self._observation_task is None or self._observation_task.done():
+            self._observation_task = asyncio.create_task(self._forward_observations())
+
+    async def _forward_observations(self):
+        while not self._observations.empty():
+            topic, payload = self._observations.get_nowait()
+            try:
+                await asyncio.wait_for(
+                    self._bus.publish(topic, payload, source="registry"), timeout=0.25,
+                )
+            except Exception:
+                logger.debug("Observation forwarding failed", exc_info=True)
 
     @property
     def agents(self) -> dict[str, Agent]:
@@ -64,6 +85,7 @@ class AgentRegistry:
         else:
             raise ValueError(f"Unknown backend: {role.backend}")
 
+        agent.set_observer(self._observe)
         self._agents[aid] = agent
 
         record = AgentRecord(
@@ -231,3 +253,8 @@ class AgentRegistry:
                 logger.exception("Error stopping agent %s", agent_id)
         self._agents.clear()
         self._allocated_ports.clear()
+        if self._observation_task:
+            self._observation_task.cancel()
+            await asyncio.gather(self._observation_task, return_exceptions=True)
+        while not self._observations.empty():
+            self._observations.get_nowait()

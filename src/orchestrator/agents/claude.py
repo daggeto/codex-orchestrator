@@ -15,6 +15,7 @@ from orchestrator.agents.base import (
     HealthStatus,
     ThreadInfo,
     TurnResult,
+    observed_stream,
 )
 from orchestrator.protocol.events import StreamEvent, EventType
 from orchestrator.roles.loader import RoleConfig
@@ -284,6 +285,7 @@ class ClaudeAgent(Agent):
             error=error,
         )
 
+    @observed_stream
     async def stream_message(
         self, thread_id: str, message: str, model: str | None = None
     ) -> AsyncIterator[StreamEvent]:

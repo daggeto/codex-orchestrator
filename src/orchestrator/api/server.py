@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import asdict
 from typing import Any
 
 from aiohttp import web
@@ -28,9 +29,11 @@ def create_app(orch: Orchestrator) -> web.Application:
     app.router.add_get("/api/roles", list_roles)
     app.router.add_post("/api/team", spawn_team)
     app.router.add_get("/api/work", list_work_items)
+    app.router.add_get("/api/work/{item_id}", get_work_item)
     app.router.add_post("/api/work", create_work_item)
     app.router.add_post("/api/work/{item_id}/assign", assign_work_item)
     app.router.add_get("/api/workflows", list_workflows)
+    app.router.add_get("/api/workflows/runs", list_workflow_runs)
     app.router.add_post("/api/workflows/{name}/run", run_workflow)
     app.router.add_get("/api/events", event_stream)
     app.router.add_post("/api/send/{role}", send_to_role)
@@ -96,6 +99,8 @@ async def list_agents(request: web.Request) -> web.Response:
             "role": agent.role.name,
             "backend": agent.role.backend,
             "status": agent.status.value,
+            "name": agent.name,
+            "activity": agent.activity,
             "port": getattr(agent, "port", None),
             "ws_url": getattr(agent, "ws_url", None),
         })
@@ -209,10 +214,26 @@ async def list_work_items(request: web.Request) -> web.Response:
                 "item_id": i.item_id, "title": i.title, "status": i.status,
                 "priority": i.priority, "assigned_agent": i.assigned_agent,
                 "tags": i.tags,
+                "created_at": i.created_at, "updated_at": i.updated_at,
+                "completed_at": i.completed_at,
             }
             for i in items
         ]
     })
+
+
+async def get_work_item(request: web.Request) -> web.Response:
+    orch: Orchestrator = request.app["orch"]
+    item = await orch.store.get_work_item(request.match_info["item_id"])
+    if item is None:
+        return _error("Work item not found", 404)
+    return _json({"item": asdict(item)})
+
+
+async def list_workflow_runs(request: web.Request) -> web.Response:
+    orch: Orchestrator = request.app["orch"]
+    runs = await orch.store.list_workflow_runs()
+    return _json({"runs": [asdict(run) for run in runs]})
 
 
 async def create_work_item(request: web.Request) -> web.Response:

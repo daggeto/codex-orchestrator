@@ -420,6 +420,26 @@ class StateStore:
                 completed_at=row["completed_at"],
             )
 
+    async def list_workflow_runs(self, recent_limit: int = 50) -> list[WorkflowRunRecord]:
+        """All unfinished runs plus a bounded recent terminal history."""
+        async with self._db.execute(
+            """SELECT * FROM workflow_runs
+               WHERE status NOT IN (?, ?, ?)
+                  OR run_id IN (SELECT run_id FROM workflow_runs
+                      WHERE status IN (?, ?, ?)
+                      ORDER BY updated_at DESC, run_id DESC LIMIT ?)
+               ORDER BY updated_at DESC, run_id DESC""",
+            ("completed", "failed", "cancelled", "completed", "failed", "cancelled",
+             max(0, min(recent_limit, 200))),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [WorkflowRunRecord(
+            run_id=row["run_id"], workflow_name=row["workflow_name"],
+            status=row["status"], config=json.loads(row["config_json"]),
+            state=json.loads(row["state_json"]), created_at=row["created_at"],
+            updated_at=row["updated_at"], completed_at=row["completed_at"],
+        ) for row in rows]
+
     # ── Event Log ───────────────────────────────────────────────────────
 
     async def log_event(self, topic: str, payload: dict[str, Any], source: str = ""):
