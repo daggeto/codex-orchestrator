@@ -15,6 +15,7 @@ class OrchestratorConfig:
     data_dir: Path = field(default_factory=lambda: DEFAULT_DATA_DIR)
     roles_dir: Path | None = None
     workflows_dir: Path | None = None
+    project_dir: Path | None = None
     base_port: int = 9001
     max_agents: int = 20
     health_check_interval: float = 10.0
@@ -33,6 +34,10 @@ class OrchestratorConfig:
     @property
     def db_path(self) -> Path:
         return self.data_dir / "orchestrator.db"
+
+    @property
+    def effective_project_dir(self) -> Path:
+        return Path(self.project_dir or Path.cwd()).expanduser().resolve()
 
     @property
     def effective_roles_dir(self) -> Path:

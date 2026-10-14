@@ -59,7 +59,7 @@ class AssignStep(Step):
             return StepResult(success=False, error=f"No running agent with role '{self.role}'")
 
         message = self.message_template.format(**ctx.variables)
-        cwd = self.cwd.format(**ctx.variables) if self.cwd else None
+        cwd = self.cwd.format(**ctx.variables) if self.cwd else ctx.variables.get("cwd")
 
         thread = ctx.get_or_create_thread(agent, self.step_id)
         if not thread:

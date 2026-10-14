@@ -53,6 +53,21 @@ class Workflow:
     initial_variables: dict[str, Any] = field(default_factory=dict)
     max_iterations: int = 20  # safety limit for loops
 
+    @property
+    def required_roles(self) -> list[str]:
+        """Collect roles from assignments, reviews, and nested steps."""
+        roles: list[str] = []
+
+        def collect(steps):
+            for step in steps:
+                role = getattr(step, "role", None)
+                if role and role not in roles:
+                    roles.append(role)
+                collect(getattr(step, "sub_steps", []))
+
+        collect(self.steps)
+        return roles
+
     def add_step(self, step: Step) -> Workflow:
         self.steps.append(step)
         return self

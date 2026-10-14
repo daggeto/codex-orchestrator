@@ -5,7 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
+import uuid
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from aiohttp import web
@@ -18,8 +21,12 @@ logger = logging.getLogger(__name__)
 def create_app(orch: Orchestrator) -> web.Application:
     app = web.Application()
     app["orch"] = orch
+    app["submitted_tasks"] = set()
+    app["submitted_run_ids"] = set()
+    app.on_shutdown.append(_stop_submitted_tasks)
 
     app.router.add_get("/health", health)
+    app.router.add_get("/api/session", session_info)
     app.router.add_get("/api/agents", list_agents)
     app.router.add_post("/api/agents", spawn_agent)
     app.router.add_post("/api/agents/{agent_id}/stop", stop_agent)
@@ -65,6 +72,41 @@ def create_app(orch: Orchestrator) -> web.Application:
     app.router.add_delete("/api/workspaces/{wt_id}", cleanup_workspace)
 
     return app
+
+
+async def _stop_submitted_tasks(app: web.Application):
+    tasks = list(app["submitted_tasks"])
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _service_owned(request: web.Request, operation):
+    """Keep submitted work alive if its HTTP client disconnects."""
+    tasks = request.app["submitted_tasks"]
+    task = asyncio.create_task(operation)
+    tasks.add(task)
+
+    def finished(done):
+        tasks.discard(done)
+        if not done.cancelled():
+            # Retrieve exceptions even when the requesting client has gone away.
+            done.exception()
+
+    task.add_done_callback(finished)
+    return await asyncio.shield(task)
+
+
+async def session_info(request: web.Request) -> web.Response:
+    orch = request.app["orch"]
+    return _json({"project_dir": str(orch.config.effective_project_dir)})
+
+
+def _project_directory(orch, supplied=None) -> str:
+    path = Path(supplied or orch.config.effective_project_dir).expanduser().resolve()
+    if not path.is_dir():
+        raise ValueError(f"Project directory does not exist: {path}")
+    return str(path)
 
 
 def _json(data: Any, status: int = 200) -> web.Response:
@@ -280,6 +322,7 @@ async def list_workflows(request: web.Request) -> web.Response:
             "name": name,
             "description": wf.description,
             "steps": [s.step_id for s in wf.steps],
+            "required_roles": wf.required_roles,
         })
     return _json({"workflows": wfs})
 
@@ -288,16 +331,35 @@ async def run_workflow(request: web.Request) -> web.Response:
     orch: Orchestrator = request.app["orch"]
     name = request.match_info["name"]
     body = await request.json()
-    try:
-        result = await orch.run_workflow(name, variables=body.get("variables"))
-        return _json({
-            "run_id": result.run_id,
-            "success": result.success,
-            "outputs": {k: str(v)[:2000] for k, v in result.outputs.items()},
-            "error": result.error,
-        })
-    except Exception as e:
-        return _error(str(e))
+    if not isinstance(body, dict) or not isinstance(body.get("variables", {}), dict):
+        return _error("Expected an object with workflow variables as an object")
+    run_id = body.get("run_id") or uuid.uuid4().hex[:16]
+    if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", run_id):
+        return _error("run_id must contain 1-64 letters, digits, underscores or hyphens")
+    reserved = request.app["submitted_run_ids"]
+    if run_id in reserved:
+        return _error("Workflow run ID already exists", 409)
+    reserved.add(run_id)
+
+    async def execute():
+        try:
+            if await orch.store.get_workflow_run(run_id):
+                return _error("Workflow run ID already exists", 409)
+            variables = dict(body.get("variables") or {})
+            variables["cwd"] = _project_directory(orch, variables.get("cwd"))
+            result = await orch.run_workflow(name, variables=variables, run_id=run_id)
+            return _json({
+                "run_id": result.run_id,
+                "success": result.success,
+                "outputs": {k: str(v)[:2000] for k, v in result.outputs.items()},
+                "error": result.error,
+            })
+        except Exception as e:
+            return _error(str(e))
+        finally:
+            reserved.discard(run_id)
+
+    return await _service_owned(request, execute())
 
 
 # ── Send to Role ────────────────────────────────────────────────────────
@@ -306,11 +368,14 @@ async def send_to_role(request: web.Request) -> web.Response:
     orch: Orchestrator = request.app["orch"]
     role = request.match_info["role"]
     body = await request.json()
+    if not isinstance(body, dict):
+        return _error("Expected a message object")
     message = body.get("message")
-    if not message:
+    if not isinstance(message, str) or not message.strip():
         return _error("'message' is required")
     try:
-        response = await orch.send_to_role(role, message, cwd=body.get("cwd"))
+        cwd = _project_directory(orch, body.get("cwd"))
+        response = await _service_owned(request, orch.send_to_role(role, message, cwd=cwd))
         return _json({"response": response})
     except Exception as e:
         return _error(str(e))

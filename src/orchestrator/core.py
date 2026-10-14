@@ -97,7 +97,7 @@ class Orchestrator:
             self.roles.update(load_all_roles(roles_dir))
             logger.info("Loaded %d role(s) from %s", len(self.roles), roles_dir)
         # Also check project-local roles/
-        local_roles = Path.cwd() / "roles"
+        local_roles = self.config.effective_project_dir / "roles"
         if local_roles.exists() and local_roles != roles_dir:
             self.roles.update(load_all_roles(local_roles))
 
@@ -105,7 +105,7 @@ class Orchestrator:
         skills_dir = self.config.data_dir / "skills"
         if skills_dir.exists():
             self.skills.load_dir(skills_dir)
-        local_skills = Path.cwd() / "skills"
+        local_skills = self.config.effective_project_dir / "skills"
         if local_skills.exists() and local_skills != skills_dir:
             self.skills.load_dir(local_skills)
         logger.info("Loaded %d skill(s)", len(self.skills.list_all()))
@@ -270,12 +270,13 @@ class Orchestrator:
         self,
         workflow_name: str,
         variables: dict[str, Any] | None = None,
+        run_id: str | None = None,
     ) -> WorkflowResult:
         """Run a named workflow."""
         wf = self.workflows.get(workflow_name)
         if not wf:
             raise ValueError(f"Unknown workflow: {workflow_name}. Available: {list(self.workflows.keys())}")
-        return await self.engine.run(wf, variables=variables)
+        return await self.engine.run(wf, variables=variables, run_id=run_id)
 
     # ── Direct Agent Interaction ────────────────────────────────────────
 

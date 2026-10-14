@@ -45,10 +45,13 @@ def main(ctx, config, log_level):
 @click.option("--api/--no-api", default=True, help="Start HTTP API server")
 @click.option("--api-port", default=8420, help="API port")
 @click.option("--spawn-team", "team", multiple=True, help="Auto-spawn agents (role names)")
+@click.option("--cwd", type=click.Path(exists=True, file_okay=False), help="Target project directory")
+@click.option("--roles-dir", type=click.Path(exists=True, file_okay=False), help="Role definitions directory")
 @click.pass_context
-def start(ctx, api, api_port, team):
-    """Start the orchestrator (long-running daemon)."""
-    asyncio.run(_start(ctx.obj, api, api_port, list(team)))
+def start(ctx, api, api_port, team, cwd, roles_dir):
+    """Start the orchestrator service without prompts."""
+    obj = {**ctx.obj, "cwd": cwd, "roles_dir": roles_dir}
+    asyncio.run(_start(obj, api, api_port, list(team)))
 
 
 async def _start(obj: dict, api: bool, api_port: int, team: list[str]):
@@ -57,6 +60,10 @@ async def _start(obj: dict, api: bool, api_port: int, team: list[str]):
 
     config = OrchestratorConfig.load(Path(obj["config_path"]) if obj["config_path"] else None)
     config.api_port = api_port
+    if obj.get("cwd"):
+        config.project_dir = Path(obj["cwd"]).expanduser().resolve()
+    if obj.get("roles_dir"):
+        config.roles_dir = Path(obj["roles_dir"]).expanduser().resolve()
     orch = Orchestrator(config)
 
     runner = None
@@ -71,7 +78,12 @@ async def _start(obj: dict, api: bool, api_port: int, team: list[str]):
 
         if api:
             runner = await run_api(orch, config.api_host, config.api_port)
-            click.echo(f"API: http://{config.api_host}:{config.api_port}")
+            client_host = config.api_host if config.api_host not in {"0.0.0.0", "::"} else "127.0.0.1"
+            if ":" in client_host:
+                client_host = f"[{client_host}]"
+            api_url = f"http://{client_host}:{config.api_port}"
+            click.echo(f"API: {api_url}")
+            click.echo(f"Submit tasks from another terminal: make task ARGS='\"Your task description\" --api-url {api_url}'")
 
         click.echo("Orchestrator running. Press Ctrl+C to stop.")
         await orch.wait_for_shutdown()
@@ -84,6 +96,32 @@ async def _start(obj: dict, api: bool, api_port: int, team: list[str]):
             await runner.cleanup()
         await orch.stop()
         click.echo("Orchestrator stopped.")
+
+
+@main.command("task")
+@click.argument("description")
+@click.option("--workflow", default="feature", show_default=True, help="Workflow to run on the service")
+@click.option("--api-url", default=None, help="Service URL (defaults to configured host and port)")
+@click.option("--cwd", type=click.Path(exists=True, file_okay=False), help="Override the service's target project")
+@click.option("--var", "-v", multiple=True, help="Workflow input as KEY=VALUE")
+@click.pass_context
+def task(ctx, description, workflow, api_url, cwd, var):
+    """Submit a task to the running service without prompts."""
+    from orchestrator.task_client import submit_task
+
+    if not description.strip():
+        raise click.BadParameter("Task description cannot be empty", param_hint="description")
+    variables = {"create_mr": "false"} if workflow == "feature" else {}
+    for value in var:
+        key, separator, content = value.partition("=")
+        key = key.strip()
+        if not separator or not key or key in {"task_description", "cwd"}:
+            raise click.BadParameter("Use KEY=VALUE; set the description and --cwd separately", param_hint="--var")
+        variables[key] = content
+    variables["task_description"] = description.strip()
+    if cwd:
+        variables["cwd"] = str(Path(cwd).expanduser().resolve())
+    asyncio.run(submit_task(ctx.obj, api_url, workflow, variables))
 
 
 # ── Agent Commands ──────────────────────────────────────────────────────

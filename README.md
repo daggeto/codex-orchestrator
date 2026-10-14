@@ -39,6 +39,64 @@ This is the opposite. Persistent agents with dedicated processes, strict prompts
 
 ## Install
 
+Project commands are available through Make:
+
+```bash
+make help                  # All commands with one-sentence descriptions
+make workflow-run help     # Detailed help for one command, without running it
+make install               # Create .venv and install the Python project (Python 3.12+)
+make web-install           # Install frontend dependencies
+```
+
+Use `ARGS` for command arguments and `ORCH_ARGS` for global CLI options:
+
+```bash
+make start ARGS='--spawn-team architect --spawn-team implementer --spawn-team reviewer'
+make send ARGS='architect "Design an auth system" --cwd /path/to/repo'
+make workflow-run ARGS='feature -v task_description="Add OAuth login" --cwd /path/to/repo'
+make status ORCH_ARGS='--config config.toml --log-level DEBUG'
+make dev
+```
+
+`make start` starts immediately without prompts. Set the target project with
+`--cwd`, choose role definitions with `--roles-dir`, and repeat `--spawn-team`
+for initial agents. Roles are loaded from the explicit or configured directory
+(global roles by default), plus the target project's `roles/` directory.
+
+```bash
+make start ARGS='--cwd /path/to/repo --roles-dir ./roles --spawn-team architect --spawn-team implementer --spawn-team reviewer'
+```
+
+Keep the service terminal open and submit a task from another terminal:
+
+```bash
+make task ARGS='"Add search to the transactions page"'
+make task ARGS='"Investigate slow imports" --workflow research'
+```
+
+`make task` connects to the running service, uses its target project, and starts
+missing workflow roles or reuses existing agents. It defaults to the feature
+workflow with local edits and commits. Add `-v create_mr=true -v mr_base=main`
+to publish a draft PR/MR and verify CI. Other inputs use `-v KEY=VALUE`;
+`--cwd` overrides the target project for that task.
+
+The command prints a run ID and waits for the result. Ctrl+C closes the task
+client while submitted work continues; Ctrl+C in `make start` stops the service
+and its agents. The API uses port 8420 by default. When starting with
+`--api-port 8421`, submit tasks with `--api-url http://127.0.0.1:8421`.
+Task submission requires the API to be enabled.
+
+`make send` and `make workflow-run` manage their own orchestrator lifecycle;
+use `make task` to submit work to the running service. `make task help` displays
+all task options without starting agents or submitting work.
+
+The catalog in `scripts/commands.py` supplies Make targets and help text from one
+source. `AGENTS.md` instructs coding agents to update it whenever commands or
+their behavior change. Help needs only Make and Python 3; execution uses the local
+`.venv` when available. Override executables with `PYTHON`, `ORCH`, or `NPM`.
+Arguments use shell-style quoting but do not evaluate shell expressions. Any
+command followed by the separate `help` goal only prints documentation.
+
 ```bash
 git clone https://github.com/zm2231/codex-orchestrator.git
 cd codex-orchestrator
