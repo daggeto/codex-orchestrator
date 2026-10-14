@@ -346,7 +346,9 @@ class CodexAgent(Agent):
             params["cwd"] = cwd
         if model or self.role.model:
             params["model"] = model or self.role.model
-        params["approvalPolicy"] = self.role.approval_policy
+        params["approvalPolicy"] = (
+            "on-request" if self.role.approval_policy == "on-failure" else self.role.approval_policy
+        )
 
         params["sandbox"] = self.role.sandbox
 

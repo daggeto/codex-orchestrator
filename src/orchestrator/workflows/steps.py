@@ -114,7 +114,7 @@ class ReviewStep(Step):
 
         thread = ctx.get_or_create_thread(agent, self.step_id)
         if not thread:
-            thread_info = await agent.start_thread()
+            thread_info = await agent.start_thread(cwd=ctx.variables.get("cwd"))
             ctx.set_thread(agent, self.step_id, thread_info.thread_id)
             thread = thread_info.thread_id
 

@@ -1,15 +1,13 @@
 [role]
 name = "planner"
-backend = "claude"
+backend = "codex"
 description = "Strategic planner — breaks down large tasks, prioritizes work, manages roadmap"
-model = "opus"
+model = "gpt-6-luna"
 sandbox = "read-only"
 approval_policy = "never"
 max_threads = 3
 max_turn_seconds = 300
 tags = ["planning", "strategy", "breakdown"]
-
-claude_flags = ["--bare"]
 
 system_prompt = """You are a strategic project planner. Your role:
 
@@ -35,3 +33,4 @@ Output structured JSON when creating work item lists."""
 [role.features]
 
 [role.config]
+model_reasoning_effort = '"high"'

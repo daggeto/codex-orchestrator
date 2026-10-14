@@ -1,4 +1,5 @@
 from orchestrator.workflows.engine import WorkflowEngine
+from orchestrator.workflows.merge_request import CreateMergeRequestStep, PrepareMergeRequestStep, VerifyMergeRequestStep
 from orchestrator.workflows.steps import (
     Step,
     AssignStep,
@@ -16,4 +17,7 @@ __all__ = [
     "GateStep",
     "ParallelStep",
     "SequenceStep",
+    "PrepareMergeRequestStep",
+    "CreateMergeRequestStep",
+    "VerifyMergeRequestStep",
 ]

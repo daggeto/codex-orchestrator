@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 from orchestrator.workflows.engine import Workflow
+from orchestrator.workflows.merge_request import CreateMergeRequestStep, PrepareMergeRequestStep, VerifyMergeRequestStep
+from orchestrator.workflows.pr_completion import (
+    CompletionReviewStep, MonitorCompletionStep, PrepareCompletionStep,
+    PublishCompletionStep, RepairCompletionStep,
+)
 from orchestrator.workflows.steps import (
     AssignStep,
     GateStep,
@@ -20,11 +25,14 @@ def feature_workflow() -> Workflow:
     2. Implementer writes the code
     3. Reviewer checks the work
     4. If rejected, loop back to implementer with feedback
+    5. Push approved changes to an existing PR/MR or create a draft PR/MR
+    6. Implementer monitors pending CI/deployment until green, reporting failures
     """
     return Workflow(
         name="feature",
-        description="Full feature pipeline: architect → implement → review",
+        description="Feature: plan → implement → review → draft PR/MR → CI/deployment verification",
         steps=[
+            PrepareMergeRequestStep(step_id="prepare-mr", name="Prepare Task Branch"),
             AssignStep(
                 step_id="plan",
                 name="Architecture Planning",
@@ -35,6 +43,7 @@ def feature_workflow() -> Workflow:
                     "Feature: {task_description}\n\n"
                     "Working directory: {cwd}"
                 ),
+                cwd="{cwd}",
                 output_key="plan",
             ),
             AssignStep(
@@ -44,7 +53,9 @@ def feature_workflow() -> Workflow:
                 message_template=(
                     "Implement the following plan. Write all the code changes needed.\n\n"
                     "Plan:\n{plan}\n\n"
-                    "Original request: {task_description}"
+                    "Original request: {task_description}\n\n"
+                    "Stay on the current branch. Commit the task changes before finishing. "
+                    "Do not push or open a PR/MR; the workflow handles publication after review."
                 ),
                 cwd="{cwd}",
                 output_key="implementation",
@@ -58,6 +69,9 @@ def feature_workflow() -> Workflow:
                     "Original plan:\n{plan}\n\n"
                     "Implementation output:\n{source}\n\n"
                     "Files changed: {implementation_files}\n\n"
+                    "Inspect the complete PR/MR diff against its target branch (discover "
+                    "the open request's target or the provider's default branch). Include "
+                    "commits already on this branch, because all of it will be published.\n\n"
                     "End your review with either APPROVED or CHANGES_REQUESTED followed by "
                     "specific feedback."
                 ),
@@ -72,7 +86,8 @@ def feature_workflow() -> Workflow:
                 message_template=(
                     "The reviewer has requested changes to your implementation.\n\n"
                     "Review feedback:\n{review_text}\n\n"
-                    "Please address the feedback and update the code accordingly."
+                    "Please address the feedback and update the code accordingly. "
+                    "Stay on the current branch and commit the revision. Do not push or open a PR/MR."
                 ),
                 cwd="{cwd}",
                 output_key="implementation",
@@ -98,7 +113,10 @@ def feature_workflow() -> Workflow:
                     "Files changed: {implementation_files}"
                 ),
                 output_key="summary",
+                cwd="{cwd}",
             ),
+            CreateMergeRequestStep(step_id="create-mr", name="Create Draft PR/MR"),
+            VerifyMergeRequestStep(step_id="verify-mr", name="Verify PR/MR CI and Deployment"),
         ],
     )
 
@@ -227,9 +245,28 @@ def research_workflow() -> Workflow:
     )
 
 
+def pr_completion_workflow() -> Workflow:
+    """Complete committed branch work, repairing CI failures after review."""
+    return Workflow(
+        name="pr-completion",
+        description="Review → existing/new PR/MR → poll CI → repair/review/push until green",
+        # Repair/review limits are enforced separately. Permit several steps per
+        # repair while keeping the engine's independent loop safeguard.
+        max_iterations=100,
+        steps=[
+            PrepareCompletionStep(step_id="prepare", name="Select PR/MR Branch"),
+            CompletionReviewStep(step_id="review", name="Review Branch Changes"),
+            PublishCompletionStep(step_id="publish", name="Push Approved PR/MR Changes"),
+            MonitorCompletionStep(step_id="monitor", name="Monitor Latest Commit CI"),
+            RepairCompletionStep(step_id="repair", name="Diagnose and Repair CI or Review Feedback"),
+        ],
+    )
+
+
 BUILTIN_WORKFLOWS: dict[str, Workflow] = {
     "feature": feature_workflow(),
     "bugfix": bugfix_workflow(),
     "review": review_workflow(),
     "research": research_workflow(),
+    "pr-completion": pr_completion_workflow(),
 }

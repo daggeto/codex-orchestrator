@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -163,6 +164,12 @@ class WorkflowEngine:
             if iterations >= workflow.max_iterations:
                 error = f"Workflow exceeded max iterations ({workflow.max_iterations})"
 
+        except asyncio.CancelledError:
+            record.status = "interrupted"
+            record.state["final_variables"] = ctx.variables
+            await self._store.save_workflow_run(record)
+            await self._bus.publish("workflow.interrupted", {"run_id": rid}, source="engine")
+            raise
         except Exception as e:
             error = str(e)
             logger.exception("Workflow %s failed", rid[:8])

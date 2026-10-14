@@ -83,12 +83,64 @@ Edit `roles/*.toml` to change models, sandbox, token budgets, system prompts.
 
 ## Workflows
 
-Four built-in pipelines:
+Five built-in pipelines:
 
-- **feature**: architect plans, implementer codes, reviewer checks, revision loop if rejected
+- **feature**: prepare task branch, architect plans, implementer codes, reviewer checks, revision loop if rejected, draft PR/MR, then implementer verifies CI and deployment
 - **bugfix**: architect investigates, implementer fixes, qa verifies
 - **review**: send code to reviewer
 - **research**: parallel investigation by multiple agents, then synthesis
+- **pr-completion**: review committed branch changes, push to an existing/new
+  PR/MR, poll CI, repair failures, review and push again until green
+
+Use `pr-completion` for finishing committed work or repairing an existing PR's
+CI. It automatically starts/reuses implementer and reviewer agents, polls through
+provider CLIs without model turns, and supports resuming an interrupted run.
+See [usage, examples and manual validation](docs/pr-completion.md).
+
+```bash
+orch workflow run pr-completion --cwd /path/to/repo \
+  --roles-dir /path/to/codex-orchestrator/roles \
+  -v task_description="Fix the preview build and get CI green" \
+  -v required_checks=Vercel
+```
+
+The feature workflow creates a draft GitHub PR (`gh`) or GitLab MR (`glab`) after
+approval when Git confirms committed changes. Install and authenticate the matching
+CLI (`gh auth login` or `glab auth login`) and make sure Git can push to `origin`.
+The workflow first looks for an open PR/MR on the current branch and reuses its
+source and target branches. Otherwise it discovers the provider's default branch
+through `gh`/`glab` repository metadata, or accepts an explicit target:
+
+```bash
+orch workflow run feature -v task_description="Improve transaction linking" --cwd /path/to/repo -v mr_base=main
+```
+
+Start with a clean checkout. Existing PR/MR branches and feature branches with
+committed work are reused. Otherwise the workflow creates `orch/feature-<run_id>`
+before implementation and leaves it checked out for inspection. The reviewer
+inspects the entire proposed PR/MR diff, including existing branch commits.
+Approved commits are pushed without force, then the workflow uses the existing
+request or creates a draft. No request is created when there is no diff against
+the target. Dirty files, branch changes, missing tools, or publication errors
+produce `mr_status=blocked` with an `mr_reason` and fail the workflow. Successful
+publication returns `mr_url` and Git-derived `mr_files`, including documentation.
+
+After creating or finding the PR/MR, the implementer checks CI and the preview
+deployment for its latest commit. The workflow finishes successfully only when
+both are confirmed green (`mr_ci_status=green`). Each monitoring turn lasts at
+most five minutes, with an additional minute allowed to report. Queued/running
+results return `CI_PENDING`, and monitoring continues in another turn until
+green or cancellation. Progress is emitted as `workflow.mr.ci` events. Failed
+checks, unavailable evidence, or an unresponsive verification agent fail the
+workflow with `mr_ci_status=blocked` or `timeout` and an explanation in
+`mr_ci_report`, including the PR/MR link and check/deployment links. Missing or
+skipped deployment checks do not count as green. This step monitors remote results;
+it does not run local tests,
+push fixes, rerun jobs, or merge.
+
+Use `-v create_mr=false` to disable publication. For custom GitHub/GitLab hosts,
+also pass `-v mr_provider=github` or `-v mr_provider=gitlab`. The existing
+`bugfix`, `review`, and `research` workflows do not publish PRs/MRs.
 
 ## HTTP API
 

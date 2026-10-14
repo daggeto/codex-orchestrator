@@ -8,6 +8,7 @@ import signal
 from pathlib import Path
 from typing import Any
 
+from orchestrator.agents.base import AgentStatus
 from orchestrator.agents.registry import AgentRegistry
 from orchestrator.config import OrchestratorConfig
 from orchestrator.events.bus import EventBus
@@ -127,12 +128,39 @@ class Orchestrator:
         return agent.agent_id
 
     async def spawn_team(self, role_names: list[str] | None = None) -> dict[str, str]:
-        """Spawn a team of agents. Returns {role_name: agent_id}."""
+        """Ensure each requested role has a started agent, reusing saved agents."""
         if role_names is None:
             role_names = list(self.roles.keys())
+        role_names = list(dict.fromkeys(role_names))
+        existing = {}
+        for name in role_names:
+            if name not in self.roles:
+                raise ValueError(f"Unknown role: {name}. Available: {list(self.roles.keys())}")
+            agents = self.registry.get_agents_by_role(name)
+            if agents:
+                existing[name] = next(
+                    (a for a in agents if a.status in (AgentStatus.RUNNING, AgentStatus.DEGRADED)),
+                    agents[0],
+                )
+
+        needed = len(role_names) - len(existing)
+        available = self.config.max_agents - len(self.registry.agents)
+        if needed > available:
+            raise RuntimeError(
+                f"Team needs {needed} new agent(s), but only {available} slot(s) "
+                f"remain (max_agents={self.config.max_agents}). "
+                "Remove unused agents or increase max_agents in the orchestrator config."
+            )
+
         result = {}
         for name in role_names:
-            aid = await self.spawn_agent(name)
+            if name in existing:
+                agent = existing[name]
+                if agent.status not in (AgentStatus.RUNNING, AgentStatus.DEGRADED):
+                    await self.registry.start_agent(agent.agent_id)
+                aid = agent.agent_id
+            else:
+                aid = await self.spawn_agent(name)
             result[name] = aid
         return result
 

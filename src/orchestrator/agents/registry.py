@@ -248,13 +248,14 @@ class AgentRegistry:
     # ── Cleanup ─────────────────────────────────────────────────────────
 
     async def shutdown(self):
-        """Stop all agents and clean up."""
+        """Stop all agents and remove their persisted lifecycle records."""
         await self.stop_health_monitor()
         for agent_id in list(self._agents):
             try:
                 await self.stop_agent(agent_id)
+                await self.destroy_agent(agent_id)
             except Exception:
-                logger.exception("Error stopping agent %s", agent_id)
+                logger.exception("Error cleaning up agent %s", agent_id)
         self._agents.clear()
         self._allocated_ports.clear()
         if self._observation_task:

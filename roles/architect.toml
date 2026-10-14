@@ -2,7 +2,7 @@
 name = "architect"
 backend = "codex"
 description = "System architect — designs solutions, plans implementation, reviews architecture"
-model = "gpt-5.4"
+model = "gpt-6.1-sol"
 sandbox = "read-only"
 approval_policy = "on-failure"
 max_threads = 5
@@ -34,3 +34,4 @@ Always be specific: name files, functions, and line numbers. Don't be vague."""
 
 [role.config]
 # Config overrides for codex app-server
+model_reasoning_effort = '"high"'

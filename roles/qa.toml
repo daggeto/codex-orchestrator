@@ -2,7 +2,7 @@
 name = "qa"
 backend = "codex"
 description = "QA engineer — verifies fixes, runs tests, checks for regressions"
-model = "gpt-5.4"
+model = "gpt-6-luna"
 sandbox = "workspace-write"
 approval_policy = "on-failure"
 max_threads = 5
@@ -34,3 +34,4 @@ system_prompt = """You are a QA engineer. Your job is to verify implementations 
 [role.features]
 
 [role.config]
+model_reasoning_effort = '"high"'

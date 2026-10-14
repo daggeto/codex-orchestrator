@@ -59,25 +59,26 @@ async def _start(obj: dict, api: bool, api_port: int, team: list[str]):
     config.api_port = api_port
     orch = Orchestrator(config)
 
-    await orch.start()
-
-    if team:
-        click.echo(f"Spawning team: {', '.join(team)}")
-        result = await orch.spawn_team(team)
-        for role, aid in result.items():
-            click.echo(f"  {role}: {aid}")
-
     runner = None
-    if api:
-        runner = await run_api(orch, config.api_host, config.api_port)
-        click.echo(f"API: http://{config.api_host}:{config.api_port}")
-
-    click.echo("Orchestrator running. Press Ctrl+C to stop.")
-
     try:
+        await orch.start()
+
+        if team:
+            click.echo(f"Starting team: {', '.join(team)}")
+            result = await orch.spawn_team(team)
+            for role, aid in result.items():
+                click.echo(f"  {role}: {aid}")
+
+        if api:
+            runner = await run_api(orch, config.api_host, config.api_port)
+            click.echo(f"API: http://{config.api_host}:{config.api_port}")
+
+        click.echo("Orchestrator running. Press Ctrl+C to stop.")
         await orch.wait_for_shutdown()
     except (KeyboardInterrupt, asyncio.CancelledError):
         pass
+    except (ValueError, RuntimeError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
     finally:
         if runner:
             await runner.cleanup()
@@ -192,8 +193,10 @@ def workflow_list(ctx):
 @click.argument("name")
 @click.option("--var", "-v", multiple=True, help="Variables as key=value")
 @click.option("--cwd", default=None, help="Working directory")
+@click.option("--roles-dir", default=None, type=click.Path(exists=True, file_okay=False),
+              help="Role definitions directory, independent of the target repository")
 @click.pass_context
-def workflow_run(ctx, name, var, cwd):
+def workflow_run(ctx, name, var, cwd, roles_dir):
     """Run a workflow."""
     variables = {}
     for v in var:
@@ -201,13 +204,54 @@ def workflow_run(ctx, name, var, cwd):
         variables[k] = val
     if cwd:
         variables["cwd"] = cwd
-    asyncio.run(_workflow_run(ctx.obj, name, variables))
+    asyncio.run(_workflow_run({**ctx.obj, "roles_dir": roles_dir}, name, variables))
+
+
+@workflow.command("show")
+@click.argument("run_id")
+@click.pass_context
+def workflow_show(ctx, run_id):
+    """Show a saved run's phase and complete CI report without starting agents."""
+    asyncio.run(_workflow_show(ctx.obj, run_id))
+
+
+async def _workflow_show(obj, run_id):
+    orch = _get_orch(obj.get("config_path"))
+    await orch.store.init()
+    try:
+        record = await orch.store.get_workflow_run(run_id)
+        if not record:
+            raise click.ClickException(f"Unknown workflow run: {run_id}")
+        v = record.state.get("final_variables") or record.state.get("variables", {})
+        click.echo(json.dumps({
+            "run_id": run_id, "workflow": record.workflow_name, "status": record.status,
+            "current_step": record.state.get("current_step"),
+            **{key: v.get(key) for key in (
+                "resumed_from", "mr_url", "mr_branch", "mr_ci_status", "mr_ci_sha",
+                "ci_repair_count", "review_revision_count", "completion_error",
+            )},
+        }, indent=2))
+        if v.get("mr_ci_report"):
+            click.echo(v["mr_ci_report"])
+    finally:
+        await orch.store.close()
 
 
 async def _workflow_run(obj, name, variables):
     orch = _get_orch(obj.get("config_path"))
+    if obj.get("roles_dir"):
+        orch.config.roles_dir = Path(obj["roles_dir"]).expanduser().resolve()
     await orch.start(restore=True)
     try:
+        if name == "pr-completion":
+            await orch.spawn_team(["implementer", "reviewer"])
+            async def show_progress(event):
+                if event.topic == "workflow.started":
+                    click.echo(f"Run ID: {event.payload['run_id']} (save this to resume)")
+                elif "mr_ci_status" in event.payload:
+                    click.echo(f"CI: {event.payload['mr_ci_status']} {event.payload.get('mr_ci_sha', '')}")
+            await orch.bus.subscribe("workflow.started", show_progress)
+            await orch.bus.subscribe("workflow.mr.ci", show_progress)
         running = orch.registry.get_running_agents()
         if not running:
             click.echo("No running agents. Spawn a team first with: orch start --spawn-team <roles>")
@@ -220,6 +264,8 @@ async def _workflow_run(obj, name, variables):
         for key, value in result.outputs.items():
             preview = str(value)[:200]
             click.echo(f"  {key}: {preview}")
+        if name == "pr-completion" and not result.success:
+            raise click.ClickException(f"PR completion failed (run_id={result.run_id}); see the error and saved CI report")
     finally:
         await orch.stop()
 

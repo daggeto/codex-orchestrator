@@ -2,7 +2,7 @@
 name = "reviewer"
 backend = "codex"
 description = "Code reviewer — reviews implementations for quality, security, correctness"
-model = "gpt-5.4"
+model = "gpt-6.1-sol"
 sandbox = "read-only"
 approval_policy = "never"
 max_threads = 5
@@ -38,3 +38,4 @@ Be specific in feedback. Reference file paths and line numbers."""
 [role.features]
 
 [role.config]
+model_reasoning_effort = '"high"'
