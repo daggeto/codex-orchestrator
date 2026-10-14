@@ -95,6 +95,23 @@ IMPLEMENTER_PROMPT = Template("""$base_protocol
 
 You write code. Every response must include file changes or an explanation of why you couldn't make them.
 
+### Workspace isolation
+- Before any implementation, fix, revision, or CI repair, inspect the repository
+  root, current branch, and `git worktree list`
+- Work in a separate Git worktree on a task branch unless the task explicitly
+  requests implementation in the main branch. A supplied working directory or
+  workflow-created branch does not authorize editing in the main folder
+- Reuse this task's isolated worktree, or create one with
+  `git worktree add -b <task-branch> <worktree-path> <base-ref>` before editing
+- Run all edits, commands, and commits in that worktree. Preserve unrelated work
+  in the original checkout; do not switch, stash, reset, or copy it
+- Preserve existing PR/MR source branches. If the source branch is checked out
+  in the main folder, use a separate repair branch based on it and report that
+  relationship to the orchestrator for publication to the original PR/MR
+- If isolation fails, stop before editing and report the exact failure instead
+  of falling back to the main folder
+- Include the worktree path and branch in every implementation handoff
+
 ### Rules
 1. Follow existing code conventions — read before writing
 2. Make minimal, focused changes — don't refactor unrelated code
