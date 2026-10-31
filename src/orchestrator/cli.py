@@ -282,7 +282,6 @@ async def _workflow_run(obj, name, variables):
     await orch.start(restore=True)
     try:
         if name == "pr-completion":
-            await orch.spawn_team(["implementer", "reviewer"])
             async def show_progress(event):
                 if event.topic == "workflow.started":
                     click.echo(f"Run ID: {event.payload['run_id']} (save this to resume)")
@@ -290,10 +289,6 @@ async def _workflow_run(obj, name, variables):
                     click.echo(f"CI: {event.payload['mr_ci_status']} {event.payload.get('mr_ci_sha', '')}")
             await orch.bus.subscribe("workflow.started", show_progress)
             await orch.bus.subscribe("workflow.mr.ci", show_progress)
-        running = orch.registry.get_running_agents()
-        if not running:
-            click.echo("No running agents. Spawn a team first with: orch start --spawn-team <roles>")
-            return
         result = await orch.run_workflow(name, variables=variables)
         click.echo(f"\nWorkflow '{name}' completed (run_id={result.run_id})")
         click.echo(f"Success: {result.success}")
@@ -430,10 +425,6 @@ async def _skill_run(obj, name, role, variables, cwd, supervised):
     orch = _get_orch(obj.get("config_path"))
     await orch.start(restore=True)
     try:
-        running = orch.registry.get_running_agents()
-        if not running:
-            click.echo("No running agents. Start the orchestrator first.")
-            return
         response = await orch.run_skill(name, role, variables=variables, cwd=cwd, supervised=supervised)
         click.echo(response)
     finally:

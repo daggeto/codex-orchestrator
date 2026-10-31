@@ -1,56 +1,58 @@
-import { useEffect, useRef, useState } from 'react';
-import { get, post } from '../api';
-import type { Agent, ChatMessage } from '../types';
-import { Chat } from './Chat';
+import { useEffect, useState } from 'react';
+import { get } from '../api';
+import type { DurableEvent, OwnedAgent } from '../types';
+import { MessageContent } from './MessageContent';
 
-function Conversation({ agent, cwd }: { agent: Agent; cwd: string }) {
-  const key = `orchestrator.conversation.v1:${agent.agent_id}:${cwd}`;
-  const [thread, setThread] = useState<string | null>(() => {
-    try { return sessionStorage.getItem(key); } catch { return null; }
-  });
-  const threadRef = useRef(thread);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  return <>
-    <p className="muted">{agent.role} · <code>{cwd}</code>{thread && <> · thread <code>{thread}</code></>}. Responses arrive when the turn finishes.</p>
-    <Chat label="Message agent" messages={messages} disabled={agent.status !== 'running'} onSubmit={async text => {
-      if (!threadRef.current) {
-        const created = await post<{ thread_id: string; cwd: string }>(`/api/agents/${encodeURIComponent(agent.agent_id)}/threads`, { cwd });
-        threadRef.current = created.thread_id; setThread(created.thread_id);
-        try { sessionStorage.setItem(key, created.thread_id); } catch { /* Identity remains available for this mounted conversation. */ }
-      }
-      setMessages(previous => [...previous, { id: crypto.randomUUID(), role: 'user', content: text }]);
-      try {
-        const result = await post<{ response: string }>(`/api/agents/${encodeURIComponent(agent.agent_id)}/message`,
-          { message: text, thread_id: threadRef.current, cwd }, 43200000);
-        setMessages(previous => [...previous, { id: crypto.randomUUID(), role: 'assistant', content: result.response }]);
-      } catch (reason) {
-        throw new Error(`${reason instanceof Error ? reason.message : 'Response unavailable'}. The turn may still be running; inspect the monitor before sending again.`);
-      }
-    }} />
-  </>;
-}
-export function AgentConversation({ cwd }: { cwd: string }) {
-  const [agents, setAgents] = useState<Agent[]>([]);
-  const [selected, setSelected] = useState('');
-  const [error, setError] = useState('');
-  const [revision, setRevision] = useState(0);
+export function AgentHistory({ agentId, taskId }: { agentId: string; taskId?: string }) {
+  const [events, setEvents] = useState<DurableEvent[]>([]);
+  const [failure, setFailure] = useState('');
   useEffect(() => {
+    setEvents([]); setFailure('');
+    let cursor = 0;
     const controller = new AbortController();
-    get<{ agents: Agent[] }>('/api/agents', controller.signal)
-      .then(result => { if (!controller.signal.aborted) { setAgents(result.agents); setError(''); } })
-      .catch(reason => { if (!controller.signal.aborted) setError(String(reason)); });
-    return () => controller.abort();
-  }, [revision]);
-  const agent = agents.find(item => item.agent_id === selected);
-  return <section className="agent-conversation">
-    <div className="agent-refresh"><button type="button" onClick={() => setRevision(value => value + 1)}>Refresh agents</button></div>
-    <p className="muted">Direct conversations use running agents and a separate thread for this project.</p>
-    <label htmlFor="conversation-agent">Agent</label>
-    <select id="conversation-agent" value={selected} onChange={event => setSelected(event.target.value)}>
-      <option value="">Choose a running agent</option>
-      {agents.map(item => <option key={item.agent_id} value={item.agent_id} disabled={item.status !== 'running'}>{item.role} · {item.agent_id} · {item.status}</option>)}
-    </select>
-    {error && <p className="error" role="alert">{error}</p>}
-    {agent && <Conversation key={`${cwd}:${agent.agent_id}`} agent={agent} cwd={cwd} />}
-  </section>;
+    let timer: ReturnType<typeof setTimeout>;
+    async function refresh() {
+      try {
+        const result = await get<{ events: DurableEvent[]; next_cursor: number }>(`/api/agents/${agentId}/events?after=${cursor}&limit=500${taskId ? `&task_id=${encodeURIComponent(taskId)}` : ''}`, controller.signal);
+        if (controller.signal.aborted) return;
+        cursor = result.next_cursor;
+        setEvents(previous => [...previous, ...result.events]); setFailure('');
+        timer = setTimeout(refresh, result.events.length === 500 ? 0 : 2000);
+      } catch (reason) {
+        if (!controller.signal.aborted) { setFailure(String(reason)); timer = setTimeout(refresh, 3000); }
+      }
+    }
+    void refresh();
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [agentId, taskId]);
+  const messages: { key: string; kind: string; text: string; event: DurableEvent }[] = [];
+  for (const event of events) {
+    if (event.kind === 'user') messages.push({ key: String(event.id), kind: 'user', text: String(event.payload.text || ''), event });
+    else if (event.kind === 'item/agentMessage/delta') {
+      const previous = messages[messages.length - 1];
+      const delta = String(event.payload.delta || event.payload.textDelta || '');
+      if (previous?.kind === 'assistant' && previous.event.turn_id === event.turn_id) previous.text += delta;
+      else messages.push({ key: String(event.id), kind: 'assistant', text: delta, event });
+    } else if (event.kind === 'error' || event.kind === 'turn/ended' && event.payload.error) {
+      messages.push({ key: String(event.id), kind: 'error', text: String(event.payload.message || event.payload.error), event });
+    } else if (!['turn/started','turn/completed','turn/ended'].includes(event.kind)) {
+      const item = event.payload.item as { type?: string; text?: string } | undefined;
+      if (item?.type === 'agentMessage') {
+        if (!messages.some(message => message.kind === 'assistant' && message.event.turn_id === event.turn_id)) messages.push({ key: String(event.id), kind: 'assistant', text: item.text || '', event });
+      } else messages.push({ key: String(event.id), kind: 'action', text: event.kind, event });
+    }
+  }
+  return <div className="chat-transcript" aria-label="Persisted conversation">
+    {messages.map(message => message.kind === 'action' ? <details key={message.key} className="action-result"><summary>{message.text}</summary><pre>{JSON.stringify(message.event.payload, null, 2)}</pre></details> :
+      <article key={message.key} className={`chat-message ${message.kind}`}><strong>{message.kind === 'user' ? 'You' : message.kind === 'assistant' ? 'Agent' : 'Error'}</strong><MessageContent text={message.text} /></article>)}
+    {!events.length && <p>No recorded messages yet.</p>}
+    {failure && <p className="error" role="alert">{failure}</p>}
+  </div>;
+}
+// Compatibility for the old Home view: history is durable and read-only here.
+export function AgentConversation({ cwd: _cwd }: { cwd: string }) {
+  const [agents, setAgents] = useState<OwnedAgent[]>([]);
+  const [selected, setSelected] = useState('');
+  useEffect(() => { const controller = new AbortController(); void get<{ agents: OwnedAgent[] }>('/api/agents', controller.signal).then(result => setAgents(result.agents)).catch(() => {}); return () => controller.abort(); }, []);
+  return <><label>Agent history<select value={selected} onChange={event => setSelected(event.target.value)}><option value="">Select agent</option>{agents.map(agent => <option key={agent.agent_id} value={agent.agent_id}>{agent.role}</option>)}</select></label>{selected && <AgentHistory key={selected} agentId={selected} />}</>;
 }

@@ -69,64 +69,29 @@ async def submit(request: web.Request) -> web.Response:
 
 
 async def accept(request):
-    orch = request.app["orch"]
-    workflow = orch.workflows.get(request.match_info["name"])
-    if workflow is None:
-        return web.json_response({"error": "Unknown workflow"}, status=404)
-    try:
-        body = await request.json()
-        if not isinstance(body, dict) or not isinstance(body.get("variables"), dict):
-            raise ValueError("Expected run_id and workflow variables")
-        rid = body.get("run_id")
-        if not isinstance(rid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", rid):
-            raise ValueError("run_id must contain 1-64 letters, digits, underscores or hyphens")
-        variables = dict(body["variables"])
-        task = variables.get("task_description")
-        if not isinstance(task, str) or not task.strip():
-            raise ValueError("task_description is required")
-        variables["task_description"] = task.strip()
-        if workflow.publication_policy == "optional":
-            variables.setdefault("create_mr", False)
-        if workflow.publication_policy == "required" and str(variables.get("create_mr", True)).lower() in {"false", "0", "no"}:
-            raise ValueError("This workflow requires PR/MR publication")
-        request_fingerprint = hashlib.sha256(json.dumps([workflow.name, variables], sort_keys=True).encode()).hexdigest()
-        previous = await orch.store.get_workflow_run(rid)
-        if previous:
-            matches = previous.config.get("request_fingerprint") == request_fingerprint
-            if not matches:
-                # Equivalent paths retain the normalized-payload contract, even
-                # when the accepted directory is no longer available.
-                normalized = dict(variables)
-                normalized["cwd"] = normalize_directory(normalized.get("cwd"), validate=False)
-                matches = previous.config.get("submission_fingerprint") == hashlib.sha256(
-                    json.dumps([workflow.name, normalized], sort_keys=True).encode()).hexdigest()
-            if not matches:
-                return web.json_response({"error": "Run ID belongs to a different submission"}, status=409)
-            return web.json_response({"run_id": rid, "status_url": f"/api/workflows/runs/{rid}"}, status=202)
-        variables["cwd"] = normalize_directory(variables.get("cwd"))
-        if not any(p["path"] == variables["cwd"] for p in await orch.store.list_projects()):
-            raise ValueError("Register this project before submitting a task")
-        fingerprint = hashlib.sha256(json.dumps([workflow.name, variables], sort_keys=True).encode()).hexdigest()
-        record = WorkflowRunRecord(
-            run_id=rid, workflow_name=workflow.name, status="accepted",
-            config={"variables": variables, "submission_fingerprint": fingerprint,
-                    "request_fingerprint": request_fingerprint},
-            state={"phase": "accepted", "required_roles": workflow.required_roles},
-        )
-        if await orch.store.reserve_workflow_run(record):
-            own_task(request.app, execute(request.app, workflow, record))
-        else:
-            previous = await orch.store.get_workflow_run(rid)
-            if not previous or previous.config.get("submission_fingerprint") != fingerprint:
-                return web.json_response({"error": "Run ID belongs to a different submission"}, status=409)
-        return web.json_response({"run_id": rid, "status_url": f"/api/workflows/runs/{rid}"}, status=202)
-    except (ValueError, OSError, RuntimeError) as exc:
-        return web.json_response({"error": str(exc)}, status=400)
+    orch = request.app['orch']
+    from orchestrator.api.tasks import body
+    data = await body(request)
+    variables = data.get('variables')
+    rid = data.get('run_id')
+    if not isinstance(variables, dict) or not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', rid):
+        raise ValueError('Expected run_id and workflow variables')
+    path = normalize_directory(variables.get('cwd'))
+    await orch.workspaces.register(path)
+    workspace = await orch.store.one('SELECT * FROM workspaces WHERE path=?', (path,))
+    task = await orch.tasks.submit(workspace['workspace_id'], variables.get('task_description'),
+        settings={'workflow': request.match_info['name'], 'variables': variables}, idempotency_key=rid)
+    return web.json_response({'run_id': rid, 'task_id': task['task_id'], 'status_url': f'/api/workflows/runs/{rid}'}, status=202)
 
 
 async def get_run(request):
     record = await request.app["orch"].store.get_workflow_run(request.match_info["run_id"])
     if record is None:
+        task = await request.app['orch'].store.one('SELECT * FROM tasks WHERE idempotency_key=?', (request.match_info['run_id'],))
+        if task:
+            return web.json_response({'run': {'run_id': request.match_info['run_id'], 'workflow_name': task['settings'].get('workflow'),
+                'status': task['status'], 'config': task['settings'], 'state': {'phase': task['phase']},
+                'created_at': task['created_at'], 'updated_at': task['updated_at'], 'completed_at': task['completed_at']}})
         return web.json_response({"error": "Workflow run not found"}, status=404)
     workflow = request.app["orch"].workflows.get(record.workflow_name)
     reason = None

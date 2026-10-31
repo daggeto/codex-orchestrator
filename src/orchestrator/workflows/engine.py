@@ -7,6 +7,8 @@ import hashlib
 import json
 import logging
 import uuid
+import contextvars
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -18,6 +20,7 @@ from orchestrator.state.store import StateStore, WorkflowRunRecord
 from orchestrator.workflows.steps import Step, StepResult
 
 logger = logging.getLogger(__name__)
+_execution = contextvars.ContextVar("step_execution", default=None)
 
 
 @dataclass
@@ -56,7 +59,7 @@ class WorkflowContext:
         return thread
 
     def get_agent_for_role(self, role_name: str) -> Agent | None:
-        agents = self.registry.get_agents_by_role(role_name)
+        agents = self.registry.get_agents_by_role(role_name, self.variables.get("task_id"))
         running = [a for a in agents if a.status.value == "running"]
         return running[0] if running else None
 
@@ -67,6 +70,42 @@ class WorkflowContext:
     def set_thread(self, agent: Agent, step_id: str, thread_id: str):
         key = f"{agent.role.name}:{agent.role.backend}:{step_id}"
         self._threads[key] = thread_id
+
+    async def execute_step(self, step):
+        from orchestrator.state.models import now
+        eid = uuid.uuid4().hex
+        parent = _execution.get()
+        attempts = await self.store.one('SELECT COUNT(*) AS count FROM step_executions WHERE run_id=? AND step_id=?', (self.run_id, step.step_id))
+        task_id = self.variables.get('task_id')
+        agent = self.get_agent_for_role(step.role) if getattr(step, 'role', None) else None
+        dependencies = [self.variables['_last_execution']] if not parent and self.variables.get('_last_execution') else []
+        await self.store.write('INSERT INTO step_executions (execution_id,task_id,run_id,step_id,attempt,parent_id,dependencies_json,agent_id,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                               (eid, task_id, self.run_id, step.step_id, attempts['count']+1, parent, json.dumps(dependencies), agent.agent_id if agent else None, 'active', now(), now()))
+        if task_id:
+            await self.store.task_status(task_id, 'active', step.name + (' running' if agent else ''))
+        token = _execution.set(eid)
+        try:
+            result = await step.execute(self)
+            await self.store.write('UPDATE step_executions SET status=?,output_json=?,updated_at=? WHERE execution_id=?',
+                                   ('completed' if result.success else 'failed', json.dumps({'output': result.output, 'error': result.error, 'next_step': result.next_step}), now(), eid))
+            return result
+        except BaseException as exc:
+            await self.store.write('UPDATE step_executions SET status=?,output_json=?,updated_at=? WHERE execution_id=?',
+                                   ('interrupted' if isinstance(exc, asyncio.CancelledError) else 'failed', json.dumps({'error': str(exc)}), now(), eid))
+            raise
+        finally:
+            _execution.reset(token)
+            if not parent:
+                self.variables['_last_execution'] = eid
+
+    async def persist_step_thread(self, agent, thread_id):
+        from orchestrator.state.store import ThreadRecord
+        info = agent._get_thread(thread_id)
+        await self.store.save_thread(ThreadRecord(thread_id=thread_id, agent_id=agent.agent_id,
+                                                 cwd=info.cwd if info else None, model=agent.role.model))
+        await self.store.write('UPDATE threads SET task_id=?,step_execution_id=? WHERE thread_id=?',
+                               (self.variables.get('task_id'), _execution.get(), thread_id))
+        await self.store.write('UPDATE step_executions SET thread_id=? WHERE execution_id=?', (thread_id, _execution.get()))
 
 
 @dataclass
@@ -227,7 +266,7 @@ class WorkflowEngine:
 
                 record.state.update(current_step=step.step_id, iteration=iterations)
                 await self._store.save_workflow_run(record)
-                result = await step.execute(ctx)
+                result = await ctx.execute_step(step)
                 record = await self._store.get_workflow_run(rid) or record
                 step_results.append((step.step_id, result))
                 ctx.variables.update(result.output)

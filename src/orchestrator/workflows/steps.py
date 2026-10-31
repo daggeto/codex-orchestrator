@@ -61,15 +61,18 @@ class AssignStep(Step):
         message = self.message_template.format(**ctx.variables)
         if self.role == "implementer" and ctx.variables.get("task_worktree"):
             message += (
-                "\n\nThe workflow has already created this task's isolated worktree: "
+                "\n\nThe task has selected this checkout: "
                 f"{ctx.variables['task_worktree']} on branch {ctx.variables['task_branch']}. "
                 "Reuse this checkout and branch for all edits and commits. Do not create "
                 "another worktree or switch branches; review and publication use this checkout."
             )
-        cwd = self.cwd.format(**ctx.variables) if self.cwd else ctx.variables.get("cwd")
+        if ctx.variables.get('workspace_kind') == 'main':
+            message += "\n\nThe task explicitly selected execution in this main checkout. Use this folder and its current branch for implementation."
+        cwd = ctx.variables.get("cwd") if ctx.variables.get("workspace_resolved") else (self.cwd.format(**ctx.variables) if self.cwd else ctx.variables.get("cwd"))
 
         thread = await ctx.acquire_thread(agent, self.step_id, cwd=cwd, model=self.model)
 
+        await ctx.persist_step_thread(agent, thread)
         result = await agent.send_message(thread, message, model=self.model)
 
         identity = {}
@@ -141,6 +144,7 @@ class ReviewStep(Step):
                 reviewed["review_commit"] = await _run(root, "git", "rev-parse", "HEAD")
             except (OSError, RuntimeError, ValueError) as exc:
                 return StepResult(success=False, error=str(exc))
+        await ctx.persist_step_thread(agent, thread)
         result = await agent.send_message(thread, message)
         if reviewed:
             if await _run(root, "git", "rev-parse", "HEAD") != reviewed["review_commit"]:
@@ -222,7 +226,7 @@ class ParallelStep(Step):
     async def execute(self, ctx: WorkflowContext) -> StepResult:
         import asyncio
 
-        tasks = [step.execute(ctx) for step in self.sub_steps]
+        tasks = [ctx.execute_step(step) for step in self.sub_steps]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         merged: dict[str, Any] = {}
@@ -259,7 +263,7 @@ class SequenceStep(Step):
         combined_output: dict[str, Any] = {}
 
         for step in self.sub_steps:
-            result = await step.execute(ctx)
+            result = await ctx.execute_step(step)
             combined_output.update(result.output)
             ctx.variables.update(result.output)
             if not result.success:
@@ -290,6 +294,16 @@ class HumanStep(Step):
 
     async def execute(self, ctx: WorkflowContext) -> StepResult:
         prompt = self.prompt.format(**ctx.variables)
+
+        service = getattr(ctx.registry, 'task_service', None)
+        if service:
+            from orchestrator.workflows.engine import _execution
+            try:
+                response = await service.request_input(ctx.variables.get('task_id'), prompt,
+                                                       execution_id=_execution.get(), timeout=self.timeout)
+                return StepResult(success=True, output={self.output_key: response})
+            except TimeoutError:
+                return StepResult(success=False, error='Timed out waiting for human input')
 
         await ctx.bus.publish("workflow.human_input_needed", {
             "workflow_run_id": ctx.run_id,

@@ -28,6 +28,7 @@ from orchestrator.protocol.jsonrpc import (
     make_request,
     parse_message,
 )
+from orchestrator.processes import process_owns_listener, stop_process_group
 from orchestrator.roles.loader import RoleConfig
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,8 @@ class CodexAgent(Agent):
         self._proc: asyncio.subprocess.Process | None = None
         self._ws: websockets.client.ClientConnection | None = None
         self._reader_task: asyncio.Task | None = None
+        self._server_requests: set[asyncio.Task] = set()
+        self._reconnect_task: asyncio.Task | None = None
 
         self._pending: dict[int | str, asyncio.Future[JSONRPCResponse]] = {}
         self._event_queues: dict[str, asyncio.Queue[StreamEvent]] = {}
@@ -83,9 +86,13 @@ class CodexAgent(Agent):
 
     async def start(self) -> None:
         self.status = AgentStatus.STARTING
-        await self._start_server_process()
-        await self._connect_ws()
-        await self._initialize()
+        try:
+            await self._start_server_process()
+            await self._connect_ws()
+            await self._initialize()
+        except BaseException:
+            await self.stop()
+            raise
         self.status = AgentStatus.RUNNING
         logger.info("Codex agent %s running on %s (pid=%s)", self.name, self._ws_url, self.pid)
 
@@ -105,36 +112,46 @@ class CodexAgent(Agent):
 
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
+            start_new_session=True,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
 
-        # Wait for the server to be ready
-        for _ in range(50):  # 5 seconds max
+        # A reachable port alone can belong to another service. Only accept
+        # the listener when the OS attributes it to our still-running launcher
+        # or a verified descendant in the same managed process group.
+        for _ in range(50):
             await asyncio.sleep(0.1)
-            try:
-                reader, writer = await asyncio.open_connection(self.host, self.port)
-                writer.close()
-                await writer.wait_closed()
+            if await self._owns_listener():
                 return
-            except (ConnectionRefusedError, OSError):
-                if self._proc.returncode is not None:
-                    stderr = await self._proc.stderr.read()
-                    raise RuntimeError(
-                        f"Codex app-server exited early (code={self._proc.returncode}): "
-                        f"{stderr.decode()[:500]}"
-                    )
+        raise TimeoutError(f"Codex app-server did not acquire port {self.port}")
 
-        raise TimeoutError(f"Codex app-server did not start within 5s on port {self.port}")
+    async def _owns_listener(self):
+        if not self._proc or self._proc.returncode is not None:
+            code = self._proc.returncode if self._proc else 'not started'
+            raise RuntimeError(f'Codex app-server exited before listener verification (code={code})')
+        owned = await process_owns_listener(self._proc.pid, self.port)
+        if self._proc.returncode is not None:
+            raise RuntimeError('Codex app-server exited during listener verification')
+        return owned
 
     async def _connect_ws(self):
-        self._ws = await websockets.client.connect(
+        if not await self._owns_listener():
+            raise RuntimeError('Codex app-server does not own its listener')
+        ws = await websockets.client.connect(
             self._ws_url,
             max_size=50 * 1024 * 1024,  # 50MB max message
             ping_interval=30,
             ping_timeout=10,
             close_timeout=5,
         )
+        try:
+            if not await self._owns_listener():
+                raise RuntimeError('Codex listener ownership changed during connection')
+        except BaseException:
+            await ws.close()
+            raise
+        self._ws = ws
         self._shutdown.clear()
         self._reader_task = asyncio.create_task(self._read_loop(), name=f"reader-{self.agent_id[:8]}")
 
@@ -153,7 +170,10 @@ class CodexAgent(Agent):
     async def stop(self) -> None:
         self.status = AgentStatus.STOPPING
         self._shutdown.set()
-
+        if self._reconnect_task:
+            self._reconnect_task.cancel()
+            await asyncio.gather(self._reconnect_task, return_exceptions=True)
+            self._reconnect_task = None
         if self._reader_task:
             self._reader_task.cancel()
             try:
@@ -161,19 +181,18 @@ class CodexAgent(Agent):
             except asyncio.CancelledError:
                 pass
 
+        # The reader is stopped first, so it cannot create more input handlers.
+        requests = list(self._server_requests)
+        for task in requests:
+            task.cancel()
+        await asyncio.gather(*requests, return_exceptions=True)
+
         if self._ws:
             await self._ws.close()
             self._ws = None
 
         if self._proc:
-            try:
-                self._proc.terminate()
-                await asyncio.wait_for(self._proc.wait(), timeout=5)
-            except (TimeoutError, ProcessLookupError):
-                try:
-                    self._proc.kill()
-                except ProcessLookupError:
-                    pass
+            await stop_process_group(self._proc)
             self._proc = None
 
         # Resolve any pending requests
@@ -221,7 +240,9 @@ class CodexAgent(Agent):
 
                 elif isinstance(msg, JSONRPCRequest):
                     # Server request (approval) — handle based on policy
-                    asyncio.create_task(self._handle_server_request(msg))
+                    task = asyncio.create_task(self._handle_server_request(msg))
+                    self._server_requests.add(task)
+                    task.add_done_callback(self._server_requests.discard)
 
                 elif isinstance(msg, JSONRPCNotification):
                     event = StreamEvent(
@@ -245,7 +266,7 @@ class CodexAgent(Agent):
             if not self._shutdown.is_set():
                 logger.warning("WebSocket connection lost for %s, attempting reconnect", self.name)
                 self.status = AgentStatus.DEGRADED
-                asyncio.create_task(self._reconnect())
+                self._reconnect_task = asyncio.create_task(self._reconnect())
         except asyncio.CancelledError:
             pass
 
@@ -275,6 +296,20 @@ class CodexAgent(Agent):
             "applyPatchApproval",
             "item/toolRequestUserInput",
         )
+
+        if req.method == "item/toolRequestUserInput" and getattr(self, 'input_handler', None):
+            try:
+                answer = await self.input_handler(getattr(self, 'task_id', None),
+                    json.dumps(req.params.get('questions', [])), kind='backend_input', agent_id=self.agent_id,
+                    options=req.params.get('questions', []))
+                if not isinstance(answer, dict):
+                    answer = {'answers': {q['id']: {'answers': [str(answer)]} for q in req.params.get('questions', [])}}
+                await self._send_raw({'id': req.id, 'result': answer})
+            except asyncio.CancelledError:
+                raise
+            except TimeoutError:
+                await self._send_raw({'id': req.id, 'error': {'code': -32000, 'message': 'Input expired'}})
+            return
 
         if is_approval:
             decision = self._resolve_approval(req)
@@ -375,8 +410,10 @@ class CodexAgent(Agent):
 
     async def resume_thread(self, thread_id: str) -> ThreadInfo:
         self._event_queues.setdefault(thread_id, asyncio.Queue(maxsize=50000))
+        saved = await self.store.get_thread(thread_id) if getattr(self, 'store', None) else None
         await self._request("thread/resume", {"threadId": thread_id})
-        info = ThreadInfo(thread_id=thread_id, agent_id=self.agent_id)
+        self._event_queues[thread_id] = asyncio.Queue(maxsize=50000)
+        info = ThreadInfo(thread_id=thread_id, agent_id=self.agent_id, cwd=saved.cwd if saved else None)
         self._register_thread(info)
         return info
 

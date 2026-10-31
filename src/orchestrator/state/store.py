@@ -12,9 +12,12 @@ from typing import Any
 
 import aiosqlite
 
+from orchestrator.state.models import OwnershipStore
+from orchestrator.state.migrations import migrate
+
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+from orchestrator.state.migrations import VERSION as SCHEMA_VERSION
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -176,7 +179,7 @@ class WorkflowRunRecord:
     completed_at: str | None = None
 
 
-class StateStore:
+class StateStore(OwnershipStore):
     def __init__(self, db_path: Path):
         self._db_path = db_path
         self._db: aiosqlite.Connection | None = None
@@ -185,11 +188,9 @@ class StateStore:
         self._db = await aiosqlite.connect(self._db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(SCHEMA)
-        await self._db.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
-            ("schema_version", str(SCHEMA_VERSION)),
-        )
         await self._db.commit()
+        await migrate(self._db)
+        await self._db.execute("PRAGMA foreign_keys=ON")
 
     async def close(self):
         if self._db:
@@ -236,9 +237,9 @@ class StateStore:
 
     async def save_agent(self, rec: AgentRecord):
         await self._db.execute(
-            """INSERT OR REPLACE INTO agents
+            """INSERT INTO agents
                (agent_id, role, backend, port, pid, ws_url, status, config_json, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET role=excluded.role, backend=excluded.backend, port=excluded.port, pid=excluded.pid, ws_url=excluded.ws_url, status=excluded.status, config_json=excluded.config_json, updated_at=excluded.updated_at""",
             (
                 rec.agent_id, rec.role, rec.backend, rec.port, rec.pid,
                 rec.ws_url, rec.status, json.dumps(rec.config),
@@ -294,17 +295,15 @@ class StateStore:
         await self._db.commit()
 
     async def delete_agent(self, agent_id: str):
-        await self._db.execute("DELETE FROM threads WHERE agent_id = ?", (agent_id,))
-        await self._db.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
-        await self._db.commit()
+        await self.write("UPDATE agents SET status='stopped',pid=NULL,ws_url=NULL,retired_at=?,updated_at=? WHERE agent_id=?", (_now(), _now(), agent_id))
 
     # ── Threads ─────────────────────────────────────────────────────────
 
     async def save_thread(self, rec: ThreadRecord):
         await self._db.execute(
-            """INSERT OR REPLACE INTO threads
+            """INSERT INTO threads
                (thread_id, agent_id, cwd, model, status, metadata_json, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(thread_id) DO UPDATE SET agent_id=excluded.agent_id, cwd=excluded.cwd, model=excluded.model, status=excluded.status, metadata_json=excluded.metadata_json, updated_at=excluded.updated_at""",
             (
                 rec.thread_id, rec.agent_id, rec.cwd, rec.model,
                 rec.status, json.dumps(rec.metadata), rec.created_at, _now(),
@@ -349,12 +348,12 @@ class StateStore:
 
     async def save_work_item(self, rec: WorkItemRecord):
         await self._db.execute(
-            """INSERT OR REPLACE INTO work_items
+            """INSERT INTO work_items
                (item_id, workflow_id, title, description, status, priority,
                 assigned_agent, assigned_thread, parent_item,
                 input_json, output_json, history_json, tags_json,
                 created_at, updated_at, completed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(item_id) DO UPDATE SET workflow_id=excluded.workflow_id, title=excluded.title, description=excluded.description, status=excluded.status, priority=excluded.priority, assigned_agent=excluded.assigned_agent, assigned_thread=excluded.assigned_thread, parent_item=excluded.parent_item, input_json=excluded.input_json, output_json=excluded.output_json, history_json=excluded.history_json, tags_json=excluded.tags_json, updated_at=excluded.updated_at, completed_at=excluded.completed_at""",
             (
                 rec.item_id, rec.workflow_id, rec.title, rec.description,
                 rec.status, rec.priority, rec.assigned_agent, rec.assigned_thread,
@@ -436,9 +435,9 @@ class StateStore:
 
     async def save_workflow_run(self, rec: WorkflowRunRecord):
         await self._db.execute(
-            """INSERT OR REPLACE INTO workflow_runs
+            """INSERT INTO workflow_runs
                (run_id, workflow_name, status, config_json, state_json, created_at, updated_at, completed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id) DO UPDATE SET workflow_name=excluded.workflow_name, status=excluded.status, config_json=excluded.config_json, state_json=excluded.state_json, updated_at=excluded.updated_at, completed_at=excluded.completed_at""",
             (
                 rec.run_id, rec.workflow_name, rec.status,
                 json.dumps(rec.config), json.dumps(rec.state),

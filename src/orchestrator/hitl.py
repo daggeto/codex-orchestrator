@@ -129,6 +129,22 @@ class HITLManager:
                 }, source="hitl")
                 return req
 
+        service = getattr(self, 'task_service', None)
+        if service:
+            agent = await service.store.one('SELECT task_id FROM agents WHERE agent_id=?', (agent_id,))
+            try:
+                response = await service.request_input(agent['task_id'] if agent else None,
+                    action + '\n\n' + context, kind='approval', agent_id=agent_id,
+                    options=['approved', 'rejected'], timeout=auto_approve_after or timeout)
+                value = response.get('status') if isinstance(response, dict) else response
+                req.status = ApprovalStatus.APPROVED if value == 'approved' else ApprovalStatus.REJECTED
+                req.response = str(response)
+            except TimeoutError:
+                req.status = ApprovalStatus.APPROVED if auto_approve_after else ApprovalStatus.TIMEOUT
+            req.resolved_at = datetime.now(timezone.utc).isoformat()
+            self._approval_history.append(req)
+            return req
+
         # Create future and publish request
         future: asyncio.Future[ApprovalRequest] = asyncio.get_event_loop().create_future()
         self._pending_approvals[request_id] = future
@@ -226,6 +242,20 @@ class HITLManager:
                 "subject": subject,
                 "detail": detail[:500],
             }, source="hitl")
+            return esc
+
+        service = getattr(self, 'task_service', None)
+        if service:
+            agent = await service.store.one('SELECT task_id FROM agents WHERE agent_id=?', (agent_id,))
+            try:
+                response = await service.request_input(agent['task_id'] if agent else None,
+                    subject + '\n\n' + detail, kind='escalation', agent_id=agent_id,
+                    options=suggested_actions, timeout=timeout)
+                esc.response = str(response)
+                esc.status = 'resolved'
+            except TimeoutError:
+                esc.status = 'timeout'
+            self._escalation_history.append(esc)
             return esc
 
         future: asyncio.Future[Escalation] = asyncio.get_event_loop().create_future()

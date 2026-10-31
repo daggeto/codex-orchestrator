@@ -14,19 +14,37 @@ from typing import Any
 from aiohttp import web
 
 from orchestrator.core import Orchestrator
-from orchestrator.api import projects, submissions
+from orchestrator.api import projects, submissions, tasks, workspaces, filesystem
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
 
+@web.middleware
+async def local_mutations(request, handler):
+    if request.method not in {'GET', 'HEAD', 'OPTIONS'}:
+        host = urlsplit('http://' + request.host).hostname
+        if host not in {'localhost', '127.0.0.1', '::1'}:
+            raise web.HTTPForbidden(text='Local Host required')
+        origin = request.headers.get('Origin')
+        allowed = set(getattr(getattr(request.app['orch'], 'config', None), 'browser_origins', []))
+        allowed.add(f'{request.scheme}://{request.host}')
+        if origin and origin not in allowed:
+            raise web.HTTPForbidden(text='Untrusted browser Origin')
+    return await handler(request)
+
+
 def create_app(orch: Orchestrator) -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[tasks.errors, local_mutations])
     app["orch"] = orch
     app["submitted_tasks"] = set()
     app["submitted_run_ids"] = set()
     app.on_startup.append(submissions.recover_submissions)
     app.on_shutdown.append(_stop_submitted_tasks)
 
+    tasks.register(app)
+    workspaces.register(app)
+    app.router.add_get('/api/filesystem/directories', filesystem.directories)
     app.router.add_get("/health", health)
     app.router.add_get("/api/session", session_info)
     app.router.add_get("/api/projects", projects.list_projects)
@@ -77,12 +95,14 @@ def create_app(orch: Orchestrator) -> web.Application:
     app.router.add_get("/api/workspaces/{wt_id}/diff", workspace_diff)
     app.router.add_get("/api/workspaces/{wt_id}/log", workspace_log)
     app.router.add_post("/api/workspaces/{wt_id}/merge", merge_workspace)
-    app.router.add_delete("/api/workspaces/{wt_id}", cleanup_workspace)
 
     return app
 
 
 async def _stop_submitted_tasks(app: web.Application):
+    service = getattr(app['orch'], 'tasks', None)
+    if service:
+        await service.shutdown()
     # Acceptance can enqueue execution during shutdown. Drain newly owned tasks
     # too, before the orchestrator closes its store.
     while app["submitted_tasks"]:
@@ -197,6 +217,9 @@ async def destroy_agent(request: web.Request) -> web.Response:
 async def send_message(request: web.Request) -> web.Response:
     orch: Orchestrator = request.app["orch"]
     agent_id = request.match_info["agent_id"]
+    record = await orch.store.one('SELECT task_id FROM agents WHERE agent_id=?', (agent_id,))
+    if record and record['task_id']:
+        return _error('Use the owning task messages endpoint to preserve its lifecycle and workspace lease', 409)
     body = await request.json()
     message = body.get("message")
     if not message:
@@ -217,6 +240,8 @@ async def create_thread(request: web.Request) -> web.Response:
     agent = orch.registry.get_agent(request.match_info["agent_id"])
     if not agent:
         return _error("Agent not found", 404)
+    if getattr(agent, 'task_id', None):
+        return _error('Task-owned threads are managed by the task service', 409)
     try:
         body = await request.json()
         if not isinstance(body, dict):
@@ -363,41 +388,18 @@ async def list_workflows(request: web.Request) -> web.Response:
 
 
 async def run_workflow(request: web.Request) -> web.Response:
-    orch: Orchestrator = request.app["orch"]
-    name = request.match_info["name"]
-    body = await request.json()
-    if not isinstance(body, dict) or not isinstance(body.get("variables", {}), dict):
-        return _error("Expected an object with workflow variables as an object")
-    run_id = body.get("run_id") or uuid.uuid4().hex[:16]
-    if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", run_id):
-        return _error("run_id must contain 1-64 letters, digits, underscores or hyphens")
-    reserved = request.app["submitted_run_ids"]
-    if run_id in reserved:
-        return _error("Workflow run ID already exists", 409)
-    reserved.add(run_id)
-
+    orch = request.app['orch']
+    body = await tasks.body(request)
+    variables = body.get('variables', {})
+    run_id = body.get('run_id') or uuid.uuid4().hex[:16]
+    if not isinstance(variables, dict) or not isinstance(run_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', run_id):
+        return _error('Expected workflow variables and a valid run ID')
     async def execute():
-        try:
-            if await orch.store.get_workflow_run(run_id):
-                return _error("Workflow run ID already exists", 409)
-            variables = dict(body.get("variables") or {})
-            variables["cwd"] = _project_directory(orch, variables.get("cwd"))
-            result = await orch.run_workflow(name, variables=variables, run_id=run_id)
-            return _json({
-                "run_id": result.run_id,
-                "success": result.success,
-                "outputs": {k: str(v)[:2000] for k, v in result.outputs.items()},
-                "error": result.error,
-            })
-        except Exception as e:
-            return _error(str(e))
-        finally:
-            reserved.discard(run_id)
-
+        result = await orch.run_workflow(request.match_info['name'], variables, run_id)
+        return _json({'run_id': result.run_id, 'success': result.success,
+                      'outputs': {k: str(v)[:2000] for k,v in result.outputs.items()}, 'error': result.error})
     return await _service_owned(request, execute())
 
-
-# ── Send to Role ────────────────────────────────────────────────────────
 
 async def send_to_role(request: web.Request) -> web.Response:
     orch: Orchestrator = request.app["orch"]
@@ -533,6 +535,7 @@ async def run_skill(request: web.Request) -> web.Response:
 async def hitl_pending(request: web.Request) -> web.Response:
     orch: Orchestrator = request.app["orch"]
     return _json({
+        "input_requests": await orch.store.rows("SELECT * FROM input_requests WHERE status='pending'"),
         "pending_approvals": orch.hitl.pending_approvals,
         "pending_escalations": orch.hitl.pending_escalations,
     })
@@ -548,7 +551,10 @@ async def resolve_approval(request: web.Request) -> web.Response:
         status = ApprovalStatus(status_str)
     except ValueError:
         return _error(f"Invalid status: {status_str}")
-    orch.hitl.resolve_approval(request_id, status, response=body.get("response"))
+    if request_id in orch.tasks.input_waiters:
+        await orch.tasks.resolve_input(request_id, {'status': status_str, 'response': body.get('response')})
+    else:
+        orch.hitl.resolve_approval(request_id, status, response=body.get("response"))
     return _json({"request_id": request_id, "status": status_str})
 
 

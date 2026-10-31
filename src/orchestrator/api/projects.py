@@ -46,6 +46,13 @@ async def register_project(request: web.Request) -> web.Response:
         path = normalize_directory(body.get("path"), create=body.get("create_if_missing", False))
         store = request.app["orch"].store
         await store.register_project(path)
+        service = getattr(request.app['orch'], 'workspaces', None)
+        if service:
+            try:
+                await service.register(path)
+            except (OSError, RuntimeError, ValueError):
+                # Legacy projects can be plain folders; repository tasks require Git.
+                pass
         record = next(r for r in await store.list_projects() if r["path"] == path)
         return web.json_response({"project": project_info(record)}, status=201)
     except (ValueError, OSError, RuntimeError) as exc:

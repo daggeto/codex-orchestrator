@@ -36,17 +36,18 @@ COMMANDS = (
             "Use --cwd for the target project, --roles-dir for separate role definitions, "
             "--api-port to change the port, --no-api to disable HTTP, and repeat --spawn-team for initial agents. "
             "The API port defaults to 8420. The task home registers server projects persistently, "
-            "accepts workflows asynchronously, and starts/reuses their required team. "
-            "Browser disconnects leave accepted work running; service shutdown interrupts it.",
+            "accepts durable tasks asynchronously, and starts a task-owned team. "
+            "Browser disconnects leave accepted work running; service shutdown interrupts it. "
+            "Codex backends require lsof and reserve ports across processes using shared per-user locks.",
             ("make start",
              'make start ARGS="--cwd /path/to/repo --roles-dir ./roles --spawn-team architect"')),
     Command("task", "Submit a task to the running service without prompts.", "orch", ("task",),
             "Requires a quoted DESCRIPTION inside ARGS. Connects to the service started by make start; "
-            "starts missing workflow roles or reuses its agents, waits for the result, and prints the run ID. "
+            "starts task-owned workflow agents, waits for the result, and prints the run ID. "
             "Uses the service's project directory unless --cwd is supplied. --workflow selects a workflow "
             "(feature by default); --api-url selects another service port. Repeat --var/-v KEY=VALUE for inputs. "
-            "The implementer must use a separate task worktree unless the task explicitly requests main-branch "
-            "implementation, and report its path and branch for review/publication. "
+            "Existing worktrees are reused without switching branches; Main tasks create one when isolation is needed. "
+            "All workflow roles share the resolved checkout and a workspace lease. "
             "Feature tasks default to create_mr=false (local edits and commits); -v create_mr=true enables "
             "draft PR/MR publication and CI verification. pr-completion includes publication. "
             "Ctrl+C closes the client while submitted work remains running. Failed tasks return a nonzero exit status. "
@@ -65,12 +66,12 @@ COMMANDS = (
             "its orchestrator on completion; use start --spawn-team for a long-running team.",
             ('make team ARGS="architect implementer reviewer"',)),
     Command("send", "Send a message to an agent by role.", "orch", ("send",),
-            "Requires ROLE MESSAGE. Quote the message inside ARGS to preserve it as one argument. "
+            "Requires ROLE MESSAGE. Starts a saved non-task agent for the role on demand inside a leased task in a Git checkout; unavailable workspaces reject execution. Interrupted turns can continue from their task page using the saved session. Task-owned agents use task messaging. Quote the message inside ARGS to preserve it as one argument. "
             "Use --cwd to set the agent working directory. The implementer must use a separate task worktree "
             "unless the message explicitly requests main-branch implementation.",
             ("""make send ARGS='architect "Design an auth system" --cwd /path/to/repo'""",)),
     Command("supervised-send", "Send a role message with deliverable supervision.", "orch", ("supervised-send",),
-            "Requires ROLE MESSAGE and accepts --cwd. Reports accepted output or supervision issues, "
+            "Requires ROLE MESSAGE and accepts --cwd. Starts a saved non-task role agent on demand inside a leased task in a Git checkout. Reports accepted output or supervision issues, "
             "then lists detected deliverables and whether they were verified. The implementer must use "
             "a separate task worktree unless the message explicitly requests main-branch implementation.",
             ("""make supervised-send ARGS='implementer "Fix the user-list query" --cwd /path/to/repo'""",)),
@@ -82,20 +83,23 @@ COMMANDS = (
             "Reads agent records from the configured store without starting agents.",
             ("make agent-list",)),
     Command("agent-send", "Send a message to a specific agent ID.", "orch", ("agent", "send"),
-            "Requires AGENT_ID MESSAGE. Use --thread/-t to resume a thread and --cwd to set its working directory.",
+            "Requires AGENT_ID MESSAGE. Starts the selected saved non-task agent on demand inside a leased task in a Git checkout. Records task participation and retains continuation settings after interruption. Use --thread/-t to resume a thread and --cwd to set its working directory.",
             ("""make agent-send ARGS='design-agent "Continue the design" --thread THREAD_ID --cwd /path/to/repo'""",)),
     Command("workflow-list", "List workflows and their step counts.", "orch", ("workflow", "list"),
             "Built-ins are feature, bugfix, review, research, and pr-completion.",
             ("make workflow-list",)),
     Command("workflow-run", "Run a named workflow with variables and a target directory.", "orch", ("workflow", "run"),
             "Requires NAME. Repeat --var/-v KEY=VALUE for workflow inputs. --cwd sets the target repository; "
-            "--roles-dir selects role definitions independently. Most workflows require available agents. "
-            "pr-completion automatically starts/reuses implementer and reviewer, publishes committed changes, "
+            "--roles-dir selects role definitions independently. Required roles are started within the owning task. "
+            "pr-completion starts implementer and reviewer, publishes committed changes, "
             "and monitors/repairs CI. feature can also create a draft PR/MR. feature, bugfix, and pr-completion "
-            "create an isolated task worktree shared by implementation, review, QA, and publication. "
+            "reuse a selected worktree or create one from Main, shared by implementation, review, QA, and publication. "
             "Review uses the selected publication target even when the task branch differs. "
-            "Existing PR/MR source branches are preserved when publishing from the task checkout. "
-            "Worktrees are retained for inspection and resume. In the web monitor, Continue workflow retries the unfinished step using saved outputs and threads; Restart run starts over. At its step budget the run pauses; Continue workflow can explicitly approve 20 more steps, including for older limit-failed runs with checkpoints. Continuation may publish when publication was enabled in the original inputs. See docs/pr-completion.md for its inputs.",
+            "Existing PR/MR source and target branches are resolved before isolation and preserved when publishing from the task checkout. "
+            "Worktrees and session history survive shutdown. Web deletion verifies a private archive before removal; "
+            "failed captures retain the checkout. Codex backends require lsof and verify listener ownership before connecting. "
+            "In the web monitor, Continue workflow retries the unfinished step using saved outputs and threads; Restart run starts over. At its step budget the run pauses; Continue workflow can explicitly approve 20 more steps, including for older limit-failed runs with checkpoints. Continuation may publish when publication was enabled in the original inputs. "
+            "See docs/pr-completion.md for its inputs.",
             ("""make workflow-run ARGS='feature -v task_description="Add OAuth login" --cwd /path/to/repo -v mr_base=main'""",
              """make workflow-run ARGS='pr-completion --cwd /path/to/repo --roles-dir ./roles -v required_checks=Vercel'""")),
     Command("workflow-show", "Show a saved workflow phase and complete CI report.", "orch", ("workflow", "show"),
@@ -107,7 +111,7 @@ COMMANDS = (
             ("make skill-list", 'make skill-list ARGS="--role reviewer"')),
     Command("skill-run", "Run a skill using a role and input variables.", "orch", ("skill", "run"),
             "Requires NAME ROLE. Repeat -v KEY=VALUE for template inputs. Accepts --cwd and --no-supervise; "
-            "supervision is enabled by default. Requires available agents.",
+            "supervision is enabled by default. Starts a saved non-task role agent on demand inside a leased task in a Git checkout.",
             ("""make skill-run ARGS='investigate-bug architect -v bug_description="OOM on uploads" --cwd /path/to/repo'""",)),
     Command("audit-turns", "Show recent turns with timing and token usage.", "orch", ("audit", "turns"),
             "Defaults to 20 recent turns. --limit/-n changes the count. The CLI currently accepts --role "
@@ -128,7 +132,7 @@ COMMANDS = (
     Command("web-install", "Install frontend dependencies from the lockfile.", "npm", ("ci",),
             "Runs npm ci in web/. Requires Node 20.19+ or 22.12+. Replaces node_modules using the lockfile.",
             ("make web-install",)),
-    Command("dev", "Start the task home and monitor development server.", "npm", ("run", "dev"),
+    Command("dev", "Start repository navigation, task conversations, and the monitor.", "npm", ("run", "dev"),
             "Runs Vite in web/. Start make start in another terminal for the API on port 8420. "
             "The development server proxies /api and /health to that API. Task home defaults feature "
             "submissions to local commits (create_mr=false); publication is opt-in for feature and "

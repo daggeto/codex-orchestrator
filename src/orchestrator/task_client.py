@@ -68,9 +68,6 @@ async def submit_task(obj, api_url, workflow, variables):
         if not isinstance(roles, list) or not all(isinstance(role, str) for role in roles):
             raise click.ClickException("Restart make start to load workflow role metadata")
         click.echo(f"Service: {url}\nWorkflow: {workflow}")
-        if roles:
-            click.echo(f"Starting or reusing roles: {', '.join(roles)}")
-            await _request(session, url, "POST", "/api/team", {"roles": roles}, long_running=True)
         run_id = uuid.uuid4().hex[:16]
         click.echo(f"Run ID: {run_id}")
         click.echo("Waiting for the result. Ctrl+C leaves submitted work running on the service.")

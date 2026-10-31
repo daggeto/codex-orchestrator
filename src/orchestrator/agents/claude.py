@@ -18,6 +18,7 @@ from orchestrator.agents.base import (
     observed_stream,
 )
 from orchestrator.protocol.events import StreamEvent, EventType
+from orchestrator.processes import stop_process_group
 from orchestrator.roles.loader import RoleConfig
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ class ClaudeSession:
         self.cwd = cwd
         self.role = role
         self._claude_bin = claude_bin
-        self._resume_id = resume_id or thread_id
+        self._resume_id = resume_id
         self._proc: asyncio.subprocess.Process | None = None
         self._turn_active = False
 
@@ -63,7 +64,10 @@ class ClaudeSession:
             cmd.append(flag)
 
         # Resume from previous session
-        cmd.extend(["--resume", self._resume_id])
+        if self._resume_id:
+            cmd.extend(["--resume", self._resume_id])
+        else:
+            cmd.extend(["--session-id", self.thread_id])
 
         cmd.extend(["--print", message])
 
@@ -75,6 +79,7 @@ class ClaudeSession:
 
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
+            start_new_session=True,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=self.cwd,
@@ -91,6 +96,11 @@ class ClaudeSession:
                 except json.JSONDecodeError:
                     continue
 
+                # Claude embeds tool calls/results in message content blocks.
+                if data.get('type') in {'assistant', 'user'}:
+                    for block in data.get('message', {}).get('content', []):
+                        if block.get('type') in {'tool_use', 'tool_result'}:
+                            yield StreamEvent(method='item/completed', params={'threadId': self.thread_id, 'item': block})
                 event = self._parse_claude_event(data)
                 if event:
                     yield event
@@ -101,8 +111,8 @@ class ClaudeSession:
             yield StreamEvent(method="turn/completed", params={"threadId": self.thread_id})
         finally:
             self._turn_active = False
-            if self._proc and self._proc.returncode is None:
-                self._proc.terminate()
+            if self._proc:
+                await stop_process_group(self._proc)
 
     def _parse_claude_event(self, data: dict) -> StreamEvent | None:
         msg_type = data.get("type", "")
@@ -171,8 +181,8 @@ class ClaudeSession:
         return None
 
     async def interrupt(self):
-        if self._proc and self._proc.returncode is None:
-            self._proc.send_signal(2)  # SIGINT
+        if self._proc:
+            await stop_process_group(self._proc)
 
 
 class ClaudeAgent(Agent):
@@ -220,7 +230,7 @@ class ClaudeAgent(Agent):
         model: str | None = None,
         thread_id: str | None = None,
     ) -> ThreadInfo:
-        tid = thread_id or uuid.uuid4().hex
+        tid = thread_id or str(uuid.uuid4())
 
         effective_role = self.role
         if model:
@@ -248,17 +258,18 @@ class ClaudeAgent(Agent):
 
     async def resume_thread(self, thread_id: str) -> ThreadInfo:
         existing = self._get_thread(thread_id)
-        if existing:
+        if existing and thread_id in self._sessions:
             return existing
+        saved = await self.store.get_thread(thread_id) if getattr(self, 'store', None) else None
         session = ClaudeSession(
             thread_id=thread_id,
-            cwd=None,
+            cwd=saved.cwd if saved else None,
             role=self.role,
             claude_bin=self._claude_bin,
-            resume_id=thread_id,
+            resume_id=saved.metadata.get("session_id", thread_id) if saved else thread_id,
         )
         self._sessions[thread_id] = session
-        info = ThreadInfo(thread_id=thread_id, agent_id=self.agent_id)
+        info = ThreadInfo(thread_id=thread_id, agent_id=self.agent_id, cwd=saved.cwd if saved else None)
         self._register_thread(info)
         return info
 

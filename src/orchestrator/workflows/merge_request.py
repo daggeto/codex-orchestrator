@@ -12,6 +12,7 @@ import tempfile
 from typing import TYPE_CHECKING
 from urllib.parse import quote, urlparse
 
+from orchestrator.processes import stop_process_group
 from orchestrator.workflows.steps import AssignStep, Step, StepResult
 
 if TYPE_CHECKING:
@@ -21,19 +22,18 @@ if TYPE_CHECKING:
 async def _run(cwd: str, *args: str) -> str:
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GH_PROMPT_DISABLED": "1"}
     proc = await asyncio.create_subprocess_exec(
-        *args, cwd=cwd, env=env, stdin=asyncio.subprocess.DEVNULL,
+        *args, cwd=cwd, env=env, start_new_session=True, stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
     except TimeoutError as exc:
-        proc.kill()
-        await proc.communicate()
+        await stop_process_group(proc)
         raise RuntimeError(f"{args[0]} command timed out after 120 seconds") from exc
     except asyncio.CancelledError:
-        proc.kill()
-        await proc.communicate()
+        await stop_process_group(proc)
         raise
+    await stop_process_group(proc)
     if proc.returncode:
         raise RuntimeError(stderr.decode(errors="replace").strip() or f"{args[0]} failed")
     return stdout.decode(errors="replace").strip()
@@ -79,6 +79,13 @@ async def _default_branch(root: str, provider: str, remote: str) -> str:
 
 async def prepare_worktree(ctx, root: str, base: str) -> dict:
     """Own checkout identity so every later agent and publisher uses the same work."""
+    # TaskService has already persisted and leased the selected checkout.
+    if ctx.variables.get("workspace_resolved") or Path(root, ".git").is_file():
+        identity = {"cwd": root, "task_worktree": root,
+                    "task_branch": await _run(root, "git", "branch", "--show-current"),
+                    "task_baseline": await _run(root, "git", "rev-parse", "HEAD")}
+        ctx.variables.update(identity)
+        return identity
     # Keep worktrees outside the source checkout, including dirty local projects.
     parent = tempfile.mkdtemp(prefix="orch-worktree-")
     checkout = str(Path(parent) / "repo")
@@ -94,6 +101,33 @@ async def prepare_worktree(ctx, root: str, base: str) -> dict:
                 "task_baseline": await _run(checkout, "git", "rev-parse", "HEAD")}
     ctx.variables.update(identity)
     return identity
+
+
+async def resolve_publication_identity(root, variables):
+    """Resolve source/target before isolation changes the checkout branch."""
+    remote = await _run(root, 'git', 'remote', 'get-url', 'origin')
+    provider = str(variables.get('mr_provider', ''))
+    if not provider:
+        if re.search(r'(?:@|://)github\.com[:/]', remote):
+            provider = 'github'
+        elif re.search(r'(?:@|://)gitlab\.com[:/]', remote):
+            provider = 'gitlab'
+    cli = {'github': 'gh', 'gitlab': 'glab'}.get(provider)
+    if not cli or not shutil.which(cli):
+        raise ValueError('Install gh or glab; use mr_provider for a custom host')
+    current = await _run(root, 'git', 'branch', '--show-current')
+    if not current:
+        raise ValueError('Detached HEAD; select a source branch before publication')
+    matches = await _open_requests(root, provider, remote, current)
+    if len(matches) > 1:
+        raise ValueError('Multiple open PRs/MRs for this branch')
+    existing = matches[0] if matches else None
+    requested = variables.get('mr_base')
+    if existing and requested and requested != existing['base']:
+        raise ValueError('mr_base differs from the existing PR/MR target branch')
+    base = str(existing['base'] if existing else requested or await _default_branch(root, provider, remote))
+    return {'branch': current, 'base': base, 'url': existing['url'] if existing else '',
+            'provider': provider, 'remote': remote}
 
 
 class PrepareWorktreeStep(Step):
@@ -122,28 +156,17 @@ class PrepareMergeRequestStep(Step):
             root = await _run(cwd, "git", "rev-parse", "--show-toplevel")
             if await _run(root, "git", "status", "--porcelain", "--untracked-files=all"):
                 return _status("blocked", "Repository has existing uncommitted changes; no task branch created")
-            remote_url = await _run(root, "git", "remote", "get-url", "origin")
-            provider = str(ctx.variables.get("mr_provider", ""))
-            if not provider:
-                if re.search(r"(?:@|://)github\.com[:/]", remote_url):
-                    provider = "github"
-                elif re.search(r"(?:@|://)gitlab\.com[:/]", remote_url):
-                    provider = "gitlab"
-            cli = {"github": "gh", "gitlab": "glab"}.get(provider)
-            if not cli or not shutil.which(cli):
-                return _status("blocked", "Install gh (GitHub) or glab (GitLab); use mr_provider for a custom host")
-            current = await _run(root, "git", "branch", "--show-current")
-            if not current:
-                return _status("blocked", "Detached HEAD; select the task branch before publication")
+            selected = ctx.variables.get('publication_source') or await resolve_publication_identity(root, ctx.variables)
+            remote_url, provider = selected['remote'], selected['provider']
+            if await _run(root, 'git', 'remote', 'get-url', 'origin') != remote_url:
+                return _status('blocked', 'Origin changed after publication selection')
+            current, base = selected['branch'], selected['base']
             matches = await _open_requests(root, provider, remote_url, current)
-            if len(matches) > 1:
-                return _status("blocked", "Multiple open PRs/MRs for this branch; select an unambiguous task branch")
+            if len(matches) > 1 or (matches and (matches[0]['base'] != base or matches[0]['url'] != selected['url'])):
+                return _status('blocked', 'Selected PR/MR changed during workspace provisioning')
+            if selected['url'] and not matches:
+                return _status('blocked', 'Selected PR/MR was closed during workspace provisioning')
             existing = matches[0] if matches else None
-            requested_base = ctx.variables.get("mr_base")
-            if existing and requested_base and requested_base != existing["base"]:
-                return _status("blocked", "mr_base differs from the existing PR/MR target branch")
-            base = str(existing["base"] if existing else
-                       requested_base or await _default_branch(root, provider, remote_url))
             await _run(root, "git", "check-ref-format", f"refs/heads/{base}")
             await _run(root, "git", "fetch", "origin", f"refs/heads/{base}:refs/remotes/origin/{base}")
             baseline = await _run(root, "git", "rev-parse", "HEAD")

@@ -26,6 +26,7 @@ class SkillConfig:
     input_schema: dict[str, str] = field(default_factory=dict)  # name -> description
     output_expectations: list[str] = field(default_factory=list)
     verification: list[str] = field(default_factory=list)  # verification steps
+    settings: dict[str, Any] = field(default_factory=dict)  # optional session model/effort preset
     max_turns: int = 3  # max back-and-forth before giving up
     tags: list[str] = field(default_factory=list)
 
