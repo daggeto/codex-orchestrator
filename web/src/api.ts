@@ -6,7 +6,16 @@ export class ApiError extends Error {
 export async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   const timeout = AbortSignal.timeout(5000);
   const response = await fetch(path, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
-  if (!response.ok) throw new ApiError(`Request failed (${response.status})`, response.status);
+  if (!response.ok) {
+    const result = await response.json().catch(() => null);
+    const endpoint = path.split('?')[0];
+    const missingRepositoryApi = response.status === 404 &&
+      ['/api/navigation', '/api/repositories', '/api/filesystem/directories'].includes(endpoint);
+    const message = typeof result?.error === 'string' ? result.error : missingRepositoryApi
+      ? 'The service is missing the repository API. After active tasks finish, restart the service from the current checkout with make start, then reload this page.'
+      : `Request failed (${response.status})`;
+    throw new ApiError(message, response.status);
+  }
   return response.json() as Promise<T>;
 }
 const object = (value: unknown): value is JsonObject => typeof value === 'object' && value !== null && !Array.isArray(value);

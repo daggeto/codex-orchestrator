@@ -276,6 +276,12 @@ Development and preview servers proxy `/api` and `/health` to port 8420.
 The navigation is repository → Main/worktree → task → agent. Hash routes support
 reload and back navigation. The service monitor is available at `#/monitor`.
 
+If repository navigation or the folder picker reports a missing repository API,
+the service on port 8420 may still be running older code. After active tasks finish,
+stop it with Ctrl+C in its terminal and run `make start` from the current checkout
+with the same project and configuration options. Service shutdown stops its agents.
+Reload the web page after restarting.
+
 Choose **Add repository** to browse Git folders on the service machine. This
 registers the repository and discovers its existing worktrees without creating
 one. By default browsing is restricted to the service user's home and the target

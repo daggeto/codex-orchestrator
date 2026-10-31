@@ -91,11 +91,17 @@ summary { cursor: pointer; margin-top: 14px; }
 }
 
 .repository-layout { display: grid; grid-template-columns: 290px minmax(0, 1fr); min-height: 100vh; }
+.repository-layout a { color: #a7d5ff; text-underline-offset: 3px; }
+.repository-layout a:hover { color: #eff5fc; }
+.repository-layout a:focus-visible { outline: 2px solid #75b8ff; outline-offset: 3px; }
 .repository-sidebar { padding: 20px; border-right: 1px solid #384252; overflow-wrap: anywhere; }
+.repository-sidebar .brand { display: block; margin-bottom: 16px; font-size: 18px; font-weight: 700; text-decoration: none; }
+.repository-sidebar .error[role=alert] { margin: 14px 0; }
 .repository-sidebar nav > a, .repository-sidebar details > a { display: block; padding: 6px 0; }
 .repository-sidebar details { padding: 6px 0 6px 12px; }
 .repository-sidebar summary { cursor: pointer; }
-.repository-content { padding: 28px; min-width: 0; max-width: 1200px; width: 100%; }
+.repository-content { display: block; padding: 28px; min-width: 0; max-width: 1200px; width: 100%; }
+.repository-content > section { margin-top: 20px; }
 .composer-settings { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; align-items: end; }
 .composer-settings label { display: grid; gap: 6px; }
 .directory-list { display: flex; flex-direction: column; max-height: 300px; overflow: auto; margin: 12px 0; align-items: start; }

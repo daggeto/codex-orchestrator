@@ -102,3 +102,26 @@ class WorkspaceSelectionTests(unittest.IsolatedAsyncioTestCase):
             orch.workspace.create_worktree = AsyncMock(side_effect=RuntimeError('cannot create checkout'))
             with self.assertRaisesRegex(RuntimeError, 'cannot create checkout'):
                 await WorkspaceService(orch).ensure_task_workspace('task', True)
+
+
+class AgentScopeTests(unittest.TestCase):
+    def test_workflow_role_lookup_cannot_cross_task_boundaries(self):
+        from orchestrator.agents.base import AgentStatus
+        from orchestrator.agents.registry import AgentRegistry
+        from orchestrator.workflows.engine import WorkflowContext
+        registry = AgentRegistry.__new__(AgentRegistry)
+        first = Mock(agent_id='first', role=RoleConfig(name='writer'), task_id='task-a', status=AgentStatus.RUNNING)
+        second = Mock(agent_id='second', role=RoleConfig(name='writer'), task_id='task-b', status=AgentStatus.RUNNING)
+        registry._agents = {'first': first, 'second': second}
+        context = WorkflowContext('run', registry, Mock(), Mock(), {'task_id': 'task-b'})
+        self.assertIs(second, context.get_agent_for_role('writer'))
+        context.variables['task_id'] = 'task-c'
+        self.assertIsNone(context.get_agent_for_role('writer'))
+
+    def test_capacity_counts_runtime_allocations(self):
+        from orchestrator.agents.base import AgentStatus
+        from orchestrator.agents.registry import AgentRegistry
+        registry = AgentRegistry.__new__(AgentRegistry)
+        registry._agents = {str(index): Mock(status=AgentStatus.STOPPED) for index in range(30)}
+        registry._agents['live'] = Mock(status=AgentStatus.RUNNING)
+        self.assertEqual(1, registry.live_count)
