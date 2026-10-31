@@ -56,13 +56,45 @@ print(registry._allocate_port('cli'))
 
 
 class ListenerOwnershipTests(unittest.IsolatedAsyncioTestCase):
-    async def test_os_listener_evidence_must_match_the_spawned_pid(self):
-        probe = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(b'p1234\n', b'')))
+    async def inspect_listener(self, pid, owners, tree):
+        listener = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(owners, b'')))
+        processes = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(tree, b'')))
+        async def spawn(command, *args, **kwargs):
+            return processes if command == 'ps' else listener
         with patch('orchestrator.processes.shutil.which', return_value='/usr/sbin/lsof'), \
-             patch('orchestrator.processes.asyncio.create_subprocess_exec', AsyncMock(return_value=probe)):
-            self.assertTrue(await process_owns_listener(1234, 15000))
-            with self.assertRaisesRegex(RuntimeError, 'another process'):
-                await process_owns_listener(5678, 15000)
+             patch('orchestrator.processes.asyncio.create_subprocess_exec', AsyncMock(side_effect=spawn)):
+            return await process_owns_listener(pid, 15000)
+
+    async def test_os_listener_evidence_accepts_the_spawned_process(self):
+        self.assertTrue(await self.inspect_listener(1234, b'p1234\n', b'1234 100 1234\n'))
+        with self.assertRaisesRegex(RuntimeError, 'another process'):
+            await self.inspect_listener(5678, b'p1234\n', b'5678 100 5678\n1234 100 1234\n')
+
+    async def test_npm_launcher_native_child_listener_is_accepted(self):
+        self.assertTrue(await self.inspect_listener(
+            1234, b'p2345\n', b'1234 100 1234\n2345 1234 1234\n'))
+
+    async def test_nested_native_descendant_listener_is_accepted(self):
+        self.assertTrue(await self.inspect_listener(
+            1234, b'p3456\n', b'1234 100 1234\n2345 1234 1234\n3456 2345 1234\n'))
+
+    async def test_group_membership_without_launcher_ancestry_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, 'another process'):
+            await self.inspect_listener(1234, b'p2345\n', b'1234 100 1234\n2345 100 1234\n')
+
+    async def test_descendant_outside_the_managed_shutdown_group_is_rejected(self):
+        with self.assertRaisesRegex(RuntimeError, 'another process'):
+            await self.inspect_listener(1234, b'p2345\n', b'1234 100 1234\n2345 1234 2345\n')
+
+    async def test_managed_listener_does_not_mask_an_unrelated_listener(self):
+        with self.assertRaisesRegex(RuntimeError, 'another process'):
+            await self.inspect_listener(
+                1234, b'p2345\np5678\n', b'1234 100 1234\n2345 1234 1234\n5678 100 5678\n')
+
+    async def test_incomplete_or_cyclic_ancestry_is_rejected(self):
+        for tree in (b'1234 100 1234\n', b'1234 100 1234\n2345 3456 1234\n3456 2345 1234\n'):
+            with self.subTest(tree=tree), self.assertRaisesRegex(RuntimeError, 'another process'):
+                await self.inspect_listener(1234, b'p2345\n', tree)
 
     async def test_missing_or_failed_ownership_inspection_is_rejected(self):
         with patch('orchestrator.processes.shutil.which', return_value=None):

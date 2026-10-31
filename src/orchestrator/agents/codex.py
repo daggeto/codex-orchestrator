@@ -118,7 +118,8 @@ class CodexAgent(Agent):
         )
 
         # A reachable port alone can belong to another service. Only accept
-        # the listener when the OS attributes it to our still-running child.
+        # the listener when the OS attributes it to our still-running launcher
+        # or a verified descendant in the same managed process group.
         for _ in range(50):
             await asyncio.sleep(0.1)
             if await self._owns_listener():

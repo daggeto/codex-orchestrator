@@ -42,7 +42,9 @@ This is the opposite. Persistent agents with dedicated processes, strict prompts
 Codex backends require `lsof` on PATH to verify listener ownership. Ports use
 shared per-user locks in `~/.codex-orchestrator/ports`, including when services
 use different projects or data directories. Occupied ports are skipped; startup
-and reconnects reject listeners not owned by the spawned backend process.
+and reconnects require listener owners to be the spawned backend or verified
+descendants in its process group. This supports npm launchers that spawn the
+native backend as a child while keeping unrelated listeners excluded.
 
 Project commands are available through Make:
 

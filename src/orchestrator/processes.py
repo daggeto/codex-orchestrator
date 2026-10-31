@@ -71,8 +71,44 @@ async def stop_process_group(proc):
             raise RuntimeError(f'Process group {proc.pid} did not stop; checkout retained') from exc
 
 
+async def _managed_listener_owners(pid, owners):
+    """Accept only the session leader and descendants in its shutdown group."""
+    probe = await asyncio.create_subprocess_exec(
+        'ps', '-axo', 'pid=,ppid=,pgid=', start_new_session=True,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    try:
+        stdout, stderr = await asyncio.wait_for(probe.communicate(), 5)
+    except BaseException:
+        await stop_process_group(probe)
+        raise
+    if probe.returncode or stderr.strip():
+        raise RuntimeError('Cannot verify Codex process ancestry: ' + stderr.decode(errors='replace')[:500])
+    try:
+        processes = {}
+        for line in stdout.decode().splitlines():
+            if line.strip():
+                child, parent, group = map(int, line.split())
+                processes[child] = (parent, group)
+    except ValueError as exc:
+        raise RuntimeError('Cannot parse Codex process ancestry') from exc
+    if pid not in processes or processes[pid][1] != pid:
+        return False
+    for owner in owners:
+        seen = set()
+        current = owner
+        while current != pid:
+            if current in seen or current not in processes:
+                return False
+            seen.add(current)
+            parent, group = processes[current]
+            if group != pid:
+                return False
+            current = parent
+    return True
+
+
 async def process_owns_listener(pid, port):
-    """Require OS evidence that the spawned PID exclusively owns this listener."""
+    """Verify listener ownership by the managed launcher or its native children."""
     lsof = shutil.which('lsof')
     if not lsof:
         raise RuntimeError('lsof is required to verify Codex listener ownership; install it before starting agents')
@@ -87,6 +123,8 @@ async def process_owns_listener(pid, port):
     if probe.returncode not in (0, 1) or stderr.strip():
         raise RuntimeError('Cannot verify Codex listener ownership: ' + stderr.decode(errors='replace')[:500])
     owners = {int(line[1:]) for line in stdout.decode().splitlines() if line.startswith('p') and line[1:].isdigit()}
-    if owners and owners != {pid}:
+    if not owners:
+        return False
+    if not await _managed_listener_owners(pid, owners):
         raise RuntimeError(f'Port {port} belongs to another process; refusing to connect')
-    return owners == {pid}
+    return True
