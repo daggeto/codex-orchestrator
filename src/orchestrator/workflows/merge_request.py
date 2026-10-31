@@ -116,7 +116,8 @@ class PrepareMergeRequestStep(Step):
             result = await PrepareWorktreeStep(self.step_id).execute(ctx)
             if not result.success:
                 return result
-            return _status("skipped", "Disabled with create_mr=false", **result.output)
+            return _status("skipped", "Disabled with create_mr=false", **result.output,
+                           mr_url="", mr_branch=result.output["task_branch"], mr_base="")
         try:
             root = await _run(cwd, "git", "rev-parse", "--show-toplevel")
             if await _run(root, "git", "status", "--porcelain", "--untracked-files=all"):

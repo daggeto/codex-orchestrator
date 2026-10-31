@@ -93,12 +93,13 @@ async def accept(request):
         previous = await orch.store.get_workflow_run(rid)
         if previous:
             matches = previous.config.get("request_fingerprint") == request_fingerprint
-            if not previous.config.get("request_fingerprint"):
-                # Compatibility for acceptances saved before raw request identity.
-                legacy = dict(variables)
-                legacy["cwd"] = normalize_directory(legacy.get("cwd"), validate=False)
+            if not matches:
+                # Equivalent paths retain the normalized-payload contract, even
+                # when the accepted directory is no longer available.
+                normalized = dict(variables)
+                normalized["cwd"] = normalize_directory(normalized.get("cwd"), validate=False)
                 matches = previous.config.get("submission_fingerprint") == hashlib.sha256(
-                    json.dumps([workflow.name, legacy], sort_keys=True).encode()).hexdigest()
+                    json.dumps([workflow.name, normalized], sort_keys=True).encode()).hexdigest()
             if not matches:
                 return web.json_response({"error": "Run ID belongs to a different submission"}, status=409)
             return web.json_response({"run_id": rid, "status_url": f"/api/workflows/runs/{rid}"}, status=202)

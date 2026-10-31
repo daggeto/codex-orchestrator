@@ -8,7 +8,8 @@ from orchestrator.api.submissions import accept
 from orchestrator.workflows.merge_request import (
     CreateMergeRequestStep, PrepareMergeRequestStep, PrepareWorktreeStep, _run,
 )
-from orchestrator.workflows.steps import AssignStep, ReviewStep
+from orchestrator.workflows.builtins import feature_workflow
+from orchestrator.workflows.steps import AssignStep
 
 
 class WorktreeTests(unittest.IsolatedAsyncioTestCase):
@@ -50,10 +51,12 @@ class WorktreeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.output['task_commit'], await _run(checkout, 'git', 'rev-parse', 'HEAD'))
         self.assertIn(checkout, agent.send_message.call_args.args[1])
         agent.send_message.return_value.full_text = 'APPROVED'
-        result = await ReviewStep('review', role='reviewer', review_template='{source}').execute(self.ctx)
+        self.ctx.variables.update(plan='Fix plan', implementation='Committed', implementation_files=['file'])
+        result = await feature_workflow().get_step('review').execute(self.ctx)
         self.assertTrue(result.success)
         self.assertEqual(result.output['review_commit'], await _run(checkout, 'git', 'rev-parse', 'HEAD'))
         self.assertEqual(agent.start_thread.call_args.kwargs['cwd'], checkout)
+        self.assertIn(f"git diff {self.ctx.variables['task_baseline']}..HEAD", agent.send_message.call_args.args[1])
         self.assertEqual(await _run(self.root, 'git', 'branch', '--show-current'), 'main')
 
     async def test_existing_request_keeps_publication_branch(self):
@@ -66,7 +69,7 @@ class WorktreeTests(unittest.IsolatedAsyncioTestCase):
                 pushes.append((cwd, args[-1]))
                 return ''
             if args[:2] == ('git', 'fetch'):
-                await real_run(cwd, 'git', 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+                await real_run(cwd, 'git', 'update-ref', 'refs/remotes/origin/release', 'HEAD')
                 return ''
             return await real_run(cwd, *args)
 
@@ -74,7 +77,7 @@ class WorktreeTests(unittest.IsolatedAsyncioTestCase):
         with patch('orchestrator.workflows.merge_request._run', run), \
              patch('orchestrator.workflows.merge_request.shutil.which', return_value='/bin/gh'), \
              patch('orchestrator.workflows.merge_request._open_requests', AsyncMock(return_value=[
-                 {'url': 'https://github.com/example/repo/pull/1', 'base': 'main', 'branch': 'main'}])):
+                 {'url': 'https://github.com/example/repo/pull/1', 'base': 'release', 'branch': 'main'}])):
             result = await PrepareMergeRequestStep('prepare').execute(self.ctx)
         self.assertTrue(result.success, result.error)
         self.assertEqual(result.output['mr_branch'], 'main')
@@ -82,13 +85,27 @@ class WorktreeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.output['mr_repo'], self.ctx.variables['cwd'])
         self.assertEqual(await _run(self.root, 'git', 'branch', '--show-current'), 'main')
         self.ctx.variables.update(result.output)
+        self.ctx.variables.update(plan='Fix plan', implementation='Committed', implementation_files=['file'])
+        agent = SimpleNamespace(start_thread=AsyncMock(return_value=SimpleNamespace(thread_id='review-thread')),
+                                send_message=AsyncMock(return_value=SimpleNamespace(ok=True, full_text='APPROVED')))
+        self.ctx.get_agent_for_role = lambda role: agent
+        self.ctx.get_or_create_thread = lambda agent, step: None
+        self.ctx.set_thread = lambda *args: None
+        review = await feature_workflow().get_step('review').execute(self.ctx)
+        self.assertTrue(review.success, review.error)
+        prompt = agent.send_message.call_args.args[1]
+        self.assertIn('Selected PR/MR: https://github.com/example/repo/pull/1', prompt)
+        self.assertIn('Publication source branch: main', prompt)
+        self.assertIn('Task checkout branch: orch/task-test', prompt)
+        self.assertIn('Selected target branch: release', prompt)
+        self.assertIn('git diff origin/release...HEAD', prompt)
         checkout = result.output['mr_repo']
         Path(checkout, 'file').write_text('implementation')
         await _run(checkout, 'git', 'commit', '-am', 'implementation')
         self.ctx.variables.update(review_decision='approved', review_commit=await _run(checkout, 'git', 'rev-parse', 'HEAD'))
         with patch('orchestrator.workflows.merge_request._run', run), \
              patch('orchestrator.workflows.merge_request._open_requests', AsyncMock(return_value=[
-                 {'url': 'https://github.com/example/repo/pull/1', 'base': 'main', 'branch': 'main'}])):
+                 {'url': 'https://github.com/example/repo/pull/1', 'base': 'release', 'branch': 'main'}])):
             published = await CreateMergeRequestStep('publish').execute(self.ctx)
         self.assertTrue(published.success, published.error)
         self.assertEqual(pushes, [(checkout, 'HEAD:refs/heads/main')])
@@ -159,3 +176,23 @@ class RetryTests(unittest.IsolatedAsyncioTestCase):
         self.directory.rmdir()
         self.assertEqual((await accept(self.request)).status, 400)
         self.store.reserve_workflow_run.assert_not_awaited()
+
+    async def test_normalized_retries_survive_removed_directory(self):
+        self.variables['cwd'] = str(self.directory) + '/'
+        await self.save_acceptance()
+        self.directory.rmdir()
+        self.store.list_projects.reset_mock()
+        for path in (str(self.directory), str(self.directory) + '/.', str(self.directory) + '/../project'):
+            with self.subTest(path=path):
+                self.variables['cwd'] = path
+                self.assertEqual((await accept(self.request)).status, 202)
+        self.store.list_projects.assert_not_awaited()
+        self.assertEqual(self.store.reserve_workflow_run.await_count, 1)
+        self.variables['task_description'] = 'Different task'
+        self.assertEqual((await accept(self.request)).status, 409)
+
+    async def test_normalized_retry_does_not_check_access(self):
+        await self.save_acceptance()
+        self.variables['cwd'] = str(self.directory) + '/'
+        with patch('orchestrator.api.projects.os.access', return_value=False):
+            self.assertEqual((await accept(self.request)).status, 202)

@@ -93,6 +93,7 @@ COMMANDS = (
             "pr-completion automatically starts/reuses implementer and reviewer, publishes committed changes, "
             "and monitors/repairs CI. feature can also create a draft PR/MR. feature, bugfix, and pr-completion "
             "create an isolated task worktree shared by implementation, review, QA, and publication. "
+            "Review uses the selected publication target even when the task branch differs. "
             "Existing PR/MR source branches are preserved when publishing from the task checkout. "
             "Worktrees are retained for inspection and resume. See docs/pr-completion.md for its inputs.",
             ("""make workflow-run ARGS='feature -v task_description="Add OAuth login" --cwd /path/to/repo -v mr_base=main'""",
