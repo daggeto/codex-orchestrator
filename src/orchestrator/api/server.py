@@ -47,6 +47,7 @@ def create_app(orch: Orchestrator) -> web.Application:
     app.router.add_get("/api/workflows", list_workflows)
     app.router.add_get("/api/workflows/runs", list_workflow_runs)
     app.router.add_get("/api/workflows/runs/{run_id}", submissions.get_run)
+    app.router.add_post("/api/workflows/runs/{run_id}/continue", submissions.continue_run)
     app.router.add_post("/api/workflows/{name}/submit", submissions.submit)
     app.router.add_post("/api/workflows/{name}/run", run_workflow)
     app.router.add_get("/api/events", event_stream)

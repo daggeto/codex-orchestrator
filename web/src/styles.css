@@ -14,6 +14,12 @@ button:focus-visible, summary:focus-visible, .events:focus-visible { outline: 2p
 .row { display: block; width: 100%; margin: 6px 0; overflow-wrap: anywhere; }
 .row span, .row small { display: block; margin-top: 5px; }
 .selected { border-color: #75b8ff; background: #293e50; }
+.workflow-run { margin-bottom: 12px; }
+.restart-run { padding: 0 8px 8px; font-size: 13px; }
+.restart-run > summary { margin-top: 0; color: #bbdcfa; }
+.restart-run .restart-task { white-space: pre-wrap; }
+.restart-run .error[role=alert] { margin: 10px 0; }
+.restart-run button:disabled { opacity: .5; cursor: default; }
 .muted, time, small { color: #a9b6c4; }
 .error, .disconnected { color: #ffaaa6; }
 .error[role=alert] { margin: 14px 24px; }

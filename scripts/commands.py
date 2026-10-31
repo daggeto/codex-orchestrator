@@ -95,7 +95,7 @@ COMMANDS = (
             "create an isolated task worktree shared by implementation, review, QA, and publication. "
             "Review uses the selected publication target even when the task branch differs. "
             "Existing PR/MR source branches are preserved when publishing from the task checkout. "
-            "Worktrees are retained for inspection and resume. See docs/pr-completion.md for its inputs.",
+            "Worktrees are retained for inspection and resume. In the web monitor, Continue workflow retries the unfinished step using saved outputs and threads; Restart run starts over. At its step budget the run pauses; Continue workflow can explicitly approve 20 more steps, including for older limit-failed runs with checkpoints. Continuation may publish when publication was enabled in the original inputs. See docs/pr-completion.md for its inputs.",
             ("""make workflow-run ARGS='feature -v task_description="Add OAuth login" --cwd /path/to/repo -v mr_base=main'""",
              """make workflow-run ARGS='pr-completion --cwd /path/to/repo --roles-dir ./roles -v required_checks=Vercel'""")),
     Command("workflow-show", "Show a saved workflow phase and complete CI report.", "orch", ("workflow", "show"),

@@ -223,6 +223,17 @@ class StateStore:
 
     # ── Agents ──────────────────────────────────────────────────────────
 
+    async def claim_workflow_continuation(self, rec: WorkflowRunRecord) -> bool:
+        """Compare-and-set prevents concurrent requests from resuming twice."""
+        cur = await self._db.execute(
+            """UPDATE workflow_runs SET status='accepted', state_json=?, config_json=?,
+               completed_at=NULL, updated_at=? WHERE run_id=? AND updated_at=?
+               AND status IN ('failed', 'interrupted', 'cancelled', 'paused')""",
+            (json.dumps(rec.state), json.dumps(rec.config), _now(), rec.run_id, rec.updated_at),
+        )
+        await self._db.commit()
+        return cur.rowcount == 1
+
     async def save_agent(self, rec: AgentRecord):
         await self._db.execute(
             """INSERT OR REPLACE INTO agents

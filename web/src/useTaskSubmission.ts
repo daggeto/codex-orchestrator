@@ -3,7 +3,7 @@ import { ApiError, get, post } from './api';
 import type { TaskSubmission, WorkflowRun } from './types';
 
 const storageKey = 'orchestrator.task.v1';
-export const terminalRun = (run?: WorkflowRun) => !!run && ['completed', 'failed', 'cancelled', 'interrupted'].includes(run.status);
+export const terminalRun = (run?: WorkflowRun) => !!run && ['completed', 'failed', 'cancelled', 'interrupted', 'paused'].includes(run.status);
 function restore(): TaskSubmission | null {
   try {
     const value = JSON.parse(localStorage.getItem(storageKey) || 'null');

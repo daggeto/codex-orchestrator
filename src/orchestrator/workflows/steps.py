@@ -68,11 +68,7 @@ class AssignStep(Step):
             )
         cwd = self.cwd.format(**ctx.variables) if self.cwd else ctx.variables.get("cwd")
 
-        thread = ctx.get_or_create_thread(agent, self.step_id)
-        if not thread:
-            thread_info = await agent.start_thread(cwd=cwd, model=self.model)
-            ctx.set_thread(agent, self.step_id, thread_info.thread_id)
-            thread = thread_info.thread_id
+        thread = await ctx.acquire_thread(agent, self.step_id, cwd=cwd, model=self.model)
 
         result = await agent.send_message(thread, message, model=self.model)
 
@@ -133,11 +129,7 @@ class ReviewStep(Step):
         source = ctx.variables.get(self.source_key, "")
         message = self.review_template.format(**{**ctx.variables, "source": source})
 
-        thread = ctx.get_or_create_thread(agent, self.step_id)
-        if not thread:
-            thread_info = await agent.start_thread(cwd=ctx.variables.get("cwd"))
-            ctx.set_thread(agent, self.step_id, thread_info.thread_id)
-            thread = thread_info.thread_id
+        thread = await ctx.acquire_thread(agent, self.step_id, cwd=ctx.variables.get("cwd"))
 
         reviewed = {}
         if ctx.variables.get("task_worktree"):

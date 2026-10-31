@@ -331,6 +331,46 @@ restart marks unfinished web submissions interrupted, retaining saved progress;
 it does not automatically replay steps. Inspect progress before starting a new
 task. Older runs remain accessible in Monitor or by individual run API lookup.
 
+Stopped runs in Monitor offer **Continue workflow** alongside **Restart run**.
+Continue retries the unfinished step in the same run, retaining saved outputs,
+branch, workspace, and agent threads. Completed top-level steps are skipped;
+an unfinished step (including its nested steps) may repeat partial actions.
+Restore the Codex allowance before continuing after a usage limit. Continuation
+preserves the original publication policy, so it can push or publish if enabled.
+Restart starts a new workflow from the beginning using its original inputs.
+
+The engine checkpoints outputs and the next step together, and saves thread
+identity before sending an agent request. Continuation uses
+`POST /api/workflows/runs/{run_id}/continue` with a client-generated `request_id`.
+Repeating the same request ID returns the original acceptance without executing
+again. Concurrent different requests cannot claim the same stopped run. Previous
+errors and continuation requests remain in the run's `state.continuations`.
+No database migration is required. Checkpoints are saved in the existing state.
+
+Workflows pause when their step budget is reached. In Monitor, choose
+**Allow 20 more steps and continue** to approve another block of 20. Each approval
+is persisted with the continuation request; retries do not grant extra steps.
+Existing limit-failed runs with saved checkpoints can use the same action. API
+clients must send `additional_steps: 20` with the continuation request when the
+budget is exhausted. Pausing preserves the next step and conversation history.
+
+Continuation rejects changed workflow definitions,
+missing workspaces, and changed task branches. Saved Codex threads are resumed;
+if unavailable, the step fails visibly rather than dropping conversation history.
+Other backends require their saved conversation to remain in the running agent.
+Older failed runs may continue at their recorded failed step using saved outputs,
+but have no saved agent-thread checkpoint and start a new conversation. Older
+interrupted runs and preparation failures without a reliable checkpoint must be
+inspected and restarted instead. A step's external side effects and its checkpoint
+cannot be committed atomically, so inspect partial changes before retrying.
+
+Manual acceptance: interrupt a feature run during implementation or let an agent
+hit its usage limit. Restore allowance, choose Continue workflow, and verify the
+same run, task branch, and workspace proceed from implementation without planning
+again. Repeat after restarting the service to check saved Codex thread recovery.
+Retry a continuation request with the same ID to confirm it does not start another
+execution. Check that a completed run cannot continue and Restart still starts over.
+
 The compact layout was source-reviewed against baseline `054b310`, including
 stable composer identity, separate task and agent forms, and keyboard-accessible
 disclosures and role tooltips. Runtime acceptance remains unverified.

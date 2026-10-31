@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -27,7 +29,31 @@ class WorkflowContext:
     store: StateStore
     bus: EventBus
     variables: dict[str, Any] = field(default_factory=dict)
-    _threads: dict[str, str] = field(default_factory=dict)  # "agent_id:step_id" -> thread_id
+    _threads: dict[str, str] = field(default_factory=dict)  # "role:backend:step_id" -> thread_id
+    _attached: set[str] = field(default_factory=set)
+
+    async def persist(self):
+        record = await self.store.get_workflow_run(self.run_id)
+        if record and record.state.get("checkpoint"):
+            record.state["checkpoint"].update(variables=self.variables, threads=self._threads)
+            await self.store.save_workflow_run(record)
+
+    async def acquire_thread(self, agent, step_id, cwd=None, model=None):
+        # Role identity survives replacement of a stopped backend process.
+        key = f"{agent.role.name}:{agent.role.backend}:{step_id}"
+        thread = self._threads.get(key)
+        if thread and key not in self._attached:
+            if agent.role.backend != "codex" and agent._get_thread(thread) is None:
+                raise ValueError("This backend cannot safely restore the saved conversation after restart")
+            info = await agent.resume_thread(thread)
+            info.cwd = cwd
+        elif not thread:
+            info = await agent.start_thread(cwd=cwd, model=model)
+            thread = info.thread_id
+            self._threads[key] = thread
+        self._attached.add(key)
+        await self.persist()
+        return thread
 
     def get_agent_for_role(self, role_name: str) -> Agent | None:
         agents = self.registry.get_agents_by_role(role_name)
@@ -35,11 +61,11 @@ class WorkflowContext:
         return running[0] if running else None
 
     def get_or_create_thread(self, agent: Agent, step_id: str) -> str | None:
-        key = f"{agent.agent_id}:{step_id}"
+        key = f"{agent.role.name}:{agent.role.backend}:{step_id}"
         return self._threads.get(key)
 
     def set_thread(self, agent: Agent, step_id: str, thread_id: str):
-        key = f"{agent.agent_id}:{step_id}"
+        key = f"{agent.role.name}:{agent.role.backend}:{step_id}"
         self._threads[key] = thread_id
 
 
@@ -51,7 +77,7 @@ class Workflow:
     description: str = ""
     steps: list[Step] = field(default_factory=list)
     initial_variables: dict[str, Any] = field(default_factory=dict)
-    max_iterations: int = 20  # safety limit for loops
+    max_iterations: int = 20  # initial step budget; extensions require approval
 
     publication_policy: str = "none"
 
@@ -80,6 +106,44 @@ class Workflow:
                 return s
         return None
 
+    @property
+    def signature(self) -> str:
+        def describe(value):
+            if isinstance(value, Step):
+                return {"type": type(value).__name__, "options": describe(vars(value))}
+            if isinstance(value, dict):
+                return {k: describe(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [describe(v) for v in value]
+            return value
+        return hashlib.sha256(json.dumps(describe(self.steps), sort_keys=True).encode()).hexdigest()
+
+
+def continuation_checkpoint(workflow, record):
+    """Validate saved progress without executing or reserving any work."""
+    checkpoint = record.state.get("checkpoint")
+    if checkpoint is None:
+        # Old failed runs persisted outputs after each step, but not threads.
+        # Interrupted old runs have no authoritative last successful boundary.
+        step = record.state.get("current_step")
+        saved = record.state.get("final_variables") or record.state.get("variables")
+        if (record.status != "failed" or not step or not isinstance(saved, dict)
+                or not str(record.state.get("error", "")).startswith(f"Step {step} failed:")):
+            raise ValueError("This older run has no reliable checkpoint; restart it instead")
+        if step.startswith("prepare"):
+            raise ValueError("This older run stopped during preparation; inspect its files and restart")
+        checkpoint = {"next_step": step, "variables": saved, "threads": {},
+                      "iteration": max(0, record.state.get("iteration", 1) - 1)}
+    if record.config.get("workflow_signature", workflow.signature) != workflow.signature:
+        raise ValueError("Workflow definition changed since this run; restart it instead")
+    checkpoint = dict(checkpoint)
+    step = checkpoint.get("next_step")
+    if step != "__end__" and not workflow.get_step(step):
+        raise ValueError("The saved step is unavailable in this workflow")
+    if not isinstance(checkpoint.get("variables"), dict):
+        raise ValueError("The saved checkpoint has no workflow variables")
+    return checkpoint
+
 
 class WorkflowEngine:
     """Executes workflows using the agent registry."""
@@ -95,8 +159,10 @@ class WorkflowEngine:
         workflow: Workflow,
         variables: dict[str, Any] | None = None,
         run_id: str | None = None,
-        *, accepted: bool = False,
+        *, accepted: bool = False, continuing: bool = False,
     ) -> WorkflowResult:
+        if continuing and not accepted:
+            raise ValueError("Continuation requires an accepted, reserved run")
         rid = run_id or uuid.uuid4().hex[:16]
         merged_vars = {**workflow.initial_variables, **(variables or {})}
 
@@ -120,23 +186,37 @@ class WorkflowEngine:
             )
             if not await self._store.reserve_workflow_run(record):
                 raise ValueError("Workflow run ID already exists")
+        if continuing:
+            checkpoint = continuation_checkpoint(workflow, record)
+            ctx.variables = dict(checkpoint["variables"])
+            ctx._threads = dict(checkpoint.get("threads", {}))
+        else:
+            checkpoint = {"next_step": workflow.steps[0].step_id if workflow.steps else "__end__",
+                          "iteration": 0, "variables": ctx.variables, "threads": {}}
+        record.config["workflow_signature"] = workflow.signature
+        record.state["checkpoint"] = checkpoint
         record.status = "running"
+        record.completed_at = None
         record.state.update(phase="executing", required_roles=workflow.required_roles)
         await self._store.save_workflow_run(record)
         self._active_runs[rid] = ctx
 
         step_results: list[tuple[str, StepResult]] = []
         error: str | None = None
+        paused = False
+        iteration_limit = record.config.setdefault("iteration_limit", workflow.max_iterations)
 
         try:
             await self._bus.publish("workflow.started", {
                 "run_id": rid, "workflow": workflow.name,
             }, source="engine")
             # Execute steps with branching support
-            current_idx = 0
-            iterations = 0
+            next_step = checkpoint["next_step"]
+            current_idx = (len(workflow.steps) if next_step == "__end__" else
+                           workflow.steps.index(workflow.get_step(next_step)))
+            iterations = checkpoint["iteration"]
 
-            while current_idx < len(workflow.steps) and iterations < workflow.max_iterations:
+            while current_idx < len(workflow.steps) and iterations < iteration_limit:
                 iterations += 1
                 step = workflow.steps[current_idx]
 
@@ -152,43 +232,47 @@ class WorkflowEngine:
                 step_results.append((step.step_id, result))
                 ctx.variables.update(result.output)
 
-                # Persist step result
-                record.state.update({
-                    "current_step": step.step_id,
-                    "iteration": iterations,
-                    "variables": ctx.variables,
-                })
-                await self._store.save_workflow_run(record)
+                if result.success:
+                    if result.next_step == "__end__":
+                        current_idx = len(workflow.steps)
+                    elif result.next_step:
+                        target = workflow.get_step(result.next_step)
+                        if target is None:
+                            error = f"Branch target '{result.next_step}' not found"
+                        else:
+                            current_idx = workflow.steps.index(target)
+                    else:
+                        current_idx += 1
+                else:
+                    error = f"Step {step.step_id} failed: {result.error}"
 
+                # Outputs and the next execution boundary are one durable write.
+                # Never mark a successful step saved while still pointing at it.
+                record.state.update(current_step=step.step_id, iteration=iterations,
+                                    variables=ctx.variables)
+                record.state["checkpoint"].update(
+                    next_step=(step.step_id if error else
+                               workflow.steps[current_idx].step_id if current_idx < len(workflow.steps) else "__end__"),
+                    iteration=iterations - 1 if error else iterations,
+                    variables=ctx.variables, threads=ctx._threads,
+                )
+                await self._store.save_workflow_run(record)
                 await self._bus.publish("workflow.step.completed", {
                     "run_id": rid, "step_id": step.step_id,
                     "success": result.success, "output_keys": list(result.output.keys()),
                 }, source="engine")
-
-                if not result.success:
-                    error = f"Step {step.step_id} failed: {result.error}"
+                if error:
                     logger.error("Workflow %s: %s", rid[:8], error)
                     break
 
-                # Handle branching
-                if result.next_step:
-                    target = workflow.get_step(result.next_step)
-                    if target:
-                        target_idx = workflow.steps.index(target)
-                        current_idx = target_idx
-                        logger.info("Workflow %s: branching to step %s", rid[:8], result.next_step)
-                    else:
-                        if result.next_step == "__end__":
-                            break
-                        error = f"Branch target '{result.next_step}' not found"
-                        break
-                else:
-                    current_idx += 1
-
-            if iterations >= workflow.max_iterations:
-                error = f"Workflow exceeded max iterations ({workflow.max_iterations})"
+            if not error and iterations >= iteration_limit and current_idx < len(workflow.steps):
+                paused = True
+                error = (f"Step budget reached ({iteration_limit}). "
+                         "Allow 20 more steps to continue from the saved checkpoint.")
 
         except asyncio.CancelledError:
+            await ctx.persist()
+            record = await self._store.get_workflow_run(rid) or record
             record.status = "interrupted"
             record.state.update(phase="interrupted", error="Service stopped during execution")
             record.state["final_variables"] = ctx.variables
@@ -203,13 +287,15 @@ class WorkflowEngine:
             del self._active_runs[rid]
 
         success = error is None
-        record.status = "completed" if success else "failed"
-        record.state.update(phase=record.status, error=error)
-        record.completed_at = datetime.now(timezone.utc).isoformat()
+        await ctx.persist()
+        record = await self._store.get_workflow_run(rid) or record
+        record.status = "paused" if paused else "completed" if success else "failed"
+        record.state.update(phase="waiting_for_step_budget" if paused else record.status, error=error)
+        record.completed_at = None if paused else datetime.now(timezone.utc).isoformat()
         record.state["final_variables"] = ctx.variables
         await self._store.save_workflow_run(record)
 
-        await self._bus.publish("workflow.completed", {
+        await self._bus.publish("workflow.paused" if paused else "workflow.completed", {
             "run_id": rid, "workflow": workflow.name,
             "success": success, "error": error,
         }, source="engine")
