@@ -14,19 +14,37 @@ from typing import Any
 from aiohttp import web
 
 from orchestrator.core import Orchestrator
-from orchestrator.api import projects, submissions
+from orchestrator.api import projects, submissions, tasks, workspaces, filesystem
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
 
+@web.middleware
+async def local_mutations(request, handler):
+    if request.method not in {'GET', 'HEAD', 'OPTIONS'}:
+        host = urlsplit('http://' + request.host).hostname
+        if host not in {'localhost', '127.0.0.1', '::1'}:
+            raise web.HTTPForbidden(text='Local Host required')
+        origin = request.headers.get('Origin')
+        allowed = set(request.app['orch'].config.browser_origins)
+        allowed.add(f'{request.scheme}://{request.host}')
+        if origin and origin not in allowed:
+            raise web.HTTPForbidden(text='Untrusted browser Origin')
+    return await handler(request)
+
+
 def create_app(orch: Orchestrator) -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[tasks.errors, local_mutations])
     app["orch"] = orch
     app["submitted_tasks"] = set()
     app["submitted_run_ids"] = set()
     app.on_startup.append(submissions.recover_submissions)
     app.on_shutdown.append(_stop_submitted_tasks)
 
+    tasks.register(app)
+    workspaces.register(app)
+    app.router.add_get('/api/filesystem/directories', filesystem.directories)
     app.router.add_get("/health", health)
     app.router.add_get("/api/session", session_info)
     app.router.add_get("/api/projects", projects.list_projects)
@@ -76,12 +94,12 @@ def create_app(orch: Orchestrator) -> web.Application:
     app.router.add_get("/api/workspaces/{wt_id}/diff", workspace_diff)
     app.router.add_get("/api/workspaces/{wt_id}/log", workspace_log)
     app.router.add_post("/api/workspaces/{wt_id}/merge", merge_workspace)
-    app.router.add_delete("/api/workspaces/{wt_id}", cleanup_workspace)
 
     return app
 
 
 async def _stop_submitted_tasks(app: web.Application):
+    await app["orch"].tasks.shutdown()
     # Acceptance can enqueue execution during shutdown. Drain newly owned tasks
     # too, before the orchestrator closes its store.
     while app["submitted_tasks"]:

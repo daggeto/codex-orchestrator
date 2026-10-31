@@ -25,6 +25,8 @@ class OrchestratorConfig:
     api_host: str = "127.0.0.1"
     api_port: int = 8420
     log_level: str = "INFO"
+    browse_roots: list[str] = field(default_factory=list)
+    browser_origins: list[str] = field(default_factory=lambda: ['http://127.0.0.1:5173', 'http://localhost:5173', 'http://127.0.0.1:4173', 'http://localhost:4173'])
 
     def __post_init__(self):
         self.data_dir = Path(self.data_dir)

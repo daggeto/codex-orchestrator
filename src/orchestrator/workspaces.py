@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 import uuid
+import hashlib
 
 from orchestrator.state.models import now
 from orchestrator.workflows.merge_request import _run
@@ -46,17 +47,38 @@ class WorkspaceService:
                 await self.register(project['path'])
             except (OSError, RuntimeError, ValueError):
                 await self.store.write('UPDATE repositories SET available=0 WHERE main_path=?', (project['path'],))
-        # Only checkout paths actually stored by runs are evidence for ownership.
-        for run in await self.store.list_workflow_runs(200):
-            variables = {**run.config.get('variables', {}), **run.state.get('variables', {}), **run.state.get('final_variables', {})}
+        # Paths saved by a run establish task ownership. Role reuse alone never does.
+        for run in await self.store.rows('SELECT * FROM workflow_runs WHERE task_id IS NULL'):
+            variables = {**run['config'].get('variables', {}), **run['state'].get('variables', {}), **run['state'].get('final_variables', {})}
             path = variables.get('task_worktree') or variables.get('cwd')
-            if path and Path(path).is_dir():
+            if not path:
+                continue
+            if Path(path).is_dir():
                 try:
                     await self.register(path)
                 except (OSError, RuntimeError, ValueError):
                     continue
-            # Legacy runs remain readable through their existing API. No agent
-            # ownership is inferred from a globally reused role.
+            workspace = await self.store.one('SELECT * FROM workspaces WHERE path=?', (str(Path(path).resolve()),))
+            if not workspace:
+                continue
+            import json
+            tid = 'legacy-' + run['run_id']
+            prompt = variables.get('task_description') or run['workflow_name']
+            status = run['status'] if run['status'] in {'completed','failed','cancelled','interrupted'} else 'interrupted'
+            await self.store.write('INSERT OR IGNORE INTO tasks (task_id,workspace_id,title,prompt,kind,status,phase,settings_json,fingerprint,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                (tid, workspace['workspace_id'], prompt[:100], prompt, 'workflow', status, run['state'].get('phase', status),
+                 json.dumps({'workflow': run['workflow_name'], 'variables': variables, 'legacy': True}), '', run['created_at'], run['updated_at']))
+            await self.store.write('UPDATE workflow_runs SET task_id=? WHERE run_id=?', (tid, run['run_id']))
+            await self.store.write('UPDATE work_items SET task_id=? WHERE workflow_id=? AND task_id IS NULL', (tid, run['run_id']))
+        evidence = {}
+        for run in await self.store.rows('SELECT task_id,state_json FROM workflow_runs WHERE task_id IS NOT NULL'):
+            for aid in run['state'].get('team', {}).values():
+                evidence.setdefault(aid, set()).add(run['task_id'])
+        for aid, owners in evidence.items():
+            if len(owners) == 1:
+                tid = next(iter(owners))
+                await self.store.write('UPDATE agents SET task_id=? WHERE agent_id=? AND task_id IS NULL', (tid, aid))
+                await self.store.write('UPDATE threads SET task_id=? WHERE agent_id=? AND task_id IS NULL AND cwd=(SELECT path FROM workspaces JOIN tasks USING(workspace_id) WHERE task_id=?)', (tid, aid, tid))
         await self.store.write('DELETE FROM workspace_leases')
         await self.store.write("UPDATE tasks SET status='interrupted',phase='Service restarted; continue explicitly',updated_at=? WHERE status IN ('queued','active','waiting_input')", (now(),))
         await self.store.write("UPDATE input_requests SET status='expired',updated_at=? WHERE status='pending'", (now(),))
@@ -72,7 +94,7 @@ class WorkspaceService:
             if not Path(workspace['path']).is_dir():
                 raise RuntimeError('Workspace directory is unavailable')
             if workspace['kind'] == 'main' and isolate:
-                wt = await self.orch.workspace.create_worktree(workspace['path'], task_id, task_id)
+                wt = await self.orch.workspace.create_worktree(workspace['path'], hashlib.sha256(task_id.encode()).hexdigest()[:16], hashlib.sha256(task_id.encode()).hexdigest()[:16])
                 await self.register(wt.worktree_path)
                 workspace = await self.store.one('SELECT * FROM workspaces WHERE path=?', (wt.worktree_path,))
                 await self.store.write('UPDATE tasks SET workspace_id=?,updated_at=? WHERE task_id=?', (workspace['workspace_id'], now(), task_id))

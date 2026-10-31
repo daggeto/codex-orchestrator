@@ -38,7 +38,7 @@ class ClaudeSession:
         self.cwd = cwd
         self.role = role
         self._claude_bin = claude_bin
-        self._resume_id = resume_id or thread_id
+        self._resume_id = resume_id
         self._proc: asyncio.subprocess.Process | None = None
         self._turn_active = False
 
@@ -63,7 +63,10 @@ class ClaudeSession:
             cmd.append(flag)
 
         # Resume from previous session
-        cmd.extend(["--resume", self._resume_id])
+        if self._resume_id:
+            cmd.extend(["--resume", self._resume_id])
+        else:
+            cmd.extend(["--session-id", self.thread_id])
 
         cmd.extend(["--print", message])
 
@@ -173,6 +176,11 @@ class ClaudeSession:
     async def interrupt(self):
         if self._proc and self._proc.returncode is None:
             self._proc.send_signal(2)  # SIGINT
+            try:
+                await asyncio.wait_for(self._proc.wait(), 10)
+            except TimeoutError:
+                self._proc.kill()
+                await self._proc.wait()
 
 
 class ClaudeAgent(Agent):
@@ -220,7 +228,7 @@ class ClaudeAgent(Agent):
         model: str | None = None,
         thread_id: str | None = None,
     ) -> ThreadInfo:
-        tid = thread_id or uuid.uuid4().hex
+        tid = thread_id or str(uuid.uuid4())
 
         effective_role = self.role
         if model:
@@ -248,14 +256,15 @@ class ClaudeAgent(Agent):
 
     async def resume_thread(self, thread_id: str) -> ThreadInfo:
         existing = self._get_thread(thread_id)
-        if existing:
+        if existing and thread_id in self._sessions:
             return existing
+        saved = await self.store.get_thread(thread_id) if getattr(self, 'store', None) else None
         session = ClaudeSession(
             thread_id=thread_id,
-            cwd=None,
+            cwd=saved.cwd if saved else None,
             role=self.role,
             claude_bin=self._claude_bin,
-            resume_id=thread_id,
+            resume_id=saved.metadata.get("session_id", thread_id) if saved else thread_id,
         )
         self._sessions[thread_id] = session
         info = ThreadInfo(thread_id=thread_id, agent_id=self.agent_id)

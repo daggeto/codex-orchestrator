@@ -22,26 +22,52 @@ def observed_stream(method):
     """Observe turns without awaiting observers or changing backend events."""
     @wraps(method)
     async def wrapped(self, thread_id, message, model=None):
+        from orchestrator.state.store import ThreadRecord
+        import json
         self._begin_activity(thread_id, message)
+        turn_id = uuid.uuid4().hex
+        pending = []
+        store = getattr(self, 'store', None)
+        async def record(kind, payload, item_id=None):
+            if store:
+                pending.append((getattr(self, 'task_id', None), self.agent_id, thread_id, turn_id, item_id,
+                                kind, json.dumps(payload), datetime.now(timezone.utc).isoformat()))
+                if len(pending) >= 32 or kind in {'item/completed','turn/completed','user','error','turn/ended'}:
+                    await store.append_events(pending)
+                    pending.clear()
+        if store:
+            info = self._get_thread(thread_id)
+            saved = await store.get_thread(thread_id)
+            await store.save_thread(ThreadRecord(thread_id=thread_id, agent_id=self.agent_id,
+                                                 cwd=info.cwd if info else None, model=self.role.model, metadata=saved.metadata if saved else {}))
+            await store.write('UPDATE threads SET task_id=? WHERE thread_id=?', (getattr(self, 'task_id', None), thread_id))
+        await record('user', {'text': message})
         stream = method(self, thread_id, message, model)
         completed = False
         try:
             async for event in stream:
+                await record(event.method, event.params, event.item_id or (event.params.get('item') or {}).get('id'))
+                if store and event.params.get('session_id'):
+                    await store.write('UPDATE threads SET metadata_json=? WHERE thread_id=?',
+                                      (json.dumps({'session_id': event.params['session_id']}), thread_id))
                 self._observe_event(thread_id, event)
                 completed = completed or event.is_turn_completed
                 yield event
             if not completed:
                 self._activity_error = "Turn ended without completion (possibly timed out)"
-        except asyncio.CancelledError:
-            raise
-        except GeneratorExit:
+        except (asyncio.CancelledError, GeneratorExit):
+            self._activity_error = 'Turn interrupted'
             raise
         except Exception as exc:
             self._activity_error = str(exc)
+            await record('error', {'message': str(exc)})
             raise
         finally:
             try:
                 await stream.aclose()
+                await record('turn/ended', {'completed': completed, 'error': self._activity_error})
+                if pending and store:
+                    await store.append_events(pending)
             finally:
                 self._active_turns.pop(thread_id, None)
                 self._notify_observer("agent.activity", {"activity": self.activity})

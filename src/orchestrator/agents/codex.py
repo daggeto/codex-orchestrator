@@ -276,6 +276,18 @@ class CodexAgent(Agent):
             "item/toolRequestUserInput",
         )
 
+        if req.method == "item/toolRequestUserInput" and getattr(self, 'input_handler', None):
+            try:
+                answer = await self.input_handler(getattr(self, 'task_id', None),
+                    json.dumps(req.params.get('questions', [])), kind='backend_input', agent_id=self.agent_id,
+                    options=req.params.get('questions', []))
+                if not isinstance(answer, dict):
+                    answer = {'answers': {q['id']: {'answers': [str(answer)]} for q in req.params.get('questions', [])}}
+                await self._send_raw({'id': req.id, 'result': answer})
+            except (TimeoutError, asyncio.CancelledError):
+                await self._send_raw({'id': req.id, 'error': {'code': -32000, 'message': 'Input expired'}})
+            return
+
         if is_approval:
             decision = self._resolve_approval(req)
             response = {"id": req.id, "result": {"decision": decision}}
@@ -375,8 +387,10 @@ class CodexAgent(Agent):
 
     async def resume_thread(self, thread_id: str) -> ThreadInfo:
         self._event_queues.setdefault(thread_id, asyncio.Queue(maxsize=50000))
+        saved = await self.store.get_thread(thread_id) if getattr(self, 'store', None) else None
         await self._request("thread/resume", {"threadId": thread_id})
-        info = ThreadInfo(thread_id=thread_id, agent_id=self.agent_id)
+        self._event_queues[thread_id] = asyncio.Queue(maxsize=50000)
+        info = ThreadInfo(thread_id=thread_id, agent_id=self.agent_id, cwd=saved.cwd if saved else None)
         self._register_thread(info)
         return info
 

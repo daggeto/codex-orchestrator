@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from dataclasses import asdict
+from copy import deepcopy
 from typing import Any
 
 from orchestrator.agents.base import Agent, AgentStatus, HealthStatus
@@ -73,10 +75,12 @@ class AgentRegistry:
         self,
         role: RoleConfig,
         agent_id: str | None = None,
+        task_id: str | None = None,
+        persist: bool = True,
     ) -> Agent:
         aid = agent_id or uuid.uuid4().hex[:16]
 
-        if len(self._agents) >= self._config.max_agents:
+        if self.live_count >= self._config.max_agents:
             raise RuntimeError(f"Maximum agents ({self._config.max_agents}) reached")
 
         if role.backend == "codex":
@@ -87,6 +91,9 @@ class AgentRegistry:
         else:
             raise ValueError(f"Unknown backend: {role.backend}")
 
+        agent.task_id = task_id
+        agent.store = self._store
+        agent.input_handler = getattr(self, 'input_handler', None)
         agent.set_observer(self._observations)
         if self._observation_task is None or self._observation_task.done():
             self._observation_task = asyncio.create_task(self._forward_observations())
@@ -98,13 +105,12 @@ class AgentRegistry:
             backend=role.backend,
             port=getattr(agent, "port", None),
             status="stopped",
-            config={
-                "model": role.model,
-                "sandbox": role.sandbox,
-                "approval_policy": role.approval_policy,
-            },
+            config=asdict(deepcopy(role)),
         )
-        await self._store.save_agent(record)
+        if persist:
+            await self._store.save_agent(record)
+            await self._store.write('UPDATE agents SET task_id=? WHERE agent_id=?', (task_id, aid))
+
 
         await self._bus.publish("agent.created", {
             "agent_id": aid, "role": role.name, "backend": role.backend,
@@ -120,6 +126,10 @@ class AgentRegistry:
         if agent.status == AgentStatus.RUNNING:
             return
 
+        if self.live_count >= self._config.max_agents:
+            raise RuntimeError(f"Maximum agents ({self._config.max_agents}) reached")
+        if isinstance(agent, CodexAgent) and agent.port not in self._allocated_ports:
+            agent.port = self._allocate_port()
         try:
             await agent.start()
             await self._store.update_agent_status(
@@ -156,7 +166,7 @@ class AgentRegistry:
     async def destroy_agent(self, agent_id: str) -> None:
         if agent_id in self._agents:
             agent = self._agents[agent_id]
-            if agent.status == AgentStatus.RUNNING:
+            if agent.status != AgentStatus.STOPPED:
                 await self.stop_agent(agent_id)
             del self._agents[agent_id]
         await self._store.delete_agent(agent_id)
@@ -165,8 +175,8 @@ class AgentRegistry:
     def get_agent(self, agent_id: str) -> Agent | None:
         return self._agents.get(agent_id)
 
-    def get_agents_by_role(self, role_name: str) -> list[Agent]:
-        return [a for a in self._agents.values() if a.role.name == role_name]
+    def get_agents_by_role(self, role_name: str, task_id: str | None = None) -> list[Agent]:
+        return [a for a in self._agents.values() if a.role.name == role_name and getattr(a, "task_id", None) == task_id]
 
     def get_running_agents(self) -> list[Agent]:
         return [a for a in self._agents.values() if a.status == AgentStatus.RUNNING]
@@ -229,21 +239,21 @@ class AgentRegistry:
 
     async def restore(self, roles: dict[str, RoleConfig]) -> int:
         """Restore agents from database on startup. Returns count of restored agents."""
-        records = await self._store.list_agents()
-        restored = 0
-        for rec in records:
-            if rec.role not in roles:
-                logger.warning("Skipping agent %s: role '%s' not found", rec.agent_id, rec.role)
-                continue
-            role = roles[rec.role]
-            try:
-                agent = await self.create_agent(role, agent_id=rec.agent_id)
-                if rec.status in ("running", "degraded"):
-                    await self.start_agent(rec.agent_id)
-                    restored += 1
-            except Exception:
-                logger.exception("Failed to restore agent %s", rec.agent_id)
-        return restored
+        # Sessions are resumed explicitly, never replayed at service startup.
+        await self._store.write("UPDATE agents SET status='stopped',pid=NULL,ws_url=NULL")
+        return 0
+
+    @property
+    def live_count(self):
+        return sum(a.status in {AgentStatus.STARTING, AgentStatus.RUNNING, AgentStatus.DEGRADED, AgentStatus.STOPPING} for a in self._agents.values())
+
+    async def materialize(self, agent_id):
+        if agent_id in self._agents:
+            return self._agents[agent_id]
+        record = await self._store.one('SELECT * FROM agents WHERE agent_id=?', (agent_id,))
+        if not record or record['retired_at']:
+            raise ValueError('Agent is retired or unavailable')
+        return await self.create_agent(RoleConfig(**record['config']), agent_id, record['task_id'], persist=False)
 
     # ── Cleanup ─────────────────────────────────────────────────────────
 
@@ -253,7 +263,6 @@ class AgentRegistry:
         for agent_id in list(self._agents):
             try:
                 await self.stop_agent(agent_id)
-                await self.destroy_agent(agent_id)
             except Exception:
                 logger.exception("Error cleaning up agent %s", agent_id)
         self._agents.clear()

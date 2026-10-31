@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -227,38 +226,17 @@ class WorkspaceManager:
         return commit
 
     async def cleanup_worktree(self, worktree_id: str, delete_branch: bool = False):
-        """Remove a worktree and optionally its branch."""
+        """Archive before removal; branches and historical records are retained."""
         wt = self._active.get(worktree_id)
         if not wt:
-            return
-
-        # Remove the worktree
-        proc = await asyncio.create_subprocess_exec(
-            "git", "worktree", "remove", "--force", wt.worktree_path,
-            cwd=wt.repo_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await proc.communicate()
-
-        # Optionally delete the branch
-        if delete_branch:
-            proc = await asyncio.create_subprocess_exec(
-                "git", "branch", "-D", wt.branch,
-                cwd=wt.repo_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            await proc.communicate()
-
-        # Clean up directory if it still exists
-        wt_path = Path(wt.worktree_path)
-        if wt_path.exists():
-            shutil.rmtree(wt_path, ignore_errors=True)
-
-        wt.status = "abandoned"
-        del self._active[worktree_id]
-        logger.info("Cleaned up worktree %s", worktree_id)
+            raise KeyError(f"Worktree {worktree_id} not found")
+        service = getattr(self, 'archive_service', None)
+        if not service:
+            raise RuntimeError('Safe deletion requires the persistent archive service')
+        await service.orch.workspaces.register(wt.worktree_path)
+        workspace = await service.store.one('SELECT * FROM workspaces WHERE path=?', (wt.worktree_path,))
+        await service.archive_and_delete(workspace['workspace_id'])
+        self._active.pop(worktree_id, None)
 
     async def cleanup_all(self):
         """Clean up all worktrees."""

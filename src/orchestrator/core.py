@@ -53,6 +53,16 @@ class Orchestrator:
         self.audit: "AuditLog | None" = None
         self.roles: dict[str, RoleConfig] = {}
         self.workflows: dict[str, Workflow] = dict(BUILTIN_WORKFLOWS)
+        from orchestrator.workspaces import WorkspaceService
+        from orchestrator.tasks import TaskService
+        self.workspaces = WorkspaceService(self)
+        self.tasks = TaskService(self)
+        self.registry.input_handler = self.tasks.request_input
+        self.registry.task_service = self.tasks
+        self.hitl.task_service = self.tasks
+        from orchestrator.archives import ArchiveService
+        self.archives = ArchiveService(self)
+        self.workspace.archive_service = self.archives
         self._team_lock = asyncio.Lock()
         self._running = False
         self._shutdown_event = asyncio.Event()
@@ -61,6 +71,8 @@ class Orchestrator:
         """Initialize store, audit log, load roles, skills, optionally restore agents."""
         await self.store.init()
         await self.store.register_project(str(self.config.effective_project_dir.resolve()))
+
+        await self.workspaces.reconcile()
 
         # Init audit log on the same DB connection
         from orchestrator.audit import AuditLog
@@ -86,6 +98,7 @@ class Orchestrator:
         """Graceful shutdown."""
         self._running = False
         self._shutdown_event.set()
+        await self.tasks.shutdown()
         await self.registry.shutdown()
         # Don't auto-cleanup worktrees — they have uncommitted work
         # User should explicitly merge or abandon via CLI/API
@@ -129,12 +142,12 @@ class Orchestrator:
         await self.registry.start_agent(agent.agent_id)
         return agent.agent_id
 
-    async def spawn_team(self, role_names: list[str] | None = None) -> dict[str, str]:
+    async def spawn_team(self, role_names: list[str] | None = None, task_id=None, configurations=None) -> dict[str, str]:
         """Ensure each requested role has a started agent, reusing saved agents."""
         async with self._team_lock:
-            return await self._spawn_team(role_names)
+            return await self._spawn_team(role_names, task_id, configurations)
 
-    async def _spawn_team(self, role_names):
+    async def _spawn_team(self, role_names, task_id=None, configurations=None):
         if role_names is None:
             role_names = list(self.roles.keys())
         role_names = list(dict.fromkeys(role_names))
@@ -142,7 +155,7 @@ class Orchestrator:
         for name in role_names:
             if name not in self.roles:
                 raise ValueError(f"Unknown role: {name}. Available: {list(self.roles.keys())}")
-            agents = self.registry.get_agents_by_role(name)
+            agents = self.registry.get_agents_by_role(name, task_id)
             if agents:
                 existing[name] = next(
                     (a for a in agents if a.status in (AgentStatus.RUNNING, AgentStatus.DEGRADED)),
@@ -150,7 +163,7 @@ class Orchestrator:
                 )
 
         needed = len(role_names) - len(existing)
-        available = self.config.max_agents - len(self.registry.agents)
+        available = self.config.max_agents - self.registry.live_count
         if needed > available:
             raise RuntimeError(
                 f"Team needs {needed} new agent(s), but only {available} slot(s) "
@@ -166,7 +179,11 @@ class Orchestrator:
                     await self.registry.start_agent(agent.agent_id)
                 aid = agent.agent_id
             else:
-                aid = await self.spawn_agent(name)
+                from copy import deepcopy
+                role = RoleConfig(**configurations[name]) if configurations else deepcopy(self.roles[name])
+                agent = await self.registry.create_agent(role, task_id=task_id)
+                await self.registry.start_agent(agent.agent_id)
+                aid = agent.agent_id
             result[name] = aid
         return result
 
@@ -273,7 +290,21 @@ class Orchestrator:
         wf = self.workflows.get(workflow_name)
         if not wf:
             raise ValueError(f"Unknown workflow: {workflow_name}. Available: {list(self.workflows.keys())}")
-        return await self.engine.run(wf, variables=variables, run_id=run_id)
+        from orchestrator.workflows.engine import WorkflowResult
+        variables = dict(variables or {})
+        cwd = str(Path(variables.get('cwd') or self.config.effective_project_dir).resolve())
+        await self.workspaces.register(cwd)
+        workspace = await self.store.one('SELECT * FROM workspaces WHERE path=?', (cwd,))
+        task = await self.tasks.submit(workspace['workspace_id'], variables.get('task_description') or workflow_name,
+                                       settings={'workflow': workflow_name, 'variables': variables}, idempotency_key=run_id)
+        job = self.tasks.running.get(task['task_id'])
+        if job:
+            await asyncio.shield(job)
+        run = await self.store.one('SELECT * FROM workflow_runs WHERE task_id=?', (task['task_id'],))
+        latest = await self.store.task(task['task_id'])
+        return WorkflowResult(run_id=run['run_id'] if run else task['task_id'], success=latest['status']=='completed',
+                              outputs=run['state'].get('final_variables', {}) if run else {},
+                              error=None if latest['status']=='completed' else latest['phase'])
 
     # ── Direct Agent Interaction ────────────────────────────────────────
 
