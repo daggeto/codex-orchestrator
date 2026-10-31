@@ -256,8 +256,12 @@ See [GUIDE.md](GUIDE.md) for the full reference.
 ## Task home and local monitor
 
 The task home starts work on the orchestrator instance serving
-`http://127.0.0.1:8420`. Choose a workflow, inspect its actual required team,
-and select a registered server project before describing the task. Hover or
+`http://127.0.0.1:8420`. A centered chat surface combines the task composer,
+project and workflow controls, required team, run status, recovery actions, and
+optional agent conversations. Expand the project control to search or register
+a server folder; expand workflow options for its description and publication
+controls. A publication summary stays visible before submission. Configuration
+changes preserve the draft; **Start another task** resets the composer. Hover or
 focus a role chip to see its configured model and reasoning effort. Missing
 settings are explicitly labeled as backend defaults. Role discovery stays tied
 to the service configuration, independently of the selected task directory.
@@ -327,7 +331,12 @@ restart marks unfinished web submissions interrupted, retaining saved progress;
 it does not automatically replay steps. Inspect progress before starting a new
 task. Older runs remain accessible in Monitor or by individual run API lookup.
 
-The reusable Chat accepts typed messages and an async transport callback. It
+The compact layout was source-reviewed against baseline `054b310`, including
+stable composer identity, separate task and agent forms, and keyboard-accessible
+disclosures and role tooltips. Runtime acceptance remains unverified.
+
+The reusable Chat accepts typed messages, an async transport callback, optional
+toolbar and content slots, and input presentation options. It
 provides a labeled multiline input, transcript, loading, error, and disabled
 states. Agent conversations create an explicit persisted thread first using
 `POST /api/agents/{agent_id}/threads`, then reuse `thread_id` and `cwd` on the

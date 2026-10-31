@@ -43,7 +43,7 @@ export function AgentConversation({ cwd }: { cwd: string }) {
   }, [revision]);
   const agent = agents.find(item => item.agent_id === selected);
   return <section className="agent-conversation">
-    <div className="section-title"><h2>Continue with an agent</h2><button onClick={() => setRevision(value => value + 1)}>Refresh agents</button></div>
+    <div className="agent-refresh"><button type="button" onClick={() => setRevision(value => value + 1)}>Refresh agents</button></div>
     <p className="muted">Direct conversations use running agents and a separate thread for this project.</p>
     <label htmlFor="conversation-agent">Agent</label>
     <select id="conversation-agent" value={selected} onChange={event => setSelected(event.target.value)}>
