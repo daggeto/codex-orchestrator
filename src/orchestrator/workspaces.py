@@ -39,6 +39,7 @@ class WorkspaceService:
         root = Path(workspace['path']).resolve()
         task = await self.store.task(lease['task_id'])
         ids = {task['settings'].get('legacy_agent_id')} if task else set()
+        ids.update(agent['agent_id'] for agent in await self.store.task_agents(lease['task_id']))
         for thread in await self.store.rows('SELECT agent_id,cwd FROM threads WHERE cwd IS NOT NULL'):
             if Path(thread['cwd']).resolve().is_relative_to(root):
                 ids.add(thread['agent_id'])

@@ -313,7 +313,10 @@ Backend session retention and installed CLI credentials are still required.
 Legacy `make send`, `make agent-send`, `make supervised-send`, and `make skill-run`
 start the selected saved agent on demand inside a tracked task with a workspace
 lease. These commands require a Git checkout and reject unavailable workspaces.
-Task-owned agents use task messaging. Work-item assignments use the same task lifecycle.
+Task-owned agents use task messaging. Legacy task pages retain their agent and
+thread participation, show only that task’s transcript, and resume interrupted
+turns through the saved direct or supervised adapter. Work-item assignments use
+the actual saved turn outcome; failed turns leave the conversation open for retry.
 An agent owned by another live service must receive messages through that service.
 
 Feature tasks default to local edits and commits. **Create draft PR/MR** enables

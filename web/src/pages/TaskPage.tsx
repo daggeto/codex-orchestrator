@@ -35,7 +35,7 @@ export function TaskPage() {
     {pending_input.map(input => <PendingInput key={input.request_id} input={input} />)}
     <h2>Agents</h2><ul>{agents.map(agent => <li key={agent.agent_id}><Link to={`/agents/${agent.agent_id}`}>{agent.role}</Link> · {agent.status} · {agent.activity?.state}</li>)}</ul>
     {workflow && <><h2>{workflow.workflow_name}</h2><WorkflowTimeline steps={steps} /></>}
-    {task.kind === 'agent' && agents[0] && <AgentHistory key={agents[0].agent_id} agentId={agents[0].agent_id} />}
+    {task.kind === 'agent' && agents[0] && <AgentHistory key={`${task.task_id}:${agents[0].agent_id}`} agentId={agents[0].agent_id} taskId={task.task_id} />}
     {task.kind === 'agent' && task.status === 'cancelled' && <button onClick={() => void action('complete')}>Mark complete</button>}
     {task.kind === 'agent' && !closed && <><Chat label="Continue conversation" draftKey={`task:${task.task_id}`} messages={[]} disabled={busy} onSubmit={async message => { await post(`/api/tasks/${encodeURIComponent(task.task_id)}/messages`, { message }); }} />
       <button disabled={busy} onClick={() => void action('complete')}>Mark complete</button></>}

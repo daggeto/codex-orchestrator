@@ -245,19 +245,19 @@ class Orchestrator:
             await asyncio.shield(job)
         latest = await self.store.task(task['task_id'])
         agents = await self.store.rows('SELECT agent_id FROM agents WHERE task_id=? ORDER BY created_at', (task['task_id'],))
-        response = ''
         if agents:
             aid = agents[0]['agent_id']
             threads = await self.store.list_threads(aid)
             item.assigned_agent = aid
             item.assigned_thread = threads[-1].thread_id if threads else None
             await self.store.save_work_item(item)
-            events = await self.store.rows("SELECT payload_json FROM task_events WHERE agent_id=? AND kind='item/agentMessage/delta' ORDER BY id", (aid,))
-            response = ''.join(str(event['payload'].get('delta') or event['payload'].get('textDelta') or '') for event in events)
+        outcome = latest.get('last_turn') or {}
+        response = outcome.get('full_text', '')
         resolved = await self.store.workspace_record(latest['workspace_id'])
-        ok = latest['status'] == 'active'
+        ok = latest['status'] == 'active' and outcome.get('ok') is True
         await self.store.update_work_item_status(item_id, WorkItemStatus.COMPLETED if ok else WorkItemStatus.FAILED,
-            output_data={'response': response, 'task_id': task['task_id']}, history_entry={
+            output_data={'response': response, 'files': outcome.get('files_changed', []),
+                         'error': outcome.get('error'), 'task_id': task['task_id']}, history_entry={
                 'action': 'assigned', 'agent': item.assigned_agent, 'role': role,
                 'cwd': resolved['path'], 'worktree_id': resolved['workspace_id'] if resolved['kind'] == 'worktree' else None,
                 'worktree_branch': resolved['branch']})
@@ -333,18 +333,28 @@ class Orchestrator:
         return await self._legacy_send(agent, message, cwd, thread_id)
 
     async def _legacy_send(self, agent, message, cwd, thread_id, supervised=False):
+        operation = self._legacy_operation(agent, message, thread_id, supervised)
+        return await self.tasks.run_legacy(agent, message, operation, cwd=cwd, thread_id=thread_id, supervised=supervised)
+
+    def _legacy_operation(self, agent, message, thread_id, supervised=False):
         async def operation(work_cwd):
             if thread_id:
                 info = await agent.resume_thread(thread_id)
+                if not await self.store.get_thread(info.thread_id):
+                    await self._persist_thread(info)
             else:
                 info = await agent.start_thread(cwd=work_cwd)
                 await self._persist_thread(info)
+            await self.store.participate(agent.task_id, agent.agent_id, info.thread_id)
+            await self.store.write("UPDATE tasks SET settings_json=json_set(settings_json,'$.legacy_thread_id',?) WHERE task_id=?",
+                                   (info.thread_id, agent.task_id))
             if supervised:
                 return await self.supervisor.supervised_send(agent, info.thread_id, message)
             result = await agent.send_message(info.thread_id, message)
+            await self.store.record_turn(agent.task_id, result)
             await self._audit_turn(agent, info.thread_id, message, result, cwd=work_cwd)
             return result.full_text
-        return await self.tasks.run_legacy(agent, message, operation, cwd=cwd, thread_id=thread_id)
+        return operation
 
     async def _persist_thread(self, info: "ThreadInfo"):
         from orchestrator.state.store import ThreadRecord

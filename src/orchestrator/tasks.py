@@ -78,6 +78,8 @@ class TaskService:
 
     async def submit(self, workspace_id, prompt, kind='workflow', settings=None, isolation='auto', idempotency_key=None):
         settings = dict(settings or {})
+        if any(key.startswith('legacy_') for key in settings):
+            raise ValueError('Legacy sessions use saved-agent commands')
         if not isinstance(settings.get('variables', {}), dict):
             raise ValueError('variables must be an object')
         if kind not in {'workflow','agent'} or isolation not in {'auto','always','never'}:
@@ -127,7 +129,7 @@ class TaskService:
             self.schedule(tid, self.execute(tid))
             return await self.store.task(tid)
 
-    async def run_legacy(self, agent, message, operation, cwd=None, thread_id=None):
+    async def run_legacy(self, agent, message, operation, cwd=None, thread_id=None, supervised=False):
         if not isinstance(message, str) or not message.strip():
             raise ValueError('A message is required')
         if getattr(agent, 'task_id', None):
@@ -154,7 +156,11 @@ class TaskService:
             await self.store.write(
                 'INSERT INTO tasks (task_id,workspace_id,title,prompt,kind,settings_json,fingerprint,created_at,updated_at,owner_pid,owner_started) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                 (tid, workspace['workspace_id'], message.splitlines()[0][:100], message, 'agent',
-                 json.dumps({'legacy_agent_id': agent.agent_id}), '', now(), now(), self.owner_pid, self.owner_started))
+                 json.dumps({'legacy_agent_id': agent.agent_id, 'legacy_thread_id': thread_id,
+                             'legacy_supervised': supervised, 'legacy_cwd': cwd or root,
+                             'isolate': False, 'effective_role': asdict(agent.role)}),
+                 '', now(), now(), self.owner_pid, self.owner_started))
+            await self.store.participate(tid, agent.agent_id)
             job = self.schedule(tid, self._execute_legacy(tid, workspace, agent, operation, cwd or root))
         return await asyncio.shield(job)
 
@@ -175,6 +181,7 @@ class TaskService:
                 await self.orch.registry.start_agent(agent.agent_id)
                 if not await self.store.task_status(task_id, 'active', 'Agent running', expected=('queued',)):
                     raise Conflict('Task changed before execution')
+                await self.store.write('UPDATE tasks SET last_turn_json=NULL WHERE task_id=?', (task_id,))
                 result = await operation(cwd)
                 await self.store.task_status(task_id, 'completed', 'Completed', expected=('active', 'waiting_input'))
                 return result
@@ -213,6 +220,22 @@ class TaskService:
             owned = True
             await self.store.task_status(task_id, 'queued', 'Preparing workspace', expected=('queued','active','interrupted'))
             settings = task['settings']
+            if settings.get('legacy_agent_id'):
+                agent = await self.orch.registry.materialize(settings['legacy_agent_id'])
+                workspace = await self.store.workspace_record(task['workspace_id'])
+                thread_id = settings.get('legacy_thread_id')
+                if not thread_id:
+                    thread = await self.store.one('SELECT t.* FROM threads t JOIN task_threads p USING(thread_id) WHERE p.task_id=? AND t.agent_id=? ORDER BY t.updated_at DESC LIMIT 1', (task_id, agent.agent_id))
+                    thread_id = thread['thread_id'] if thread else None
+                else:
+                    thread = await self.store.get_thread(thread_id)
+                    thread = {'cwd': thread.cwd} if thread else None
+                cwd = settings.get('legacy_cwd') or (thread or {}).get('cwd') or workspace['path']
+                operation = self.orch._legacy_operation(agent, message if message is not None else task['prompt'], thread_id,
+                                                        settings.get('legacy_supervised', False))
+                await self._execute_legacy(task_id, workspace, agent, operation, cwd)
+                return
+            await self.store.write('UPDATE tasks SET last_turn_json=NULL WHERE task_id=?', (task_id,))
             if task['kind'] == 'workflow' and str(settings.get('variables', {}).get('create_mr', True)).lower() not in {'false','0','no'}:
                 workflow = self.orch.workflows[settings['workflow']]
                 if workflow.publication_policy in {'required', 'optional'}:
@@ -256,6 +279,7 @@ class TaskService:
                     thread = await agent.start_thread(cwd=workspace['path'])
                 await self.store.task_status(task_id, 'active', 'Agent running', expected=('queued','active'))
                 result = await agent.send_message(thread.thread_id, message if message is not None else task['prompt'])
+                await self.store.record_turn(task_id, result)
                 await self.store.task_status(task_id, 'active', 'Ready for your next message' if result.ok else result.error or 'Turn failed; you can retry', expected=('active','waiting_input'))
         except asyncio.CancelledError:
             if owned and task_id not in self.cancelling:

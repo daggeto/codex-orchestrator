@@ -3,7 +3,7 @@ import { get } from '../api';
 import type { DurableEvent, OwnedAgent } from '../types';
 import { MessageContent } from './MessageContent';
 
-export function AgentHistory({ agentId }: { agentId: string }) {
+export function AgentHistory({ agentId, taskId }: { agentId: string; taskId?: string }) {
   const [events, setEvents] = useState<DurableEvent[]>([]);
   const [failure, setFailure] = useState('');
   useEffect(() => {
@@ -13,7 +13,7 @@ export function AgentHistory({ agentId }: { agentId: string }) {
     let timer: ReturnType<typeof setTimeout>;
     async function refresh() {
       try {
-        const result = await get<{ events: DurableEvent[]; next_cursor: number }>(`/api/agents/${agentId}/events?after=${cursor}&limit=500`, controller.signal);
+        const result = await get<{ events: DurableEvent[]; next_cursor: number }>(`/api/agents/${agentId}/events?after=${cursor}&limit=500${taskId ? `&task_id=${encodeURIComponent(taskId)}` : ''}`, controller.signal);
         if (controller.signal.aborted) return;
         cursor = result.next_cursor;
         setEvents(previous => [...previous, ...result.events]); setFailure('');
@@ -24,7 +24,7 @@ export function AgentHistory({ agentId }: { agentId: string }) {
     }
     void refresh();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [agentId]);
+  }, [agentId, taskId]);
   const messages: { key: string; kind: string; text: string; event: DurableEvent }[] = [];
   for (const event of events) {
     if (event.kind === 'user') messages.push({ key: String(event.id), kind: 'user', text: String(event.payload.text || ''), event });

@@ -254,7 +254,8 @@ class PersistedLifecycleRevisionTests(unittest.IsolatedAsyncioTestCase):
         self.orch.workspaces = WorkspaceService(self.orch)
         self.orch.workspaces.register = AsyncMock()
         self.orch.config = SimpleNamespace(effective_project_dir='/repo/live')
-        agent = SimpleNamespace(agent_id='legacy', task_id=None, _threads={})
+        await self.store.save_agent(AgentRecord('legacy', 'writer', 'codex'))
+        agent = SimpleNamespace(agent_id='legacy', task_id=None, _threads={}, role=RoleConfig(name='writer'))
         async def stop(agent_id):
             self.assertIsNotNone(await self.store.one("SELECT * FROM workspace_leases WHERE workspace_id='live'"))
         self.orch.registry = SimpleNamespace(start_agent=AsyncMock(), stop_agent=AsyncMock(side_effect=stop))

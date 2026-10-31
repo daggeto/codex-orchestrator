@@ -65,7 +65,7 @@ COMMANDS = (
             "its orchestrator on completion; use start --spawn-team for a long-running team.",
             ('make team ARGS="architect implementer reviewer"',)),
     Command("send", "Send a message to an agent by role.", "orch", ("send",),
-            "Requires ROLE MESSAGE. Starts a saved non-task agent for the role on demand inside a leased task in a Git checkout; unavailable workspaces reject execution. Task-owned agents use task messaging. Quote the message inside ARGS to preserve it as one argument. "
+            "Requires ROLE MESSAGE. Starts a saved non-task agent for the role on demand inside a leased task in a Git checkout; unavailable workspaces reject execution. Interrupted turns can continue from their task page using the saved session. Task-owned agents use task messaging. Quote the message inside ARGS to preserve it as one argument. "
             "Use --cwd to set the agent working directory. The implementer must use a separate task worktree "
             "unless the message explicitly requests main-branch implementation.",
             ("""make send ARGS='architect "Design an auth system" --cwd /path/to/repo'""",)),
@@ -82,7 +82,7 @@ COMMANDS = (
             "Reads agent records from the configured store without starting agents.",
             ("make agent-list",)),
     Command("agent-send", "Send a message to a specific agent ID.", "orch", ("agent", "send"),
-            "Requires AGENT_ID MESSAGE. Starts the selected saved non-task agent on demand inside a leased task in a Git checkout. Use --thread/-t to resume a thread and --cwd to set its working directory.",
+            "Requires AGENT_ID MESSAGE. Starts the selected saved non-task agent on demand inside a leased task in a Git checkout. Records task participation and retains continuation settings after interruption. Use --thread/-t to resume a thread and --cwd to set its working directory.",
             ("""make agent-send ARGS='design-agent "Continue the design" --thread THREAD_ID --cwd /path/to/repo'""",)),
     Command("workflow-list", "List workflows and their step counts.", "orch", ("workflow", "list"),
             "Built-ins are feature, bugfix, review, research, and pr-completion.",

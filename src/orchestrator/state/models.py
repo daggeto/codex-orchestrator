@@ -47,6 +47,22 @@ class OwnershipStore:
         return await self.rows('SELECT * FROM tasks WHERE workspace_id=? AND (? IS NULL OR task_id < ?) ORDER BY task_id DESC LIMIT ?',
                                (workspace_id, before, before, max(1, min(limit, 100))))
 
+    async def participate(self, task_id, agent_id, thread_id=None):
+        if not task_id:
+            return
+        await self.write('INSERT OR IGNORE INTO task_agents VALUES (?,?)', (task_id, agent_id))
+        if thread_id:
+            await self.write('INSERT OR IGNORE INTO task_threads VALUES (?,?)', (task_id, thread_id))
+
+    async def task_agents(self, task_id):
+        return await self.rows('SELECT DISTINCT a.* FROM agents a LEFT JOIN task_agents p USING(agent_id) WHERE a.task_id=? OR p.task_id=? ORDER BY a.created_at', (task_id, task_id))
+
+    async def record_turn(self, task_id, result):
+        outcome = {'ok': result.ok, 'error': result.error, 'full_text': result.full_text,
+                   'files_changed': result.files_changed}
+        await self.write('UPDATE tasks SET last_turn_json=?,updated_at=? WHERE task_id=?',
+                         (json.dumps(outcome), now(), task_id))
+
     async def task_status(self, task_id, status, phase, expected=None):
         sql = 'UPDATE tasks SET status=?,phase=?,updated_at=?,completed_at=? WHERE task_id=?'
         params = (status, phase, now(), now() if status in {'completed','failed','cancelled'} else None, task_id)
@@ -62,9 +78,9 @@ class OwnershipStore:
         await self._db.executemany('INSERT INTO task_events (task_id,agent_id,thread_id,turn_id,item_id,kind,payload_json,created_at) VALUES (?,?,?,?,?,?,?,?)', events)
         await self._db.commit()
 
-    async def events(self, agent_id, after=0, limit=200):
-        return await self.rows('SELECT * FROM task_events WHERE agent_id=? AND id>? ORDER BY id LIMIT ?',
-                               (agent_id, after, max(1, min(limit, 500))))
+    async def events(self, agent_id, after=0, limit=200, task_id=None):
+        return await self.rows('SELECT * FROM task_events WHERE agent_id=? AND id>? AND (? IS NULL OR task_id=?) ORDER BY id LIMIT ?',
+                               (agent_id, after, task_id, task_id, max(1, min(limit, 500))))
 
     async def pending_inputs(self, task_id):
         return await self.rows("SELECT * FROM input_requests WHERE task_id=? AND status='pending' ORDER BY created_at", (task_id,))

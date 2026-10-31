@@ -113,6 +113,7 @@ class AgentRegistry:
         if persist:
             await self._store.save_agent(record)
             await self._store.write('UPDATE agents SET task_id=? WHERE agent_id=?', (task_id, aid))
+            await self._store.participate(task_id, aid)
 
 
         await self._bus.publish("agent.created", {

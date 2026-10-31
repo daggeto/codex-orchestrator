@@ -42,6 +42,7 @@ def observed_stream(method):
             await store.save_thread(ThreadRecord(thread_id=thread_id, agent_id=self.agent_id,
                                                  cwd=info.cwd if info else None, model=self.role.model, metadata=saved.metadata if saved else {}))
             await store.write('UPDATE threads SET task_id=? WHERE thread_id=?', (getattr(self, 'task_id', None), thread_id))
+            await store.participate(getattr(self, 'task_id', None), self.agent_id, thread_id)
         await record('user', {'text': message})
         stream = method(self, thread_id, message, model)
         completed = False

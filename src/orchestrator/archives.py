@@ -127,10 +127,11 @@ class ArchiveService:
                 raise Conflict('Workspace has an execution lease owned by another service; checkout retained')
             tasks = await self.store.rows('SELECT task_id,status FROM tasks WHERE workspace_id=?', (workspace_id,))
             agent_ids = set()
+            workspace_tasks = {task['task_id'] for task in tasks}
             for task in tasks:
                 if task['status'] not in {'completed','failed','cancelled'} or task['task_id'] in self.orch.tasks.running:
                     await self.orch.tasks.cancel(task['task_id'])
-                for agent in await self.store.rows('SELECT agent_id FROM agents WHERE task_id=?', (task['task_id'],)):
+                for agent in await self.store.task_agents(task['task_id']):
                     agent_ids.add(agent['agent_id'])
             # Legacy sessions can use this checkout without belonging to a task.
             root = Path(workspace['path']).resolve()
@@ -142,6 +143,8 @@ class ArchiveService:
                     agent_ids.add(agent.agent_id)
             for agent_id in agent_ids:
                 runtime = self.orch.registry.get_agent(agent_id)
+                if runtime and getattr(runtime, 'task_id', None) and runtime.task_id not in workspace_tasks:
+                    raise Conflict('A participating agent is executing another workspace task; checkout retained')
                 if runtime and any(turn.get('workspace') and not Path(turn['workspace']).resolve().is_relative_to(root) for turn in runtime.activity['threads']):
                     raise Conflict('A legacy agent is active in another workspace; checkout retained')
                 if not runtime:
@@ -184,8 +187,10 @@ class ArchiveService:
                     await _run(str(root), 'git', 'bundle', 'verify', str(bundle))
                     history = {'repository': repository, 'workspace': workspace}
                     history['tasks'] = await self.store.rows('SELECT * FROM tasks WHERE workspace_id=?', (workspace_id,))
-                    for table in ('agents','threads','workflow_runs','work_items','step_executions','task_events','input_requests'):
+                    for table in ('task_agents','task_threads','workflow_runs','work_items','step_executions','task_events','input_requests'):
                         history[table] = await self.store.rows(f'SELECT * FROM {table} WHERE task_id IN (SELECT task_id FROM tasks WHERE workspace_id=?)', (workspace_id,))
+                    history['agents'] = await self.store.rows('SELECT DISTINCT a.* FROM agents a LEFT JOIN task_agents p USING(agent_id) WHERE a.task_id IN (SELECT task_id FROM tasks WHERE workspace_id=?) OR p.task_id IN (SELECT task_id FROM tasks WHERE workspace_id=?)', (workspace_id, workspace_id))
+                    history['threads'] = await self.store.rows('SELECT DISTINCT t.* FROM threads t LEFT JOIN task_threads p USING(thread_id) WHERE t.task_id IN (SELECT task_id FROM tasks WHERE workspace_id=?) OR p.task_id IN (SELECT task_id FROM tasks WHERE workspace_id=?)', (workspace_id, workspace_id))
                     legacy_threads = [thread for thread in await self.store.rows('SELECT * FROM threads WHERE task_id IS NULL AND cwd IS NOT NULL')
                         if Path(thread['cwd']).resolve().is_relative_to(root.resolve())]
                     legacy_ids = {thread['thread_id'] for thread in legacy_threads}

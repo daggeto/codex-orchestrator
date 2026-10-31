@@ -1,7 +1,7 @@
 """Ordered, additive migrations. Historical records without evidence stay unowned."""
 from __future__ import annotations
 
-VERSION = 3
+VERSION = 4
 MIGRATIONS = {2: """
 CREATE TABLE repositories (
  repository_id TEXT PRIMARY KEY, name TEXT NOT NULL, main_path TEXT NOT NULL UNIQUE,
@@ -70,6 +70,22 @@ ALTER TABLE agents ADD COLUMN owner_pid INTEGER;
 ALTER TABLE agents ADD COLUMN owner_started TEXT;
 ALTER TABLE archives ADD COLUMN owner_pid INTEGER;
 ALTER TABLE archives ADD COLUMN owner_started TEXT;
+""", 4: """
+ALTER TABLE tasks ADD COLUMN last_turn_json TEXT;
+CREATE TABLE task_agents (
+ task_id TEXT NOT NULL REFERENCES tasks(task_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id),
+ PRIMARY KEY (task_id,agent_id)
+);
+CREATE TABLE task_threads (
+ task_id TEXT NOT NULL REFERENCES tasks(task_id), thread_id TEXT NOT NULL REFERENCES threads(thread_id),
+ PRIMARY KEY (task_id,thread_id)
+);
+INSERT OR IGNORE INTO task_agents SELECT task_id,agent_id FROM agents WHERE task_id IS NOT NULL;
+INSERT OR IGNORE INTO task_agents SELECT task_id,agent_id FROM threads WHERE task_id IS NOT NULL;
+INSERT OR IGNORE INTO task_agents SELECT e.task_id,e.agent_id FROM task_events e JOIN agents a USING(agent_id) WHERE e.task_id IS NOT NULL;
+INSERT OR IGNORE INTO task_agents SELECT t.task_id,a.agent_id FROM tasks t JOIN agents a ON a.agent_id=json_extract(t.settings_json,'$.legacy_agent_id');
+INSERT OR IGNORE INTO task_threads SELECT task_id,thread_id FROM threads WHERE task_id IS NOT NULL;
+INSERT OR IGNORE INTO task_threads SELECT e.task_id,e.thread_id FROM task_events e JOIN threads t USING(thread_id) WHERE e.task_id IS NOT NULL;
 """}
 
 

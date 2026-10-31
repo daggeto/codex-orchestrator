@@ -51,7 +51,7 @@ async def detail(request):
     task = await orch.store.task(tid)
     if not task:
         raise LookupError('Task not found')
-    agents = await orch.store.rows('SELECT * FROM agents WHERE task_id=? ORDER BY created_at', (tid,))
+    agents = await orch.store.task_agents(tid)
     for agent in agents:
         runtime = orch.registry.get_agent(agent['agent_id'])
         agent['activity'] = runtime.activity if runtime else {'state': 'idle', 'threads': [], 'error': None}
@@ -104,7 +104,7 @@ async def events(request):
     agent = await store.one('SELECT * FROM agents WHERE agent_id=?', (aid,))
     if not agent:
         raise LookupError('Agent not found')
-    rows = await store.events(aid, int(request.query.get('after', 0)), int(request.query.get('limit', 200)))
+    rows = await store.events(aid, int(request.query.get('after', 0)), int(request.query.get('limit', 200)), request.query.get('task_id'))
     return web.json_response({'agent': agent, 'events': rows, 'next_cursor': rows[-1]['id'] if rows else int(request.query.get('after', 0))})
 
 
