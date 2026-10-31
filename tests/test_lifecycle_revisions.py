@@ -3,6 +3,7 @@ import asyncio
 import json
 from pathlib import Path
 import signal
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -17,8 +18,8 @@ from orchestrator.core import Orchestrator
 from orchestrator.processes import owner_alive, stop_process_group
 from orchestrator.roles.loader import RoleConfig
 from orchestrator.state import migrations
-from orchestrator.state.store import StateStore
-from orchestrator.tasks import TaskService
+from orchestrator.state.store import AgentRecord, StateStore
+from orchestrator.tasks import Conflict, TaskService
 from orchestrator.workspaces import WorkspaceService
 from orchestrator.workflows.merge_request import PrepareMergeRequestStep
 
@@ -101,20 +102,19 @@ class LifecycleRevisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(signal.SIGTERM, signals)
         proc.wait.assert_awaited()
 
-    async def test_legacy_send_materializes_and_starts_the_saved_agent(self):
+    async def test_legacy_send_delegates_to_the_shared_task_lifecycle(self):
         orch = Orchestrator.__new__(Orchestrator)
-        agent = SimpleNamespace(agent_id='saved', task_id=None,
-                                start_thread=AsyncMock(), resume_thread=AsyncMock(),
-                                send_message=AsyncMock(return_value=SimpleNamespace(full_text='answer')))
+        agent = SimpleNamespace(agent_id='saved', task_id=None)
         orch.registry = SimpleNamespace(get_agents_by_role=Mock(return_value=[]),
                                         materialize=AsyncMock(return_value=agent), start_agent=AsyncMock())
         orch.store = SimpleNamespace(one=AsyncMock(return_value={'agent_id': 'saved'}))
-        orch._audit_turn = AsyncMock()
+        orch.tasks = SimpleNamespace(run_legacy=AsyncMock(return_value='answer'))
         answer = await orch.send_to_role('writer', 'Continue', thread_id='thread')
         self.assertEqual('answer', answer)
         orch.registry.materialize.assert_awaited_once_with('saved')
-        orch.registry.start_agent.assert_awaited_once_with('saved')
-        agent.resume_thread.assert_awaited_once_with('thread')
+        orch.registry.start_agent.assert_not_awaited()
+        self.assertEqual(agent, orch.tasks.run_legacy.await_args.args[0])
+        self.assertEqual('thread', orch.tasks.run_legacy.await_args.kwargs['thread_id'])
 
     async def test_archive_awaits_legacy_workspace_agent_shutdown_before_capture(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -229,6 +229,71 @@ class PersistedLifecycleRevisionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(await self.store.pending_inputs('live')))
         self.assertEqual([], await self.store.pending_inputs('dead'))
 
+    async def test_dead_service_with_live_backend_keeps_its_workspace_fence(self):
+        await self.store.save_agent(AgentRecord('orphan', 'writer', 'codex', pid=789, status='running'))
+        await self.store.write("UPDATE agents SET task_id='dead',owner_pid=456,owner_started='start' WHERE agent_id='orphan'")
+        await self.store.write("INSERT INTO workspace_leases VALUES ('dead','dead',456,'start')")
+        with patch('orchestrator.workspaces.owner_alive', return_value=False), \
+             patch('orchestrator.workspaces.process_group_alive', return_value=True):
+            await WorkspaceService(self.orch).reconcile()
+        self.assertIsNotNone(await self.store.one("SELECT * FROM workspace_leases WHERE workspace_id='dead'"))
+        self.assertEqual('active', (await self.store.task('dead'))['status'])
+
+    async def test_lease_claim_rejects_archiving_workspaces_and_other_tasks(self):
+        service = WorkspaceService(self.orch)
+        await self.store.write("UPDATE workspaces SET status='archiving' WHERE workspace_id='live'")
+        with self.assertRaisesRegex(Conflict, 'archived'):
+            await service.claim_lease('live', 'live', 123, 'start')
+        await self.store.write("UPDATE workspaces SET status='active' WHERE workspace_id='live'")
+        await service.claim_lease('live', 'live', 123, 'start')
+        with self.assertRaisesRegex(Conflict, 'another task'):
+            await service.claim_lease('live', 'dead', 456, 'start')
+        self.assertEqual('live', (await self.store.one("SELECT * FROM workspace_leases WHERE workspace_id='live'"))['task_id'])
+
+    async def test_legacy_execution_holds_a_lease_until_backend_shutdown(self):
+        self.orch.workspaces = WorkspaceService(self.orch)
+        self.orch.workspaces.register = AsyncMock()
+        self.orch.config = SimpleNamespace(effective_project_dir='/repo/live')
+        agent = SimpleNamespace(agent_id='legacy', task_id=None, _threads={})
+        async def stop(agent_id):
+            self.assertIsNotNone(await self.store.one("SELECT * FROM workspace_leases WHERE workspace_id='live'"))
+        self.orch.registry = SimpleNamespace(start_agent=AsyncMock(), stop_agent=AsyncMock(side_effect=stop))
+        async def operation(cwd):
+            self.assertEqual('/repo/live', cwd)
+            lease = await self.store.one("SELECT * FROM workspace_leases WHERE workspace_id='live'")
+            self.assertEqual(agent.task_id, lease['task_id'])
+            return 'answer'
+        with patch('orchestrator.tasks._run', AsyncMock(return_value='/repo/live')):
+            self.assertEqual('answer', await self.service.run_legacy(agent, 'Work', operation))
+        self.assertIsNone(await self.store.one("SELECT * FROM workspace_leases WHERE workspace_id='live'"))
+        self.assertIsNone(agent.task_id)
+        self.orch.registry.stop_agent.assert_awaited_once_with('legacy')
+
+    async def test_cancellation_serializes_with_message_acceptance(self):
+        await self.store.write('UPDATE tasks SET owner_pid=?,owner_started=? WHERE task_id=?',
+                               (self.service.owner_pid, self.service.owner_started, 'live'))
+        cancelling = asyncio.Event()
+        finish = asyncio.Event()
+        original = self.store.task_status
+        async def status(*args, **kwargs):
+            result = await original(*args, **kwargs)
+            if args[1] == 'cancelled':
+                cancelling.set()
+                await finish.wait()
+            return result
+        with patch.object(self.store, 'task_status', side_effect=status):
+            cancellation = asyncio.create_task(self.service.cancel('live'))
+            await cancelling.wait()
+            message = asyncio.create_task(self.service.send_message('live', 'Late message'))
+            await asyncio.sleep(0)
+            self.assertFalse(message.done())
+            finish.set()
+            await cancellation
+            with self.assertRaises(Conflict):
+                await message
+        self.assertEqual('cancelled', (await self.store.task('live'))['status'])
+        self.assertNotIn('live', self.service.running)
+
     async def test_cancel_awaits_input_handler_and_preserves_terminal_status(self):
         await self.store.write('UPDATE tasks SET owner_pid=?,owner_started=? WHERE task_id=?',
                                (self.service.owner_pid, self.service.owner_started, 'live'))
@@ -286,3 +351,38 @@ class ProcessOwnerTests(unittest.TestCase):
             self.assertFalse(owner_alive(123, 'old start'))
             self.assertTrue(owner_alive(123, 'new start'))
         self.assertTrue(owner_alive(None, None))
+
+
+class ArchiveIndexTests(unittest.IsolatedAsyncioTestCase):
+    async def test_staged_only_content_blocks_deletion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            main = Path(directory).resolve() / 'main'
+            root = Path(directory).resolve() / 'worktree'
+            main.mkdir()
+            def git(cwd, *args):
+                return subprocess.check_output(['git', *args], cwd=cwd, stderr=subprocess.DEVNULL, text=True).strip()
+            git(main, 'init')
+            git(main, 'config', 'user.email', 'test@example.com')
+            git(main, 'config', 'user.name', 'Test')
+            (main / 'file').write_text('committed')
+            git(main, 'add', 'file')
+            git(main, 'commit', '-m', 'Initial')
+            git(main, 'worktree', 'add', '-b', 'task', str(root))
+            (root / 'file').write_text('staged only')
+            git(root, 'add', 'file')
+            (root / 'file').write_text('working file')
+            repository = {'main_path': str(main), 'common_dir': str(main / '.git')}
+            orch = SimpleNamespace(
+                store=SimpleNamespace(one=AsyncMock(side_effect=[None, repository, {'stage': 'stopping'}]),
+                                      rows=AsyncMock(side_effect=[[], []]), write=AsyncMock()),
+                tasks=SimpleNamespace(running={}), registry=SimpleNamespace(agents={}),
+                workspaces=SimpleNamespace(lock=Mock(return_value=asyncio.Lock())))
+            service = ArchiveService(orch)
+            service.stage = AsyncMock()
+            with patch('orchestrator.archives.capture') as capture:
+                with self.assertRaisesRegex(Conflict, 'Staged index capture'):
+                    await service.execute_archive({'workspace_id': 'workspace', 'repository_id': 'repo', 'path': str(root)}, 'archive')
+                capture.assert_not_called()
+            self.assertTrue(root.is_dir())
+            self.assertEqual('staged only', git(root, 'show', ':file'))
+            self.assertEqual('working file', (root / 'file').read_text())

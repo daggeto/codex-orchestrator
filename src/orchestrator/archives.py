@@ -159,6 +159,10 @@ class ArchiveService:
                     actual = await _run(str(root), 'git', 'rev-parse', '--path-format=absolute', '--git-common-dir')
                     if actual != repository['common_dir'] or not (root / '.git').is_file():
                         raise Conflict('Checkout identity changed; deletion blocked')
+                    # Reachable history and working files do not include index-only
+                    # blobs. Retain the checkout until staged changes are resolved.
+                    if await _run(str(root), 'git', 'diff', '--cached', '--name-only'):
+                        raise Conflict('Staged index capture is unsupported; commit or unstage changes before deletion')
                     # A bundle cannot capture external submodule/LFS object stores.
                     # Fail closed until a complete capture strategy is available.
                     entries = await _run(str(root), 'git', 'ls-files', '--stage')
@@ -193,6 +197,8 @@ class ArchiveService:
                     target = directory / 'workspace.tar.gz'
                     checksum = await asyncio.to_thread(capture, root, target, bundle, history)
                     await self.store.write('UPDATE archives SET path=?,checksum=? WHERE archive_id=?', (str(target), checksum, aid))
+                    if await _run(str(root), 'git', 'diff', '--cached', '--name-only'):
+                        raise Conflict('Index changed during capture; checkout retained')
                     await self.stage(aid, 'verified')
                     await _run(main, 'git', 'worktree', 'remove', '--force', str(root))
                 else:

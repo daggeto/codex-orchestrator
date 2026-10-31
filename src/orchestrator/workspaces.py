@@ -22,6 +22,40 @@ class WorkspaceService:
     def lock(self, workspace_id):
         return self.locks.setdefault(workspace_id, asyncio.Lock())
 
+    async def claim_lease(self, workspace_id, task_id, owner_pid, owner_started):
+        from orchestrator.tasks import Conflict
+        try:
+            claimed = await self.store.write(
+                "INSERT INTO workspace_leases (workspace_id,task_id,owner_pid,owner_started) "
+                "SELECT workspace_id,?,?,? FROM workspaces WHERE workspace_id=? AND status='active'",
+                (task_id, owner_pid, owner_started, workspace_id))
+        except Exception as exc:
+            raise Conflict('Workspace is already executing another task') from exc
+        if not claimed:
+            raise Conflict('Workspace is being archived or unavailable')
+
+    async def backends_stopped(self, lease):
+        workspace = await self.store.workspace_record(lease['workspace_id'])
+        root = Path(workspace['path']).resolve()
+        task = await self.store.task(lease['task_id'])
+        ids = {task['settings'].get('legacy_agent_id')} if task else set()
+        for thread in await self.store.rows('SELECT agent_id,cwd FROM threads WHERE cwd IS NOT NULL'):
+            if Path(thread['cwd']).resolve().is_relative_to(root):
+                ids.add(thread['agent_id'])
+        for agent in await self.store.rows('SELECT * FROM agents'):
+            if agent['task_id'] != lease['task_id'] and agent['agent_id'] not in ids:
+                continue
+            if agent['owner_pid'] and owner_alive(agent['owner_pid'], agent['owner_started']):
+                return False
+            if agent['pid']:
+                if process_group_alive(agent['pid']):
+                    return False
+            elif agent['owner_pid'] or agent['status'] in {'starting','running','degraded','stopping','error'}:
+                # A dead service owner does not prove a backend without a saved
+                # process-group identity has stopped.
+                return False
+        return True
+
     async def register(self, path):
         root = await _run(str(Path(path).expanduser().resolve()), 'git', 'rev-parse', '--show-toplevel')
         common = await _run(root, 'git', 'rev-parse', '--path-format=absolute', '--git-common-dir')
@@ -89,7 +123,7 @@ class WorkspaceService:
                     worktree_path=workspace['path'], branch=workspace['branch'] or '',
                     base_branch=workspace['base_commit'] or 'HEAD')
         for lease in await self.store.rows('SELECT * FROM workspace_leases'):
-            if not owner_alive(lease['owner_pid'], lease['owner_started']):
+            if not owner_alive(lease['owner_pid'], lease['owner_started']) and await self.backends_stopped(lease):
                 await self.store.write('DELETE FROM workspace_leases WHERE workspace_id=? AND owner_pid=? AND owner_started=?',
                                        (lease['workspace_id'], lease['owner_pid'], lease['owner_started']))
         for task in await self.store.rows("SELECT * FROM tasks WHERE status IN ('queued','active','waiting_input')"):

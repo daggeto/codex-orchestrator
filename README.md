@@ -306,11 +306,14 @@ turn must finish or be cancelled before completion. Completed tasks reject new
 messages. Navigation and browser disconnects leave accepted work running. Service
 startup reclaims execution only when its recorded process owner has stopped,
 then marks it interrupted and expires its input requests. Live owners retain their
-workspace leases. Pre-upgrade leases without ownership evidence are retained for
+workspace leases. A dead service owner is insufficient to reclaim a lease while
+its backend process group is alive or shutdown cannot be verified. Pre-upgrade leases without ownership evidence are retained for
 manual inspection. Startup never replays commands. Saved backend sessions resume only after a new message.
 Backend session retention and installed CLI credentials are still required.
 Legacy `make send`, `make agent-send`, `make supervised-send`, and `make skill-run`
-start the selected saved agent on demand. Task-owned agents use task messaging.
+start the selected saved agent on demand inside a tracked task with a workspace
+lease. These commands require a Git checkout and reject unavailable workspaces.
+Task-owned agents use task messaging. Work-item assignments use the same task lifecycle.
 An agent owned by another live service must receive messages through that service.
 
 Feature tasks default to local edits and commits. **Create draft PR/MR** enables
@@ -353,7 +356,9 @@ A failed stage retains the checkout and reports the failure in workspace history
 Retry after resolving it. After its recorded owner stops, an incomplete operation
 is marked interrupted; retry can reconcile an already removed checkout against its saved
 verified archive. Submodules, Git LFS, and special filesystem entries currently
-block removal because complete capture is unsupported. Archive restoration UI is
+block removal because complete capture is unsupported. Staged changes also block
+removal because the archive does not preserve index-only content; commit or unstage
+them before retrying. Archive restoration UI is
 outside scope. Restore manually into a fresh folder using `history.bundle` and the
 checkout files; never use an old worktree `.git` pointer as a restored Git repository.
 Archives may contain ignored secrets and should be handled as private backups.

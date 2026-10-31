@@ -227,57 +227,43 @@ class Orchestrator:
         If isolate=True (or auto for write-capable roles), creates a git worktree
         so the agent works on an isolated branch. Read-only roles share the main repo.
         """
-        agents = self.registry.get_agents_by_role(role)
-        running = [a for a in agents if a.status.value == "running"]
-        if not running:
-            raise RuntimeError(f"No running agents with role '{role}'")
-        agent = running[0]
-
         item = await self.store.get_work_item(item_id)
         if not item:
-            raise ValueError(f"Work item {item_id} not found")
-
-        repo_path = item.input_data.get("cwd")
-
-        # Determine if we need workspace isolation
-        should_isolate = isolate
-        if should_isolate is None:
-            # Auto: isolate write-capable roles
-            should_isolate = agent.role.sandbox in ("workspace-write", "danger-full-access")
-
-        work_cwd = repo_path
-        worktree = None
-
-        if should_isolate and repo_path:
-            if not Path(repo_path, ".git").is_file():
-                worktree = await self.workspace.create_worktree(
-                    repo_path=repo_path, agent_id=agent.agent_id, work_item_id=item_id)
-                work_cwd = worktree.worktree_path
-
-        await self.store.update_work_item_status(
-            item_id, WorkItemStatus.IN_PROGRESS,
-            history_entry={
-                "action": "assigned",
-                "agent": agent.agent_id,
-                "role": role,
-                "worktree_id": worktree.worktree_id if worktree else None,
-                "worktree_branch": worktree.branch if worktree else None,
-                "cwd": work_cwd,
-            },
-        )
-
-        msg = message or item.description or item.title
-        thread_info = await agent.start_thread(cwd=work_cwd)
-        result = await agent.send_message(thread_info.thread_id, msg)
-
-        await self.store.update_work_item_status(
-            item_id,
-            WorkItemStatus.COMPLETED if result.ok else WorkItemStatus.FAILED,
-            output_data={"response": result.full_text, "files": result.files_changed},
-            history_entry={"action": "completed", "agent": agent.agent_id, "success": result.ok},
-        )
-
-        return result.full_text
+            raise ValueError(f'Work item {item_id} not found')
+        from orchestrator.workflows.merge_request import _run
+        path = await _run(str(Path(item.input_data.get('cwd') or self.config.effective_project_dir).resolve()),
+                          'git', 'rev-parse', '--show-toplevel')
+        await self.workspaces.register(path)
+        workspace = await self.store.one('SELECT * FROM workspaces WHERE path=?', (path,))
+        task = await self.tasks.submit(workspace['workspace_id'], message or item.description or item.title,
+            kind='agent', settings={'role': role}, isolation='auto' if isolate is None else 'always' if isolate else 'never',
+            idempotency_key='work-item-' + item_id)
+        await self.store.write('UPDATE work_items SET task_id=? WHERE item_id=?', (task['task_id'], item_id))
+        await self.store.update_work_item_status(item_id, WorkItemStatus.IN_PROGRESS)
+        job = self.tasks.running.get(task['task_id'])
+        if job:
+            await asyncio.shield(job)
+        latest = await self.store.task(task['task_id'])
+        agents = await self.store.rows('SELECT agent_id FROM agents WHERE task_id=? ORDER BY created_at', (task['task_id'],))
+        response = ''
+        if agents:
+            aid = agents[0]['agent_id']
+            threads = await self.store.list_threads(aid)
+            item.assigned_agent = aid
+            item.assigned_thread = threads[-1].thread_id if threads else None
+            await self.store.save_work_item(item)
+            events = await self.store.rows("SELECT payload_json FROM task_events WHERE agent_id=? AND kind='item/agentMessage/delta' ORDER BY id", (aid,))
+            response = ''.join(str(event['payload'].get('delta') or event['payload'].get('textDelta') or '') for event in events)
+        resolved = await self.store.workspace_record(latest['workspace_id'])
+        ok = latest['status'] == 'active'
+        await self.store.update_work_item_status(item_id, WorkItemStatus.COMPLETED if ok else WorkItemStatus.FAILED,
+            output_data={'response': response, 'task_id': task['task_id']}, history_entry={
+                'action': 'assigned', 'agent': item.assigned_agent, 'role': role,
+                'cwd': resolved['path'], 'worktree_id': resolved['workspace_id'] if resolved['kind'] == 'worktree' else None,
+                'worktree_branch': resolved['branch']})
+        if ok:
+            await self.tasks.complete(task['task_id'])
+        return response
 
     # ── Workflow Execution ──────────────────────────────────────────────
 
@@ -319,7 +305,6 @@ class Orchestrator:
             if not saved:
                 raise RuntimeError(f"No saved agents with role '{role}'; spawn one first")
             agent = await self.registry.materialize(saved['agent_id'])
-        await self.registry.start_agent(agent.agent_id)
         return agent
 
     async def send_to_role(
@@ -332,16 +317,7 @@ class Orchestrator:
         """Send a message to an agent by role. Returns the response text."""
         agent = await self._direct_agent(role)
 
-        if thread_id:
-            await agent.resume_thread(thread_id)
-        else:
-            info = await agent.start_thread(cwd=cwd)
-            thread_id = info.thread_id
-            await self._persist_thread(info)
-
-        result = await agent.send_message(thread_id, message)
-        await self._audit_turn(agent, thread_id, message, result, cwd=cwd)
-        return result.full_text
+        return await self._legacy_send(agent, message, cwd, thread_id)
 
     async def send_to_agent(
         self,
@@ -354,18 +330,21 @@ class Orchestrator:
         agent = await self.registry.materialize(agent_id)
         if getattr(agent, 'task_id', None):
             raise ValueError('Use task messaging for a task-owned agent')
-        await self.registry.start_agent(agent_id)
+        return await self._legacy_send(agent, message, cwd, thread_id)
 
-        if thread_id:
-            await agent.resume_thread(thread_id)
-        else:
-            info = await agent.start_thread(cwd=cwd)
-            thread_id = info.thread_id
-            await self._persist_thread(info)
-
-        result = await agent.send_message(thread_id, message)
-        await self._audit_turn(agent, thread_id, message, result, cwd=cwd)
-        return result.full_text
+    async def _legacy_send(self, agent, message, cwd, thread_id, supervised=False):
+        async def operation(work_cwd):
+            if thread_id:
+                info = await agent.resume_thread(thread_id)
+            else:
+                info = await agent.start_thread(cwd=work_cwd)
+                await self._persist_thread(info)
+            if supervised:
+                return await self.supervisor.supervised_send(agent, info.thread_id, message)
+            result = await agent.send_message(info.thread_id, message)
+            await self._audit_turn(agent, info.thread_id, message, result, cwd=work_cwd)
+            return result.full_text
+        return await self.tasks.run_legacy(agent, message, operation, cwd=cwd, thread_id=thread_id)
 
     async def _persist_thread(self, info: "ThreadInfo"):
         from orchestrator.state.store import ThreadRecord
@@ -436,18 +415,8 @@ class Orchestrator:
         thread_id: str | None = None,
     ) -> "SupervisionResult":
         """Send a message with supervision — ensures deliverables, not noise."""
-        from orchestrator.supervision import SupervisionResult
-
         agent = await self._direct_agent(role)
-
-        if thread_id:
-            await agent.resume_thread(thread_id)
-        else:
-            info = await agent.start_thread(cwd=cwd)
-            thread_id = info.thread_id
-            await self._persist_thread(info)
-
-        return await self.supervisor.supervised_send(agent, thread_id, message)
+        return await self._legacy_send(agent, message, cwd, thread_id, supervised=True)
 
     # ── Skill Execution ─────────────────────────────────────────────────
 

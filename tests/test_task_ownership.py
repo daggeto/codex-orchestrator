@@ -5,9 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock
 
-from orchestrator.config import OrchestratorConfig
-from orchestrator.core import Orchestrator
-from orchestrator.state.store import AgentRecord, ThreadRecord, StateStore
+from orchestrator.state.store import AgentRecord, ThreadRecord, StateStore, SCHEMA_VERSION
 from orchestrator.tasks import Conflict, TaskService
 from orchestrator.roles.loader import RoleConfig
 
@@ -58,7 +56,7 @@ class OwnershipTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, len(await self.store.events('agent')))
         self.assertIsNotNone(await self.store.get_thread('thread'))
         self.assertIsNotNone(await self.store.task(task['task_id']))
-        self.assertEqual('2', (await self.store.one("SELECT value FROM meta WHERE key='schema_version'"))['value'])
+        self.assertEqual(str(SCHEMA_VERSION), (await self.store.one("SELECT value FROM meta WHERE key='schema_version'"))['value'])
 
     async def test_archive_blocks_new_submissions(self):
         await self.store.write("UPDATE workspaces SET status='archiving'")
