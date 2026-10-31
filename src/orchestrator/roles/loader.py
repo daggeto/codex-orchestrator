@@ -8,6 +8,21 @@ from pathlib import Path
 from typing import Any
 
 
+def _configured_string(value: Any) -> str | None:
+    """Unwrap TOML literals passed verbatim to backend -c without changing them."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    value = value.strip()
+    if value.startswith(('"', "'")):
+        try:
+            decoded = tomllib.loads(f"value = {value}")["value"]
+            if isinstance(decoded, str):
+                return decoded
+        except tomllib.TOMLDecodeError:
+            pass
+    return value
+
+
 @dataclass
 class RoleConfig:
     name: str
@@ -27,6 +42,16 @@ class RoleConfig:
     # Resource limits
     max_turn_seconds: int = 600
     max_tokens_per_turn: int | None = None
+
+    @property
+    def configured_model(self) -> str | None:
+        value = self.model or self.config_overrides.get("model")
+        return _configured_string(value)
+
+    @property
+    def reasoning_effort(self) -> str | None:
+        value = self.config_overrides.get("model_reasoning_effort")
+        return _configured_string(value)
 
     @classmethod
     def from_toml(cls, path: Path) -> RoleConfig:

@@ -14,6 +14,7 @@ from typing import Any
 from aiohttp import web
 
 from orchestrator.core import Orchestrator
+from orchestrator.api import projects, submissions
 
 logger = logging.getLogger(__name__)
 
@@ -23,16 +24,20 @@ def create_app(orch: Orchestrator) -> web.Application:
     app["orch"] = orch
     app["submitted_tasks"] = set()
     app["submitted_run_ids"] = set()
+    app.on_startup.append(submissions.recover_submissions)
     app.on_shutdown.append(_stop_submitted_tasks)
 
     app.router.add_get("/health", health)
     app.router.add_get("/api/session", session_info)
+    app.router.add_get("/api/projects", projects.list_projects)
+    app.router.add_post("/api/projects", projects.register_project)
     app.router.add_get("/api/agents", list_agents)
     app.router.add_post("/api/agents", spawn_agent)
     app.router.add_post("/api/agents/{agent_id}/stop", stop_agent)
     app.router.add_delete("/api/agents/{agent_id}", destroy_agent)
     app.router.add_post("/api/agents/{agent_id}/message", send_message)
     app.router.add_get("/api/agents/{agent_id}/threads", list_threads)
+    app.router.add_post("/api/agents/{agent_id}/threads", create_thread)
     app.router.add_get("/api/roles", list_roles)
     app.router.add_post("/api/team", spawn_team)
     app.router.add_get("/api/work", list_work_items)
@@ -41,6 +46,8 @@ def create_app(orch: Orchestrator) -> web.Application:
     app.router.add_post("/api/work/{item_id}/assign", assign_work_item)
     app.router.add_get("/api/workflows", list_workflows)
     app.router.add_get("/api/workflows/runs", list_workflow_runs)
+    app.router.add_get("/api/workflows/runs/{run_id}", submissions.get_run)
+    app.router.add_post("/api/workflows/{name}/submit", submissions.submit)
     app.router.add_post("/api/workflows/{name}/run", run_workflow)
     app.router.add_get("/api/events", event_stream)
     app.router.add_post("/api/send/{role}", send_to_role)
@@ -75,10 +82,14 @@ def create_app(orch: Orchestrator) -> web.Application:
 
 
 async def _stop_submitted_tasks(app: web.Application):
-    tasks = list(app["submitted_tasks"])
-    for task in tasks:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
+    # Acceptance can enqueue execution during shutdown. Drain newly owned tasks
+    # too, before the orchestrator closes its store.
+    while app["submitted_tasks"]:
+        tasks = list(app["submitted_tasks"])
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    await submissions.interrupt_unfinished(app, "Service stopped; inspect saved progress before submitting a new run")
 
 
 async def _service_owned(request: web.Request, operation):
@@ -190,14 +201,35 @@ async def send_message(request: web.Request) -> web.Response:
     if not message:
         return _error("'message' is required")
     try:
-        response = await orch.send_to_agent(
+        response = await _service_owned(request, orch.send_to_agent(
             agent_id, message,
             thread_id=body.get("thread_id"),
             cwd=body.get("cwd"),
-        )
+        ))
         return _json({"response": response})
     except Exception as e:
         return _error(str(e))
+
+
+async def create_thread(request: web.Request) -> web.Response:
+    orch = request.app["orch"]
+    agent = orch.registry.get_agent(request.match_info["agent_id"])
+    if not agent:
+        return _error("Agent not found", 404)
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            return _error("Expected a thread object")
+        cwd = projects.normalize_directory(body.get("cwd"))
+
+        async def create():
+            info = await agent.start_thread(cwd=cwd)
+            await orch._persist_thread(info)
+            return _json({"thread_id": info.thread_id, "cwd": cwd}, status=201)
+
+        return await _service_owned(request, create())
+    except Exception as exc:
+        return _error(str(exc))
 
 
 async def list_threads(request: web.Request) -> web.Response:
@@ -225,7 +257,8 @@ async def list_roles(request: web.Request) -> web.Response:
             "name": name,
             "backend": role.backend,
             "description": role.description,
-            "model": role.model,
+            "model": role.configured_model,
+            "reasoning_effort": role.reasoning_effort,
             "sandbox": role.sandbox,
         })
     return _json({"roles": roles})
@@ -323,6 +356,7 @@ async def list_workflows(request: web.Request) -> web.Response:
             "description": wf.description,
             "steps": [s.step_id for s in wf.steps],
             "required_roles": wf.required_roles,
+            "publication_policy": wf.publication_policy,
         })
     return _json({"workflows": wfs})
 

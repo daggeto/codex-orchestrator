@@ -22,6 +22,12 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS projects (
+    path TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS agents (
     agent_id TEXT PRIMARY KEY,
     role TEXT NOT NULL,
@@ -189,6 +195,31 @@ class StateStore:
         if self._db:
             await self._db.close()
             self._db = None
+
+    async def register_project(self, path: str):
+        now = _now()
+        await self._db.execute(
+            """INSERT INTO projects VALUES (?, ?, ?)
+               ON CONFLICT(path) DO UPDATE SET updated_at=excluded.updated_at""",
+            (path, now, now),
+        )
+        await self._db.commit()
+
+    async def list_projects(self) -> list[dict[str, str]]:
+        async with self._db.execute("SELECT * FROM projects ORDER BY updated_at DESC") as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+    async def reserve_workflow_run(self, rec: WorkflowRunRecord) -> bool:
+        """Reserve without replacing an existing run, including concurrent retries."""
+        cur = await self._db.execute(
+            """INSERT OR IGNORE INTO workflow_runs
+               (run_id, workflow_name, status, config_json, state_json, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (rec.run_id, rec.workflow_name, rec.status, json.dumps(rec.config),
+             json.dumps(rec.state), rec.created_at, _now()),
+        )
+        await self._db.commit()
+        return cur.rowcount == 1
 
     # ── Agents ──────────────────────────────────────────────────────────
 

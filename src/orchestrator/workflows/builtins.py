@@ -30,6 +30,7 @@ def feature_workflow() -> Workflow:
     """
     return Workflow(
         name="feature",
+        publication_policy="optional",
         description="Feature: plan → implement → review → draft PR/MR → CI/deployment verification",
         steps=[
             PrepareMergeRequestStep(step_id="prepare-mr", name="Prepare Task Branch"),
@@ -249,6 +250,7 @@ def pr_completion_workflow() -> Workflow:
     """Complete committed branch work, repairing CI failures after review."""
     return Workflow(
         name="pr-completion",
+        publication_policy="required",
         description="Review → existing/new PR/MR → poll CI → repair/review/push until green",
         # Repair/review limits are enforced separately. Permit several steps per
         # repair while keeping the engine's independent loop safeguard.

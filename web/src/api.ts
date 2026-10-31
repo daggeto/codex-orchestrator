@@ -53,3 +53,13 @@ export function taskRelationships(task: Task, workspaces: Workspace[]) {
   return { agentId, workspaceIds };
 }
 export const appendEvent = (events: MonitorEvent[], event: MonitorEvent) => [...events.slice(-999), event];
+
+export async function post<T>(path: string, body: unknown, timeout = 15000): Promise<T> {
+  const response = await fetch(path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body), signal: AbortSignal.timeout(timeout),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new ApiError(typeof result.error === 'string' ? result.error : `Request failed (${response.status})`, response.status);
+  return result as T;
+}

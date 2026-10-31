@@ -35,7 +35,9 @@ COMMANDS = (
             "Runs until Ctrl+C, which stops the service and its agents. "
             "Use --cwd for the target project, --roles-dir for separate role definitions, "
             "--api-port to change the port, --no-api to disable HTTP, and repeat --spawn-team for initial agents. "
-            "The API port defaults to 8420.",
+            "The API port defaults to 8420. The task home registers server projects persistently, "
+            "accepts workflows asynchronously, and starts/reuses their required team. "
+            "Browser disconnects leave accepted work running; service shutdown interrupts it.",
             ("make start",
              'make start ARGS="--cwd /path/to/repo --roles-dir ./roles --spawn-team architect"')),
     Command("task", "Submit a task to the running service without prompts.", "orch", ("task",),
@@ -124,9 +126,11 @@ COMMANDS = (
     Command("web-install", "Install frontend dependencies from the lockfile.", "npm", ("ci",),
             "Runs npm ci in web/. Requires Node 20.19+ or 22.12+. Replaces node_modules using the lockfile.",
             ("make web-install",)),
-    Command("dev", "Start the web monitor development server.", "npm", ("run", "dev"),
+    Command("dev", "Start the task home and monitor development server.", "npm", ("run", "dev"),
             "Runs Vite in web/. Start make start in another terminal for the API on port 8420. "
-            "The development server proxies /api and /health to that API.",
+            "The development server proxies /api and /health to that API. Task home defaults feature "
+            "submissions to local commits (create_mr=false); publication is opt-in for feature and "
+            "required for pr-completion. The monitor remains read-only.",
             ("make dev", 'make dev ARGS="--port 5174"')),
     Command("preview", "Serve the production web build locally.", "npm", ("run", "preview"),
             "Runs Vite preview in web/. Run make build first and keep the orchestrator API running.",

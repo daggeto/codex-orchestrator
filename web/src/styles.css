@@ -26,3 +26,49 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 ui-monospac
 .diff { max-height: 600px; overflow: auto; background: #10171f; padding: 12px; }
 summary { cursor: pointer; margin-top: 14px; }
 @media (max-width: 760px) { main { grid-template-columns: 1fr; } }
+
+/* Task home styles are scoped to preserve the monitor's existing layout. */
+.app-nav { display: flex; align-items: center; gap: 24px; padding: 16px 28px; background: #131d27; border-bottom: 1px solid #364351; }
+.app-nav a { color: #a9b6c4; text-decoration: none; padding: 6px 0; }
+.app-nav .brand { color: #eff5fc; font-weight: 700; margin-right: auto; }
+.app-nav a[aria-current=page] { color: #a7d5ff; border-bottom: 2px solid #75b8ff; }
+.task-home { display: block; max-width: 1220px; margin: auto; padding: 40px 28px; }
+.home-intro { margin-bottom: 28px; }
+.home-intro h1 { font-size: clamp(26px, 4vw, 38px); letter-spacing: -.035em; }
+.eyebrow { font-size: 11px; letter-spacing: .18em; color: #8fbce4; }
+.home-layout { display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); gap: 24px; align-items: start; }
+.task-home section { padding: 22px; border-radius: 12px; background: #19232e; }
+.task-home label { display: block; font-weight: 600; margin-bottom: 9px; }
+.task-home input[type=search], .task-home select, .task-home textarea { width: 100%; font: inherit; color: #e5edf6; background: #101923; border: 1px solid #485b6c; border-radius: 7px; padding: 12px; }
+.task-home textarea { resize: vertical; min-height: 150px; line-height: 1.6; }
+.task-home :focus-visible, .app-nav a:focus-visible { outline: 2px solid #8dcaff; outline-offset: 3px; }
+.task-home button { border-radius: 7px; padding: 10px 13px; }
+.task-home button:disabled { opacity: .5; cursor: default; }
+.task-home .primary { background: #93caff; border-color: #93caff; color: #102235; font-weight: 700; }
+.chat-actions { display: flex; gap: 16px; justify-content: space-between; align-items: center; margin-top: 10px; }
+.chat-message { padding: 12px 16px; background: #233341; border-radius: 8px; margin-bottom: 16px; }
+.chat-message.assistant { border-left: 3px solid #83c4af; }
+.chat-message p { white-space: pre-wrap; margin-bottom: 0; }
+.chat-transcript:empty { display: none; }
+.chat-transcript { max-height: 440px; overflow: auto; }
+.team { display: flex; flex-wrap: wrap; gap: 8px; }
+.role-chip { position: relative; display: inline-block; padding: 6px 10px; border: 1px solid #526b82; border-radius: 20px; color: #bbdcfa; cursor: help; }
+.role-chip [role=tooltip] { display: none; position: absolute; top: 100%; left: 0; z-index: 5; width: 250px; padding: 14px; background: #0e1720; border: 1px solid #7195b6; border-radius: 8px; color: #e5edf6; font-size: 12px; line-height: 1.7; box-shadow: 0 8px 30px #0008; }
+.role-chip:hover [role=tooltip], .role-chip:focus [role=tooltip] { display: block; }
+.task-home .check { display: flex; align-items: start; gap: 8px; font-weight: 400; line-height: 1.5; }
+.publication { padding: 12px; border-left: 3px solid #d4b779; background: #302d25; color: #ead8b0; font-size: 13px; }
+.project-options { max-height: 240px; overflow: auto; }
+.task-home .project-option { display: block; width: 100%; text-align: left; margin: 6px 0; }
+.project-option small { display: block; margin-top: 5px; overflow-wrap: anywhere; }
+.status-pill { display: inline-block; border: 1px solid #68859e; border-radius: 20px; padding: 5px 12px; font-size: 12px; }
+.run-status pre { max-height: 500px; overflow: auto; }
+.conversation-panel { margin-top: 24px; }
+.conversation-panel > summary { padding: 12px 0; color: #bbdcfa; }
+.agent-conversation select { margin-bottom: 12px; }
+@media (max-width: 760px) {
+  .task-home { padding: 24px 16px; }
+  .home-layout { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .app-nav { gap: 16px; padding: 12px 16px; }
+  .chat-actions { align-items: stretch; flex-direction: column; gap: 8px; }
+  .role-chip [role=tooltip] { width: 210px; }
+}

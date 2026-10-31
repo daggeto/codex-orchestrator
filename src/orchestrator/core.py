@@ -53,12 +53,14 @@ class Orchestrator:
         self.audit: "AuditLog | None" = None
         self.roles: dict[str, RoleConfig] = {}
         self.workflows: dict[str, Workflow] = dict(BUILTIN_WORKFLOWS)
+        self._team_lock = asyncio.Lock()
         self._running = False
         self._shutdown_event = asyncio.Event()
 
     async def start(self, restore: bool = True) -> None:
         """Initialize store, audit log, load roles, skills, optionally restore agents."""
         await self.store.init()
+        await self.store.register_project(str(self.config.effective_project_dir.resolve()))
 
         # Init audit log on the same DB connection
         from orchestrator.audit import AuditLog
@@ -129,6 +131,10 @@ class Orchestrator:
 
     async def spawn_team(self, role_names: list[str] | None = None) -> dict[str, str]:
         """Ensure each requested role has a started agent, reusing saved agents."""
+        async with self._team_lock:
+            return await self._spawn_team(role_names)
+
+    async def _spawn_team(self, role_names):
         if role_names is None:
             role_names = list(self.roles.keys())
         role_names = list(dict.fromkeys(role_names))

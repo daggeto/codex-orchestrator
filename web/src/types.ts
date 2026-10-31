@@ -28,3 +28,15 @@ export interface MonitorEvent { topic: string; source: string; payload: JsonObje
 export interface Snapshot { agents: Agent[]; tasks: Task[]; runs: WorkflowRun[]; workspaces: Workspace[] }
 export type Selection = { kind: 'task' | 'workspace' | 'run' | 'agent'; id: string } | null;
 export type Connection = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
+
+export interface Project { path: string; name: string; available: boolean; created_at: string; updated_at: string }
+export interface Role { name: string; backend: string; description: string; model: string | null; reasoning_effort: string | null }
+export interface WorkflowDefinition {
+  name: string; description: string; steps: string[]; required_roles: string[];
+  publication_policy: 'none' | 'optional' | 'required';
+}
+export interface ChatMessage { id: string; role: 'user' | 'assistant' | 'system'; content: string }
+export interface TaskSubmission {
+  run_id: string; workflow: string;
+  variables: { task_description: string; cwd: string; create_mr?: boolean };
+}

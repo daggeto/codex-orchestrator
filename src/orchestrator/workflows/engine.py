@@ -53,6 +53,8 @@ class Workflow:
     initial_variables: dict[str, Any] = field(default_factory=dict)
     max_iterations: int = 20  # safety limit for loops
 
+    publication_policy: str = "none"
+
     @property
     def required_roles(self) -> list[str]:
         """Collect roles from assignments, reviews, and nested steps."""
@@ -93,6 +95,7 @@ class WorkflowEngine:
         workflow: Workflow,
         variables: dict[str, Any] | None = None,
         run_id: str | None = None,
+        *, accepted: bool = False,
     ) -> WorkflowResult:
         rid = run_id or uuid.uuid4().hex[:16]
         merged_vars = {**workflow.initial_variables, **(variables or {})}
@@ -104,28 +107,31 @@ class WorkflowEngine:
             bus=self._bus,
             variables=merged_vars,
         )
-        self._active_runs[rid] = ctx
-
-        # Persist workflow run
-        record = WorkflowRunRecord(
-            run_id=rid,
-            workflow_name=workflow.name,
-            status="running",
-            config={"variables": merged_vars},
-        )
+        if rid in self._active_runs:
+            raise ValueError("Workflow run is already active")
+        if accepted:
+            record = await self._store.get_workflow_run(rid)
+            if not record or record.status != "accepted" or record.workflow_name != workflow.name:
+                raise ValueError("No accepted submission for this run")
+        else:
+            record = WorkflowRunRecord(
+                run_id=rid, workflow_name=workflow.name,
+                config={"variables": merged_vars},
+            )
+            if not await self._store.reserve_workflow_run(record):
+                raise ValueError("Workflow run ID already exists")
+        record.status = "running"
+        record.state.update(phase="executing", required_roles=workflow.required_roles)
         await self._store.save_workflow_run(record)
-
-        await self._bus.publish("workflow.started", {
-            "run_id": rid, "workflow": workflow.name,
-        }, source="engine")
+        self._active_runs[rid] = ctx
 
         step_results: list[tuple[str, StepResult]] = []
         error: str | None = None
 
         try:
-            if not workflow.steps:
-                return WorkflowResult(run_id=rid, success=True, outputs=ctx.variables)
-
+            await self._bus.publish("workflow.started", {
+                "run_id": rid, "workflow": workflow.name,
+            }, source="engine")
             # Execute steps with branching support
             current_idx = 0
             iterations = 0
@@ -139,16 +145,19 @@ class WorkflowEngine:
                     "run_id": rid, "step_id": step.step_id,
                 }, source="engine")
 
+                record.state.update(current_step=step.step_id, iteration=iterations)
+                await self._store.save_workflow_run(record)
                 result = await step.execute(ctx)
+                record = await self._store.get_workflow_run(rid) or record
                 step_results.append((step.step_id, result))
                 ctx.variables.update(result.output)
 
                 # Persist step result
-                record.state = {
+                record.state.update({
                     "current_step": step.step_id,
                     "iteration": iterations,
                     "variables": ctx.variables,
-                }
+                })
                 await self._store.save_workflow_run(record)
 
                 await self._bus.publish("workflow.step.completed", {
@@ -181,6 +190,7 @@ class WorkflowEngine:
 
         except asyncio.CancelledError:
             record.status = "interrupted"
+            record.state.update(phase="interrupted", error="Service stopped during execution")
             record.state["final_variables"] = ctx.variables
             await self._store.save_workflow_run(record)
             await self._bus.publish("workflow.interrupted", {"run_id": rid}, source="engine")
@@ -194,6 +204,7 @@ class WorkflowEngine:
 
         success = error is None
         record.status = "completed" if success else "failed"
+        record.state.update(phase=record.status, error=error)
         record.completed_at = datetime.now(timezone.utc).isoformat()
         record.state["final_variables"] = ctx.variables
         await self._store.save_workflow_run(record)

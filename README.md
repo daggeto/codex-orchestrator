@@ -253,23 +253,29 @@ src/orchestrator/
 
 See [GUIDE.md](GUIDE.md) for the full reference.
 
-## Local web monitor
+## Task home and local monitor
 
-The read-only React monitor shows agents and their current activity, tasks,
-active and recent workflow runs, live SSE events, and committed branch diffs.
-It observes the orchestrator instance serving `http://127.0.0.1:8420`.
+The task home starts work on the orchestrator instance serving
+`http://127.0.0.1:8420`. Choose a workflow, inspect its actual required team,
+and select a registered server project before describing the task. Hover or
+focus a role chip to see its configured model and reasoning effort. Missing
+settings are explicitly labeled as backend defaults. Role discovery stays tied
+to the service configuration, independently of the selected task directory.
+
+The Monitor navigation opens the existing read-only view of agents and their
+activity, tasks, workflow runs, SSE events, and committed branch diffs. Once
+opened, it stays mounted across navigation to retain selection and live events.
 
 Restart an existing API instance once to load the new observation fields and
 read-only endpoints. Start the API from your target project's directory so
 role discovery and agent context match that project. If no instance is running,
-use `orch start` (or `./.venv/bin/orch start` from this checkout).
+use `make start ARGS="--cwd /absolute/path/to/project"` from this checkout.
 
 In a separate terminal, from this checkout:
 
 ```sh
-cd web
-npm ci
-npm run dev
+make web-install
+make dev
 ```
 
 Open the loopback URL printed by Vite, normally `http://127.0.0.1:5173`.
@@ -288,6 +294,48 @@ npm run preview
 # Python API and observation regression checks, from the repo root
 ./.venv/bin/python -m unittest discover -s tests -v
 ```
+
+The project picker searches registered server folders. Enter an absolute path
+and choose **Register existing folder**, or explicitly choose **Create folder and
+register** to create missing directories (including parents). Validation and
+permission errors appear in the picker. Canonical paths and timestamps are
+stored in SQLite's independent `projects` table, seeded with the service project
+on startup. Missing or inaccessible folders remain listed as unavailable.
+Temporary workspace registrations are unchanged.
+
+Feature submissions default to `create_mr=false`, which keeps implementation
+and review local. Enable publication explicitly to allow pushing approved
+commits and creating a draft PR/MR with CI/deployment verification.
+`pr-completion` always requires publication and shows a separate notice: it may
+push committed work and repair CI without a second browser confirmation.
+Other built-in workflows have no publication step. CLI defaults and synchronous
+submission contracts are unchanged.
+
+The home uses `POST /api/workflows/{name}/submit` with a client-generated run ID,
+`task_description`, and registered `cwd`. It persists acceptance before returning
+202 and starts/reuses exactly `Workflow.required_roles`, including nested steps.
+The same ID and normalized payload return the same acceptance; a conflicting
+payload returns 409. IDs cannot replace saved runs. `GET
+/api/workflows/runs/{run_id}` returns saved progress, results, and errors without
+the recent-history limit. The existing `/run` endpoint still waits for results.
+
+The browser saves the most recent submission before sending it. Reloading the
+page resumes polling; if acceptance is uncertain, **Retry same submission**
+resends the saved ID and payload. Navigation and disconnects do not stop service
+work. Storage must be available to initiate a task safely. A service shutdown or
+restart marks unfinished web submissions interrupted, retaining saved progress;
+it does not automatically replay steps. Inspect progress before starting a new
+task. Older runs remain accessible in Monitor or by individual run API lookup.
+
+The reusable Chat accepts typed messages and an async transport callback. It
+provides a labeled multiline input, transcript, loading, error, and disabled
+states. Agent conversations create an explicit persisted thread first using
+`POST /api/agents/{agent_id}/threads`, then reuse `thread_id` and `cwd` on the
+existing message endpoint. The browser tab retains thread identity in session
+storage; transcripts remain in memory. Replies arrive at turn completion, with
+no streaming. A disconnected message may continue running, so inspect Monitor
+before sending again if its response is lost. Thread availability after a service
+restart depends on the agent backend; automatic conversation replay is not provided.
 
 The monitor uses `GET /health`, `/api/agents`, `/api/work`,
 `/api/work/{item_id}`, `/api/workflows/runs`, `/api/workspaces`,
@@ -311,7 +359,8 @@ Limitations:
   after cleanup or restart. Task relationships use stored IDs and assignment
   history, never role names or path guesses.
 - CLI commands that create a separate orchestrator instance are outside this
-  monitor's view. The UI adds no authentication or execution controls.
+  monitor's view. The task home adds execution controls to this instance.
+  Keep the service and frontend on loopback; they have no authentication.
 
 Manual acceptance (requires a running instance with agents): open the monitor
 and check the connection status; send an agent work through the existing CLI or
@@ -320,3 +369,32 @@ workspace and inspect the branch diff; select an existing workflow run and
 reload to check persisted history. Stop the API and check the disconnected/stale
 state, then restart it and check automatic recovery and the log-gap notice.
 These browser checks are separate from the automated tests and build.
+
+Task-home manual acceptance (pending; no automated or browser checks were run
+for this implementation):
+
+1. Start the API and UI with the Make commands above. Check workflow changes,
+   nested research roles, and model/reasoning tooltips with mouse and keyboard,
+   including a role with no configured values. Check narrow-screen layout.
+2. Search and register an existing folder, create a missing folder explicitly,
+   and try a relative path, file path, and inaccessible folder. Restart the
+   service and confirm registrations persist and unavailable folders are labeled.
+3. Submit a local feature task in a disposable repository. Confirm 202 acceptance,
+   exactly the required team (reused on a second task), current step, final outputs,
+   and no PR/MR publication. Double-click submission and resend the same ID/payload;
+   check that only one execution exists. Change the payload with that ID and
+   confirm 409. Keep CLI `/run` clients synchronous.
+4. Navigate to Monitor, return home, and reload during execution. Disconnect the
+   client around acceptance and recover with the same submission. Stop/restart
+   the service during team startup and during a step; confirm explicit interrupted
+   progress. Simulate a team-start failure and check its persisted error. Confirm
+   individual lookup still works for a run outside recent history.
+5. Inspect feature publication opt-in and the required `pr-completion` notice.
+   Exercise publication only in an authorized disposable remote repository.
+6. Refresh running agents, send two conversation turns, and confirm the same
+   thread and cwd are used. Confirm errors are visible. Check monitor selection,
+   events, task details, and branch diffs still work across home navigation.
+
+Review the complete task diff against main in the isolated worktree, not the
+original checkout: `git -C .worktrees/task-home diff main HEAD`. Implementation
+is committed locally; publication belongs to the external review workflow.
