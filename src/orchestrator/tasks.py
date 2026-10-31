@@ -5,8 +5,11 @@ import asyncio
 from dataclasses import asdict
 import hashlib
 import json
+import os
 import uuid
 
+from orchestrator.processes import owner_alive, process_identity
+from orchestrator.workflows.merge_request import resolve_publication_identity
 from orchestrator.roles.loader import RoleConfig
 from orchestrator.state.models import now
 from orchestrator.state.store import WorkflowRunRecord
@@ -26,6 +29,10 @@ class TaskService:
         self.running = {}
         self.accept_lock = asyncio.Lock()
         self.input_waiters = {}
+        self.input_handlers = {}
+        self.cancelling = set()
+        self.owner_pid = os.getpid()
+        self.owner_started = process_identity(self.owner_pid)
 
     def schedule(self, task_id, operation):
         job = asyncio.create_task(operation)
@@ -114,17 +121,38 @@ class TaskService:
             tid = now() + '-' + uuid.uuid4().hex[:12]
             await self.store.write('INSERT INTO tasks (task_id,workspace_id,title,prompt,kind,settings_json,idempotency_key,fingerprint,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
                                    (tid, workspace_id, prompt.splitlines()[0][:100], prompt, kind, json.dumps(settings), idempotency_key, fingerprint, now(), now()))
+            await self.store.write('UPDATE tasks SET owner_pid=?,owner_started=? WHERE task_id=?',
+                                   (self.owner_pid, self.owner_started, tid))
             self.schedule(tid, self.execute(tid))
             return await self.store.task(tid)
 
     async def execute(self, task_id, message=None):
         workspace = None
+        owned = False
         leased = False
         lock = None
         acquired = False
         try:
             task = await self.store.task(task_id)
+            if task_id in self.cancelling or task['status'] in TERMINAL:
+                return
+            if task['owner_pid'] and task['owner_pid'] != self.owner_pid and owner_alive(task['owner_pid'], task['owner_started']):
+                return
+            claimed = await self.store.write('UPDATE tasks SET owner_pid=?,owner_started=? WHERE task_id=? AND owner_pid IS ? AND owner_started IS ?',
+                                   (self.owner_pid, self.owner_started, task_id, task['owner_pid'], task['owner_started']))
+            if not claimed:
+                return
+            owned = True
             await self.store.task_status(task_id, 'queued', 'Preparing workspace')
+            settings = task['settings']
+            if task['kind'] == 'workflow' and str(settings.get('variables', {}).get('create_mr', True)).lower() not in {'false','0','no'}:
+                workflow = self.orch.workflows[settings['workflow']]
+                if workflow.publication_policy in {'required', 'optional'}:
+                    source = await self.store.workspace_record(task['workspace_id'])
+                    variables = settings.setdefault('variables', {})
+                    if not variables.get('publication_source'):
+                        variables['publication_source'] = await resolve_publication_identity(source['path'], variables)
+                        await self.store.write('UPDATE tasks SET settings_json=? WHERE task_id=?', (json.dumps(settings), task_id))
             workspace = await self.orch.workspaces.ensure_task_workspace(task_id, task['settings']['isolate'])
             lock = self.orch.workspaces.lock(workspace['workspace_id'])
             await lock.acquire()
@@ -133,7 +161,7 @@ class TaskService:
             if latest['status'] != 'active':
                 raise Conflict('Workspace is being archived')
             try:
-                await self.store.write('INSERT INTO workspace_leases VALUES (?,?)', (workspace['workspace_id'], task_id))
+                await self.store.write('INSERT INTO workspace_leases (workspace_id,task_id,owner_pid,owner_started) VALUES (?,?,?,?)', (workspace['workspace_id'], task_id, self.owner_pid, self.owner_started))
             except Exception as exc:
                 raise Conflict('Workspace is already executing another task') from exc
             leased = True
@@ -165,13 +193,15 @@ class TaskService:
                 result = await agent.send_message(thread.thread_id, message if message is not None else task['prompt'])
                 await self.store.task_status(task_id, 'active', 'Ready for your next message' if result.ok else result.error or 'Turn failed; you can retry')
         except asyncio.CancelledError:
-            await self.store.task_status(task_id, 'interrupted', 'Execution interrupted; continue explicitly')
+            if owned and task_id not in self.cancelling:
+                await self.store.task_status(task_id, 'interrupted', 'Execution interrupted; continue explicitly')
             raise
         except Exception as exc:
-            await self.store.task_status(task_id, 'failed', str(exc))
+            if owned:
+                await self.store.task_status(task_id, 'failed', str(exc))
         finally:
             try:
-                for record in await self.store.rows('SELECT agent_id FROM agents WHERE task_id=?', (task_id,)):
+                for record in (await self.store.rows('SELECT agent_id FROM agents WHERE task_id=?', (task_id,)) if owned else []):
                     if self.orch.registry.get_agent(record['agent_id']):
                         await self.orch.registry.stop_agent(record['agent_id'])
                 if leased:
@@ -188,6 +218,8 @@ class TaskService:
             workspace = await self.store.workspace_record(task['workspace_id'])
             if task['kind'] != 'agent' or task['status'] in TERMINAL or workspace['status'] != 'active':
                 raise Conflict('Task cannot receive messages')
+            if task['owner_pid'] and task['owner_pid'] != self.owner_pid and owner_alive(task['owner_pid'], task['owner_started']):
+                raise Conflict('Task belongs to another live service')
             if task_id in self.running:
                 raise Conflict('A turn is already running')
             if not isinstance(message, str) or not message.strip():
@@ -200,6 +232,8 @@ class TaskService:
             task = await self.store.task(task_id)
             if not task:
                 raise LookupError('Task not found')
+            if task['owner_pid'] and task['owner_pid'] != self.owner_pid and owner_alive(task['owner_pid'], task['owner_started']):
+                raise Conflict('Task belongs to another live service')
             if task['kind'] != 'agent' or task_id in self.running or task['status'] in {'completed','failed'}:
                 raise Conflict('Finish or cancel the active turn before completing the session')
             workspace = await self.store.workspace_record(task['workspace_id'])
@@ -208,25 +242,48 @@ class TaskService:
             await self.store.task_status(task_id, 'completed', 'Manually completed')
 
     async def cancel(self, task_id):
-        job = self.running.get(task_id)
-        if job:
-            job.cancel()
-            await asyncio.gather(job, return_exceptions=True)
-        await self.store.write("UPDATE input_requests SET status='expired',updated_at=? WHERE task_id=? AND status='pending'", (now(), task_id))
-        await self.store.task_status(task_id, 'cancelled', 'Cancelled')
+        task = await self.store.task(task_id)
+        if task and task['owner_pid'] and task['owner_pid'] != self.owner_pid and owner_alive(task['owner_pid'], task['owner_started']):
+            raise Conflict('Task belongs to another live service; cancel it through that service')
+        self.cancelling.add(task_id)
+        try:
+            await self.store.task_status(task_id, 'cancelled', 'Cancelled')
+            job = self.running.get(task_id)
+            if job:
+                job.cancel()
+                await asyncio.gather(job, return_exceptions=True)
+            handlers = list(self.input_handlers.get(task_id, set()))
+            for handler in handlers:
+                handler.cancel()
+            await asyncio.gather(*handlers, return_exceptions=True)
+            await self.store.write("UPDATE input_requests SET status='expired',updated_at=? WHERE task_id=? AND status='pending'", (now(), task_id))
+            await self.store.task_status(task_id, 'cancelled', 'Cancelled')
+        finally:
+            self.cancelling.discard(task_id)
 
     async def request_input(self, task_id, prompt, kind='text', agent_id=None, execution_id=None, options=None, timeout=3600):
+        if task_id:
+            task = await self.store.task(task_id)
+            if task_id in self.cancelling or not task or task['status'] in TERMINAL:
+                raise asyncio.CancelledError
+        handler = asyncio.current_task()
+        self.input_handlers.setdefault(task_id, set()).add(handler)
         rid = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
         self.input_waiters[rid] = future
         try:
             await self.store.create_input(rid, task_id, prompt, kind, agent_id, execution_id, options)
+            if task_id:
+                task = await self.store.task(task_id)
+                if task_id in self.cancelling or not task or task['status'] in TERMINAL:
+                    raise asyncio.CancelledError
             return await asyncio.wait_for(future, timeout)
         finally:
             self.input_waiters.pop(rid, None)
+            self.input_handlers.get(task_id, set()).discard(handler)
             await self.store.write("UPDATE input_requests SET status='expired',updated_at=? WHERE request_id=? AND status='pending'", (now(), rid))
             if task_id:
-                await self.store.task_status(task_id, 'active', 'Continuing after input')
+                await self.store.task_status(task_id, 'active', 'Continuing after input', expected=('waiting_input',))
 
     async def resolve_input(self, request_id, response):
         future = self.input_waiters.get(request_id)
@@ -241,3 +298,7 @@ class TaskService:
         for job in jobs:
             job.cancel()
         await asyncio.gather(*jobs, return_exceptions=True)
+        handlers = {handler for group in self.input_handlers.values() for handler in group}
+        for handler in handlers:
+            handler.cancel()
+        await asyncio.gather(*handlers, return_exceptions=True)

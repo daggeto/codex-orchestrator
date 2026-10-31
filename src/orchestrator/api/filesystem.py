@@ -25,7 +25,7 @@ async def directories(request):
     children = []
     for entry in sorted(path.iterdir(), key=lambda p: p.name.casefold()):
         try:
-            canonical = permitted(orch, entry)
+            canonical = permitted(orch, str(entry))
             if not entry.name.startswith('.'):
                 children.append({'name': entry.name, 'path': str(canonical)})
         except (ValueError, OSError):

@@ -46,6 +46,7 @@ class WorkspaceManager:
         self._worktrees_dir = worktrees_dir or Path.home() / ".codex-orchestrator" / "worktrees"
         self._worktrees_dir.mkdir(parents=True, exist_ok=True)
         self._active: dict[str, Worktree] = {}
+        self.persistence = None
 
     async def create_worktree(
         self,
@@ -115,7 +116,11 @@ class WorkspaceManager:
             agent_id=agent_id,
             work_item_id=work_item_id,
         )
-        self._active[wt_id] = wt
+        if self.persistence:
+            await self.persistence.register(wt.worktree_path)
+            record = await self.persistence.store.one('SELECT * FROM workspaces WHERE path=?', (wt.worktree_path,))
+            wt.worktree_id = record['workspace_id']
+        self._active[wt.worktree_id] = wt
         logger.info(
             "Created worktree %s at %s (branch=%s, base=%s)",
             wt_id, wt_path, branch, base_branch,

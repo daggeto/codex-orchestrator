@@ -65,12 +65,12 @@ COMMANDS = (
             "its orchestrator on completion; use start --spawn-team for a long-running team.",
             ('make team ARGS="architect implementer reviewer"',)),
     Command("send", "Send a message to an agent by role.", "orch", ("send",),
-            "Requires ROLE MESSAGE. Quote the message inside ARGS to preserve it as one argument. "
+            "Requires ROLE MESSAGE. Starts a saved non-task agent for the role on demand; task-owned agents use task messaging. Quote the message inside ARGS to preserve it as one argument. "
             "Use --cwd to set the agent working directory. The implementer must use a separate task worktree "
             "unless the message explicitly requests main-branch implementation.",
             ("""make send ARGS='architect "Design an auth system" --cwd /path/to/repo'""",)),
     Command("supervised-send", "Send a role message with deliverable supervision.", "orch", ("supervised-send",),
-            "Requires ROLE MESSAGE and accepts --cwd. Reports accepted output or supervision issues, "
+            "Requires ROLE MESSAGE and accepts --cwd. Starts a saved non-task role agent on demand. Reports accepted output or supervision issues, "
             "then lists detected deliverables and whether they were verified. The implementer must use "
             "a separate task worktree unless the message explicitly requests main-branch implementation.",
             ("""make supervised-send ARGS='implementer "Fix the user-list query" --cwd /path/to/repo'""",)),
@@ -82,7 +82,7 @@ COMMANDS = (
             "Reads agent records from the configured store without starting agents.",
             ("make agent-list",)),
     Command("agent-send", "Send a message to a specific agent ID.", "orch", ("agent", "send"),
-            "Requires AGENT_ID MESSAGE. Use --thread/-t to resume a thread and --cwd to set its working directory.",
+            "Requires AGENT_ID MESSAGE. Starts the selected saved non-task agent on demand. Use --thread/-t to resume a thread and --cwd to set its working directory.",
             ("""make agent-send ARGS='design-agent "Continue the design" --thread THREAD_ID --cwd /path/to/repo'""",)),
     Command("workflow-list", "List workflows and their step counts.", "orch", ("workflow", "list"),
             "Built-ins are feature, bugfix, review, research, and pr-completion.",
@@ -94,7 +94,7 @@ COMMANDS = (
             "and monitors/repairs CI. feature can also create a draft PR/MR. feature, bugfix, and pr-completion "
             "reuse a selected worktree or create one from Main, shared by implementation, review, QA, and publication. "
             "Review uses the selected publication target even when the task branch differs. "
-            "Existing PR/MR source branches are preserved when publishing from the task checkout. "
+            "Existing PR/MR source and target branches are resolved before isolation and preserved when publishing from the task checkout. "
             "Worktrees and session history survive shutdown. Web deletion verifies a private archive before removal; "
             "failed captures retain the checkout. See docs/pr-completion.md for its inputs.",
             ("""make workflow-run ARGS='feature -v task_description="Add OAuth login" --cwd /path/to/repo -v mr_base=main'""",
@@ -108,7 +108,7 @@ COMMANDS = (
             ("make skill-list", 'make skill-list ARGS="--role reviewer"')),
     Command("skill-run", "Run a skill using a role and input variables.", "orch", ("skill", "run"),
             "Requires NAME ROLE. Repeat -v KEY=VALUE for template inputs. Accepts --cwd and --no-supervise; "
-            "supervision is enabled by default. Requires available agents.",
+            "supervision is enabled by default. Starts a saved non-task role agent on demand.",
             ("""make skill-run ARGS='investigate-bug architect -v bug_description="OOM on uploads" --cwd /path/to/repo'""",)),
     Command("audit-turns", "Show recent turns with timing and token usage.", "orch", ("audit", "turns"),
             "Defaults to 20 recent turns. --limit/-n changes the count. The CLI currently accepts --role "

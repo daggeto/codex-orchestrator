@@ -10,6 +10,7 @@ import stat
 import tarfile
 import uuid
 
+from orchestrator.processes import owner_alive, process_group_alive, process_identity
 from orchestrator.state.models import now
 from orchestrator.tasks import Conflict
 from orchestrator.workflows.merge_request import _run
@@ -99,12 +100,18 @@ class ArchiveService:
                 raise Conflict('Main folders cannot be deleted')
             if workspace['status'] == 'archived':
                 raise Conflict('Workspace is already archived')
+            if workspace['status'] == 'archiving':
+                previous = await self.store.one('SELECT * FROM archives WHERE workspace_id=? ORDER BY created_at DESC LIMIT 1', (workspace_id,))
+                if not previous or owner_alive(previous['owner_pid'], previous['owner_started']):
+                    raise Conflict('Deletion belongs to another live or unverifiable service')
             if workspace_id in self.running:
                 raise Conflict('Deletion is already running')
             aid = uuid.uuid4().hex
+            claimed = await self.store.write("UPDATE workspaces SET status='archiving',updated_at=? WHERE workspace_id=? AND updated_at=?", (now(), workspace_id, workspace['updated_at']))
+            if not claimed:
+                raise Conflict('Workspace changed while deletion was being requested; retry')
             self.running[workspace_id] = aid
-            await self.store.write("UPDATE workspaces SET status='archiving',updated_at=? WHERE workspace_id=?", (now(), workspace_id))
-            await self.store.write('INSERT INTO archives (archive_id,workspace_id,stage,created_at,updated_at) VALUES (?,?,?,?,?)', (aid, workspace_id, 'blocking', now(), now()))
+            await self.store.write('INSERT INTO archives (archive_id,workspace_id,stage,created_at,updated_at,owner_pid,owner_started) VALUES (?,?,?,?,?,?,?)', (aid, workspace_id, 'blocking', now(), now(), os.getpid(), process_identity(os.getpid())))
         return workspace, aid
 
     async def archive_and_delete(self, workspace_id):
@@ -115,20 +122,35 @@ class ArchiveService:
         workspace_id = workspace['workspace_id']
         try:
             await self.stage(aid, 'stopping')
-            for task in await self.store.rows('SELECT task_id,status FROM tasks WHERE workspace_id=?', (workspace_id,)):
-                if task['status'] not in {'completed','failed','cancelled'}:
+            lease = await self.store.one('SELECT * FROM workspace_leases WHERE workspace_id=?', (workspace_id,))
+            if lease and lease['task_id'] not in self.orch.tasks.running:
+                raise Conflict('Workspace has an execution lease owned by another service; checkout retained')
+            tasks = await self.store.rows('SELECT task_id,status FROM tasks WHERE workspace_id=?', (workspace_id,))
+            agent_ids = set()
+            for task in tasks:
+                if task['status'] not in {'completed','failed','cancelled'} or task['task_id'] in self.orch.tasks.running:
                     await self.orch.tasks.cancel(task['task_id'])
                 for agent in await self.store.rows('SELECT agent_id FROM agents WHERE task_id=?', (task['task_id'],)):
-                    await self.orch.registry.destroy_agent(agent['agent_id'])
-            # Legacy/direct agents may predate task ownership. Stop those using
-            # this checkout too, and reject globally shared active processes.
+                    agent_ids.add(agent['agent_id'])
+            # Legacy sessions can use this checkout without belonging to a task.
+            root = Path(workspace['path']).resolve()
+            for thread in await self.store.rows('SELECT agent_id,cwd FROM threads WHERE cwd IS NOT NULL'):
+                if Path(thread['cwd']).resolve().is_relative_to(root):
+                    agent_ids.add(thread['agent_id'])
             for agent in self.orch.registry.agents.values():
-                matching = any(info.cwd and Path(info.cwd).resolve() == Path(workspace['path']).resolve() for info in agent._threads.values())
-                if matching:
-                    other = [turn for turn in agent.activity['threads'] if turn.get('workspace') and Path(turn['workspace']).resolve() != Path(workspace['path']).resolve()]
-                    if other:
-                        raise Conflict('A legacy agent is active in multiple workspaces; stop it before deletion')
-                    await self.orch.registry.destroy_agent(agent.agent_id)
+                if any(t.cwd and Path(t.cwd).resolve().is_relative_to(root) for t in agent._threads.values()):
+                    agent_ids.add(agent.agent_id)
+            for agent_id in agent_ids:
+                runtime = self.orch.registry.get_agent(agent_id)
+                if runtime and any(turn.get('workspace') and not Path(turn['workspace']).resolve().is_relative_to(root) for turn in runtime.activity['threads']):
+                    raise Conflict('A legacy agent is active in another workspace; checkout retained')
+                if not runtime:
+                    record = await self.store.one('SELECT * FROM agents WHERE agent_id=?', (agent_id,))
+                    if record and ((record['owner_pid'] and owner_alive(record['owner_pid'], record['owner_started'])) or
+                                   (record['pid'] and process_group_alive(record['pid'])) or
+                                   record['status'] in {'starting','running','degraded','stopping'}):
+                        raise Conflict('A legacy agent is still running in another service; checkout retained')
+                await self.orch.registry.destroy_agent(agent_id)
             async with self.orch.workspaces.lock(workspace_id):
                 root = Path(workspace['path'])
                 repository = await self.store.one('SELECT * FROM repositories WHERE repository_id=?', (workspace['repository_id'],))
@@ -156,10 +178,18 @@ class ArchiveService:
                     await _run(str(root), 'git', 'bundle', 'create', str(bundle), '--all', 'HEAD')
                     os.chmod(bundle, 0o600)
                     await _run(str(root), 'git', 'bundle', 'verify', str(bundle))
-                    history = {}
+                    history = {'repository': repository, 'workspace': workspace}
                     history['tasks'] = await self.store.rows('SELECT * FROM tasks WHERE workspace_id=?', (workspace_id,))
                     for table in ('agents','threads','workflow_runs','work_items','step_executions','task_events','input_requests'):
                         history[table] = await self.store.rows(f'SELECT * FROM {table} WHERE task_id IN (SELECT task_id FROM tasks WHERE workspace_id=?)', (workspace_id,))
+                    legacy_threads = [thread for thread in await self.store.rows('SELECT * FROM threads WHERE task_id IS NULL AND cwd IS NOT NULL')
+                        if Path(thread['cwd']).resolve().is_relative_to(root.resolve())]
+                    legacy_ids = {thread['thread_id'] for thread in legacy_threads}
+                    history['legacy_threads'] = legacy_threads
+                    history['legacy_agents'] = [agent for agent in await self.store.rows('SELECT * FROM agents WHERE task_id IS NULL')
+                        if agent['agent_id'] in {thread['agent_id'] for thread in legacy_threads}]
+                    history['legacy_events'] = [event for event in await self.store.rows('SELECT * FROM task_events WHERE task_id IS NULL')
+                        if event['thread_id'] in legacy_ids]
                     target = directory / 'workspace.tar.gz'
                     checksum = await asyncio.to_thread(capture, root, target, bundle, history)
                     await self.store.write('UPDATE archives SET path=?,checksum=? WHERE archive_id=?', (str(target), checksum, aid))
@@ -173,6 +203,7 @@ class ArchiveService:
                         raise Conflict('Checkout missing and no verified archive found')
                     await self.store.write('UPDATE archives SET path=?,checksum=? WHERE archive_id=?', (previous['path'], previous['checksum'], aid))
                 await self.store.write("UPDATE workspaces SET status='archived',updated_at=? WHERE workspace_id=?", (now(), workspace_id))
+                self.orch.workspace._active.pop(workspace_id, None)
                 await self.stage(aid, 'archived')
             return await self.store.one('SELECT * FROM archives WHERE archive_id=?', (aid,))
         except BaseException as exc:

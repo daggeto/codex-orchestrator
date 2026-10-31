@@ -56,6 +56,7 @@ class Orchestrator:
         from orchestrator.workspaces import WorkspaceService
         from orchestrator.tasks import TaskService
         self.workspaces = WorkspaceService(self)
+        self.workspace.persistence = self.workspaces
         self.tasks = TaskService(self)
         self.registry.input_handler = self.tasks.request_input
         self.registry.task_service = self.tasks
@@ -308,6 +309,19 @@ class Orchestrator:
 
     # ── Direct Agent Interaction ────────────────────────────────────────
 
+    async def _direct_agent(self, role):
+        agents = self.registry.get_agents_by_role(role)
+        if agents:
+            agent = agents[0]
+        else:
+            saved = await self.store.one(
+                'SELECT agent_id FROM agents WHERE role=? AND task_id IS NULL AND retired_at IS NULL ORDER BY created_at DESC LIMIT 1', (role,))
+            if not saved:
+                raise RuntimeError(f"No saved agents with role '{role}'; spawn one first")
+            agent = await self.registry.materialize(saved['agent_id'])
+        await self.registry.start_agent(agent.agent_id)
+        return agent
+
     async def send_to_role(
         self,
         role: str,
@@ -316,14 +330,10 @@ class Orchestrator:
         thread_id: str | None = None,
     ) -> str:
         """Send a message to an agent by role. Returns the response text."""
-        agents = self.registry.get_agents_by_role(role)
-        running = [a for a in agents if a.status.value == "running"]
-        if not running:
-            raise RuntimeError(f"No running agents with role '{role}'")
-        agent = running[0]
+        agent = await self._direct_agent(role)
 
         if thread_id:
-            pass
+            await agent.resume_thread(thread_id)
         else:
             info = await agent.start_thread(cwd=cwd)
             thread_id = info.thread_id
@@ -341,11 +351,14 @@ class Orchestrator:
         cwd: str | None = None,
     ) -> str:
         """Send a message to a specific agent. Returns the response text."""
-        agent = self.registry.get_agent(agent_id)
-        if not agent:
-            raise ValueError(f"Agent {agent_id} not found")
+        agent = await self.registry.materialize(agent_id)
+        if getattr(agent, 'task_id', None):
+            raise ValueError('Use task messaging for a task-owned agent')
+        await self.registry.start_agent(agent_id)
 
-        if not thread_id:
+        if thread_id:
+            await agent.resume_thread(thread_id)
+        else:
             info = await agent.start_thread(cwd=cwd)
             thread_id = info.thread_id
             await self._persist_thread(info)
@@ -425,13 +438,11 @@ class Orchestrator:
         """Send a message with supervision — ensures deliverables, not noise."""
         from orchestrator.supervision import SupervisionResult
 
-        agents = self.registry.get_agents_by_role(role)
-        running = [a for a in agents if a.status.value == "running"]
-        if not running:
-            raise RuntimeError(f"No running agents with role '{role}'")
-        agent = running[0]
+        agent = await self._direct_agent(role)
 
-        if not thread_id:
+        if thread_id:
+            await agent.resume_thread(thread_id)
+        else:
             info = await agent.start_thread(cwd=cwd)
             thread_id = info.thread_id
             await self._persist_thread(info)

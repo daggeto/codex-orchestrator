@@ -1,7 +1,7 @@
 """Ordered, additive migrations. Historical records without evidence stay unowned."""
 from __future__ import annotations
 
-VERSION = 2
+VERSION = 3
 MIGRATIONS = {2: """
 CREATE TABLE repositories (
  repository_id TEXT PRIMARY KEY, name TEXT NOT NULL, main_path TEXT NOT NULL UNIQUE,
@@ -61,6 +61,15 @@ CREATE INDEX events_task_cursor ON task_events(task_id,id);
 CREATE INDEX events_agent_cursor ON task_events(agent_id,id);
 CREATE INDEX steps_run ON step_executions(run_id,created_at);
 CREATE INDEX input_task ON input_requests(task_id,status);
+""", 3: """
+ALTER TABLE workspace_leases ADD COLUMN owner_pid INTEGER;
+ALTER TABLE workspace_leases ADD COLUMN owner_started TEXT;
+ALTER TABLE tasks ADD COLUMN owner_pid INTEGER;
+ALTER TABLE tasks ADD COLUMN owner_started TEXT;
+ALTER TABLE agents ADD COLUMN owner_pid INTEGER;
+ALTER TABLE agents ADD COLUMN owner_started TEXT;
+ALTER TABLE archives ADD COLUMN owner_pid INTEGER;
+ALTER TABLE archives ADD COLUMN owner_started TEXT;
 """}
 
 

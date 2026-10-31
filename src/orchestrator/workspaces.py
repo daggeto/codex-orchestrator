@@ -6,6 +6,8 @@ from pathlib import Path
 import uuid
 import hashlib
 
+from orchestrator.processes import owner_alive, process_group_alive
+
 from orchestrator.state.models import now
 from orchestrator.workflows.merge_request import _run
 
@@ -79,11 +81,34 @@ class WorkspaceService:
                 tid = next(iter(owners))
                 await self.store.write('UPDATE agents SET task_id=? WHERE agent_id=? AND task_id IS NULL', (tid, aid))
                 await self.store.write('UPDATE threads SET task_id=? WHERE agent_id=? AND task_id IS NULL AND cwd=(SELECT path FROM workspaces JOIN tasks USING(workspace_id) WHERE task_id=?)', (tid, aid, tid))
-        await self.store.write('DELETE FROM workspace_leases')
-        await self.store.write("UPDATE tasks SET status='interrupted',phase='Service restarted; continue explicitly',updated_at=? WHERE status IN ('queued','active','waiting_input')", (now(),))
-        await self.store.write("UPDATE input_requests SET status='expired',updated_at=? WHERE status='pending'", (now(),))
-        await self.store.write("UPDATE step_executions SET status='interrupted',updated_at=? WHERE status='active'", (now(),))
-        await self.store.write("UPDATE archives SET stage='interrupted',error='Service restarted; retry deletion after inspecting archive',updated_at=? WHERE stage NOT IN ('archived','failed')", (now(),))
+        from orchestrator.workspace import Worktree
+        for workspace in await self.store.rows("SELECT w.*,r.main_path FROM workspaces w JOIN repositories r USING(repository_id) WHERE w.kind='worktree' AND w.status!='archived'"):
+            if Path(workspace['path']).is_dir():
+                self.orch.workspace._active[workspace['workspace_id']] = Worktree(
+                    worktree_id=workspace['workspace_id'], repo_path=workspace['main_path'],
+                    worktree_path=workspace['path'], branch=workspace['branch'] or '',
+                    base_branch=workspace['base_commit'] or 'HEAD')
+        for lease in await self.store.rows('SELECT * FROM workspace_leases'):
+            if not owner_alive(lease['owner_pid'], lease['owner_started']):
+                await self.store.write('DELETE FROM workspace_leases WHERE workspace_id=? AND owner_pid=? AND owner_started=?',
+                                       (lease['workspace_id'], lease['owner_pid'], lease['owner_started']))
+        for task in await self.store.rows("SELECT * FROM tasks WHERE status IN ('queued','active','waiting_input')"):
+            lease = await self.store.one('SELECT * FROM workspace_leases WHERE task_id=?', (task['task_id'],))
+            if lease or (task['owner_pid'] and owner_alive(task['owner_pid'], task['owner_started'])):
+                continue
+            await self.store.task_status(task['task_id'], 'interrupted', 'Owner stopped; continue explicitly')
+            await self.store.write("UPDATE input_requests SET status='expired',updated_at=? WHERE task_id=? AND status='pending'", (now(), task['task_id']))
+            await self.store.write("UPDATE step_executions SET status='interrupted',updated_at=? WHERE task_id=? AND status='active'", (now(), task['task_id']))
+        for archive in await self.store.rows("SELECT * FROM archives WHERE stage NOT IN ('archived','failed','interrupted')"):
+            if not owner_alive(archive['owner_pid'], archive['owner_started']):
+                await self.store.write("UPDATE archives SET stage='interrupted',error='Owner stopped; inspect and retry deletion',updated_at=? WHERE archive_id=?", (now(), archive['archive_id']))
+                await self.store.write("UPDATE workspaces SET status='archive_failed',updated_at=? WHERE workspace_id=? AND status='archiving'", (now(), archive['workspace_id']))
+        for agent in await self.store.rows("SELECT agent_id,pid,owner_pid,owner_started FROM agents WHERE status IN ('running','starting','stopping','degraded')"):
+            if agent['owner_pid'] and owner_alive(agent['owner_pid'], agent['owner_started']):
+                continue
+            # No backend PID (legacy/Claude) cannot prove descendants stopped.
+            if agent['pid'] and not process_group_alive(agent['pid']):
+                await self.store.update_agent_status(agent['agent_id'], 'stopped', pid=None, ws_url=None)
 
     async def ensure_task_workspace(self, task_id, isolate):
         async with self.provision_lock:
@@ -95,7 +120,6 @@ class WorkspaceService:
                 raise RuntimeError('Workspace directory is unavailable')
             if workspace['kind'] == 'main' and isolate:
                 wt = await self.orch.workspace.create_worktree(workspace['path'], hashlib.sha256(task_id.encode()).hexdigest()[:16], hashlib.sha256(task_id.encode()).hexdigest()[:16])
-                await self.register(wt.worktree_path)
                 workspace = await self.store.one('SELECT * FROM workspaces WHERE path=?', (wt.worktree_path,))
                 await self.store.write('UPDATE tasks SET workspace_id=?,updated_at=? WHERE task_id=?', (workspace['workspace_id'], now(), task_id))
             return workspace

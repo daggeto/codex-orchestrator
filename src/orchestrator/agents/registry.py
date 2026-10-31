@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from dataclasses import asdict
 from copy import deepcopy
@@ -14,6 +15,7 @@ from orchestrator.agents.codex import CodexAgent
 from orchestrator.agents.claude import ClaudeAgent
 from orchestrator.config import OrchestratorConfig
 from orchestrator.events.bus import EventBus
+from orchestrator.processes import owner_alive, process_identity
 from orchestrator.roles.loader import RoleConfig
 from orchestrator.state.store import AgentRecord, StateStore
 
@@ -28,7 +30,7 @@ class AgentRegistry:
         self._store = store
         self._bus = bus
         self._agents: dict[str, Agent] = {}
-        self._allocated_ports: set[int] = set()
+        self._allocated_ports: dict[int, str] = {}
         self._health_task: asyncio.Task | None = None
         self._shutdown = asyncio.Event()
         self._observations: asyncio.Queue = asyncio.Queue(maxsize=256)
@@ -59,17 +61,18 @@ class AgentRegistry:
     def agents(self) -> dict[str, Agent]:
         return dict(self._agents)
 
-    def _allocate_port(self) -> int:
+    def _allocate_port(self, agent_id: str) -> int:
         port = self._config.base_port
         while port in self._allocated_ports:
             port += 1
             if port > self._config.base_port + 1000:
                 raise RuntimeError("No available ports in range")
-        self._allocated_ports.add(port)
+        self._allocated_ports[port] = agent_id
         return port
 
-    def _release_port(self, port: int):
-        self._allocated_ports.discard(port)
+    def _release_port(self, port: int, agent_id: str):
+        if self._allocated_ports.get(port) == agent_id:
+            self._allocated_ports.pop(port)
 
     async def create_agent(
         self,
@@ -84,7 +87,7 @@ class AgentRegistry:
             raise RuntimeError(f"Maximum agents ({self._config.max_agents}) reached")
 
         if role.backend == "codex":
-            port = self._allocate_port()
+            port = self._allocate_port(aid)
             agent = CodexAgent(agent_id=aid, role=role, port=port)
         elif role.backend == "claude":
             agent = ClaudeAgent(agent_id=aid, role=role)
@@ -128,11 +131,15 @@ class AgentRegistry:
 
         if self.live_count >= self._config.max_agents:
             raise RuntimeError(f"Maximum agents ({self._config.max_agents}) reached")
-        if isinstance(agent, CodexAgent) and agent.port not in self._allocated_ports:
-            agent.port = self._allocate_port()
+        if isinstance(agent, CodexAgent) and self._allocated_ports.get(agent.port) != agent_id:
+            agent.port = self._allocate_port(agent_id)
             agent._ws_url = f"ws://{agent.host}:{agent.port}"
         try:
+            await self._store.write('UPDATE agents SET owner_pid=?,owner_started=? WHERE agent_id=?',
+                                    (os.getpid(), process_identity(os.getpid()), agent_id))
             await agent.start()
+            if isinstance(agent, CodexAgent):
+                await self._store.write('UPDATE agents SET port=? WHERE agent_id=?', (agent.port, agent_id))
             await self._store.update_agent_status(
                 agent_id, "running",
                 pid=getattr(agent, "pid", None),
@@ -164,8 +171,9 @@ class AgentRegistry:
             await self._store.update_agent_status(agent_id, 'error')
             raise
         if isinstance(agent, CodexAgent):
-            self._release_port(agent.port)
-        await self._store.update_agent_status(agent_id, 'stopped')
+            self._release_port(agent.port, agent_id)
+        await self._store.update_agent_status(agent_id, 'stopped', pid=None, ws_url=None)
+        await self._store.write('UPDATE agents SET owner_pid=NULL,owner_started=NULL WHERE agent_id=?', (agent_id,))
         await self._bus.publish('agent.stopped', {'agent_id': agent_id, 'role': agent.role.name}, source='registry')
 
     async def destroy_agent(self, agent_id: str) -> None:
@@ -173,6 +181,8 @@ class AgentRegistry:
             agent = self._agents[agent_id]
             if agent.status != AgentStatus.STOPPED:
                 await self.stop_agent(agent_id)
+            if isinstance(agent, CodexAgent):
+                self._release_port(agent.port, agent_id)
             del self._agents[agent_id]
         await self._store.delete_agent(agent_id)
         await self._bus.publish("agent.destroyed", {"agent_id": agent_id}, source="registry")
@@ -244,8 +254,8 @@ class AgentRegistry:
 
     async def restore(self, roles: dict[str, RoleConfig]) -> int:
         """Restore agents from database on startup. Returns count of restored agents."""
-        # Sessions are resumed explicitly, never replayed at service startup.
-        await self._store.write("UPDATE agents SET status='stopped',pid=NULL,ws_url=NULL")
+        # Sessions resume explicitly. Preserve process identity of sessions
+        # which may still belong to another running service.
         return 0
 
     @property
@@ -258,7 +268,12 @@ class AgentRegistry:
         record = await self._store.one('SELECT * FROM agents WHERE agent_id=?', (agent_id,))
         if not record or record['retired_at']:
             raise ValueError('Agent is retired or unavailable')
-        return await self.create_agent(RoleConfig(**record['config']), agent_id, record['task_id'], persist=False)
+        if (record['owner_pid'] and owner_alive(record['owner_pid'], record['owner_started'])) or (record['pid'] and process_identity(record['pid']) is not None):
+            raise RuntimeError('Agent belongs to a live service; send through that service')
+        config = dict(record['config'])
+        config.setdefault('name', record['role'])
+        config.setdefault('backend', record['backend'])
+        return await self.create_agent(RoleConfig(**config), agent_id, record['task_id'], persist=False)
 
     # ── Cleanup ─────────────────────────────────────────────────────────
 

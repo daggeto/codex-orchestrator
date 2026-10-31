@@ -284,7 +284,7 @@ class StateStore(OwnershipStore):
         await self._db.commit()
 
     async def delete_agent(self, agent_id: str):
-        await self.write("UPDATE agents SET status='stopped',retired_at=?,updated_at=? WHERE agent_id=?", (_now(), _now(), agent_id))
+        await self.write("UPDATE agents SET status='stopped',pid=NULL,ws_url=NULL,retired_at=?,updated_at=? WHERE agent_id=?", (_now(), _now(), agent_id))
 
     # ── Threads ─────────────────────────────────────────────────────────
 

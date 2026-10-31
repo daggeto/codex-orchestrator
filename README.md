@@ -304,12 +304,19 @@ Agent conversations stay open between turns. Continue on the task page after a
 reload or service restart, then choose **Mark complete** when finished. An active
 turn must finish or be cancelled before completion. Completed tasks reject new
 messages. Navigation and browser disconnects leave accepted work running. Service
-restart marks unfinished execution interrupted and expires its old input requests;
-it never replays commands. Saved backend sessions resume only after a new message.
+startup reclaims execution only when its recorded process owner has stopped,
+then marks it interrupted and expires its input requests. Live owners retain their
+workspace leases. Pre-upgrade leases without ownership evidence are retained for
+manual inspection. Startup never replays commands. Saved backend sessions resume only after a new message.
 Backend session retention and installed CLI credentials are still required.
+Legacy `make send`, `make agent-send`, `make supervised-send`, and `make skill-run`
+start the selected saved agent on demand. Task-owned agents use task messaging.
+An agent owned by another live service must receive messages through that service.
 
 Feature tasks default to local edits and commits. **Create draft PR/MR** enables
 publication and CI/deployment monitoring. `pr-completion` requires publication.
+Publication resolves the original source branch and any existing PR/MR target
+before creating an isolated checkout, and preserves that request for publication.
 `make task` and `make workflow-run` use the same task lifecycle as the browser.
 The legacy project and workflow endpoints remain adapters; new integrations use:
 
@@ -333,7 +340,9 @@ Schema migrations are additive and versioned; back up the SQLite database before
 upgrading an existing installation.
 
 **Archive and delete worktree** blocks new work, cancels its execution, stops owned
-agents, flushes history, and captures tracked, untracked, and ignored files, a Git
+agents, including legacy sessions whose thread directory belongs to the checkout,
+and awaits shutdown of backend and command process groups. A live execution in
+another service blocks deletion. It flushes history and captures tracked, untracked, and ignored files, a Git
 bundle, task settings, workflow steps, messages, and actions. Archives are stored
 outside the checkout in `<data_dir>/archives/<archive_id>/` with private permissions.
 Symlinks are preserved as links. File hashes, bundle validity, the saved manifest,
@@ -341,8 +350,8 @@ and checkout stability are verified before Git removes the checkout. Database
 history and branches are retained. Main folders cannot be deleted this way.
 
 A failed stage retains the checkout and reports the failure in workspace history.
-Retry after resolving it. After a restart, an incomplete operation is marked
-interrupted; retry can reconcile an already removed checkout against its saved
+Retry after resolving it. After its recorded owner stops, an incomplete operation
+is marked interrupted; retry can reconcile an already removed checkout against its saved
 verified archive. Submodules, Git LFS, and special filesystem entries currently
 block removal because complete capture is unsupported. Archive restoration UI is
 outside scope. Restore manually into a fresh folder using `history.bundle` and the

@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import signal
 import shutil
 import uuid
 from typing import Any, AsyncIterator
@@ -20,6 +18,7 @@ from orchestrator.agents.base import (
     observed_stream,
 )
 from orchestrator.protocol.events import StreamEvent, EventType
+from orchestrator.processes import stop_process_group
 from orchestrator.roles.loader import RoleConfig
 
 logger = logging.getLogger(__name__)
@@ -112,15 +111,8 @@ class ClaudeSession:
             yield StreamEvent(method="turn/completed", params={"threadId": self.thread_id})
         finally:
             self._turn_active = False
-            if self._proc and self._proc.returncode is None:
-                try:
-                    os.killpg(self._proc.pid, signal.SIGTERM)
-                    await asyncio.wait_for(self._proc.wait(), 5)
-                except TimeoutError:
-                    os.killpg(self._proc.pid, signal.SIGKILL)
-                    await self._proc.wait()
-                except ProcessLookupError:
-                    pass
+            if self._proc:
+                await stop_process_group(self._proc)
 
     def _parse_claude_event(self, data: dict) -> StreamEvent | None:
         msg_type = data.get("type", "")
@@ -189,13 +181,8 @@ class ClaudeSession:
         return None
 
     async def interrupt(self):
-        if self._proc and self._proc.returncode is None:
-            os.killpg(self._proc.pid, signal.SIGINT)
-            try:
-                await asyncio.wait_for(self._proc.wait(), 10)
-            except TimeoutError:
-                os.killpg(self._proc.pid, signal.SIGKILL)
-                await self._proc.wait()
+        if self._proc:
+            await stop_process_group(self._proc)
 
 
 class ClaudeAgent(Agent):
@@ -282,7 +269,7 @@ class ClaudeAgent(Agent):
             resume_id=saved.metadata.get("session_id", thread_id) if saved else thread_id,
         )
         self._sessions[thread_id] = session
-        info = ThreadInfo(thread_id=thread_id, agent_id=self.agent_id)
+        info = ThreadInfo(thread_id=thread_id, agent_id=self.agent_id, cwd=saved.cwd if saved else None)
         self._register_thread(info)
         return info
 

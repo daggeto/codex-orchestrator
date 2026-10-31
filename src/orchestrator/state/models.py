@@ -47,10 +47,16 @@ class OwnershipStore:
         return await self.rows('SELECT * FROM tasks WHERE workspace_id=? AND (? IS NULL OR task_id < ?) ORDER BY task_id DESC LIMIT ?',
                                (workspace_id, before, before, max(1, min(limit, 100))))
 
-    async def task_status(self, task_id, status, phase):
-        await self.write('UPDATE tasks SET status=?,phase=?,updated_at=?,completed_at=? WHERE task_id=?',
-                         (status, phase, now(), now() if status in {'completed','failed','cancelled'} else None, task_id))
+    async def task_status(self, task_id, status, phase, expected=None):
+        sql = 'UPDATE tasks SET status=?,phase=?,updated_at=?,completed_at=? WHERE task_id=?'
+        params = (status, phase, now(), now() if status in {'completed','failed','cancelled'} else None, task_id)
+        if expected:
+            sql += ' AND status IN (' + ','.join('?' for _ in expected) + ')'
+            params += tuple(expected)
+        if not await self.write(sql, params):
+            return False
         await self.append_events([(task_id, None, None, None, None, 'task/status', json.dumps({'status': status, 'phase': phase}), now())])
+        return True
 
     async def append_events(self, events):
         await self._db.executemany('INSERT INTO task_events (task_id,agent_id,thread_id,turn_id,item_id,kind,payload_json,created_at) VALUES (?,?,?,?,?,?,?,?)', events)
@@ -67,7 +73,8 @@ class OwnershipStore:
         await self.write('INSERT INTO input_requests (request_id,task_id,prompt,kind,agent_id,execution_id,options_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)',
                          (request_id, task_id, prompt, kind, agent_id, execution_id, json.dumps(options or []), now(), now()))
         if task_id:
-            await self.task_status(task_id, 'waiting_input', 'Waiting for your input')
+            await self.task_status(task_id, 'waiting_input', 'Waiting for your input',
+                                   expected=('queued', 'active', 'waiting_input'))
 
     async def resolve_input(self, request_id, response):
         return await self.write("UPDATE input_requests SET status='resolved',response_json=?,updated_at=? WHERE request_id=? AND status='pending'",

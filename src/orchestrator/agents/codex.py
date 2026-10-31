@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import signal
 import shutil
 import time
 from typing import Any, AsyncIterator
@@ -30,6 +28,7 @@ from orchestrator.protocol.jsonrpc import (
     make_request,
     parse_message,
 )
+from orchestrator.processes import stop_process_group
 from orchestrator.roles.loader import RoleConfig
 
 logger = logging.getLogger(__name__)
@@ -60,6 +59,8 @@ class CodexAgent(Agent):
         self._proc: asyncio.subprocess.Process | None = None
         self._ws: websockets.client.ClientConnection | None = None
         self._reader_task: asyncio.Task | None = None
+        self._server_requests: set[asyncio.Task] = set()
+        self._reconnect_task: asyncio.Task | None = None
 
         self._pending: dict[int | str, asyncio.Future[JSONRPCResponse]] = {}
         self._event_queues: dict[str, asyncio.Queue[StreamEvent]] = {}
@@ -156,11 +157,10 @@ class CodexAgent(Agent):
     async def stop(self) -> None:
         self.status = AgentStatus.STOPPING
         self._shutdown.set()
-        requests = list(getattr(self, '_server_requests', set()))
-        for task in requests:
-            task.cancel()
-        await asyncio.gather(*requests, return_exceptions=True)
-
+        if self._reconnect_task:
+            self._reconnect_task.cancel()
+            await asyncio.gather(self._reconnect_task, return_exceptions=True)
+            self._reconnect_task = None
         if self._reader_task:
             self._reader_task.cancel()
             try:
@@ -168,20 +168,18 @@ class CodexAgent(Agent):
             except asyncio.CancelledError:
                 pass
 
+        # The reader is stopped first, so it cannot create more input handlers.
+        requests = list(self._server_requests)
+        for task in requests:
+            task.cancel()
+        await asyncio.gather(*requests, return_exceptions=True)
+
         if self._ws:
             await self._ws.close()
             self._ws = None
 
         if self._proc:
-            try:
-                os.killpg(self._proc.pid, signal.SIGTERM)
-                await asyncio.wait_for(self._proc.wait(), timeout=5)
-            except (TimeoutError, ProcessLookupError):
-                try:
-                    os.killpg(self._proc.pid, signal.SIGKILL)
-                    await self._proc.wait()
-                except ProcessLookupError:
-                    pass
+            await stop_process_group(self._proc)
             self._proc = None
 
         # Resolve any pending requests
@@ -229,8 +227,6 @@ class CodexAgent(Agent):
 
                 elif isinstance(msg, JSONRPCRequest):
                     # Server request (approval) — handle based on policy
-                    if not hasattr(self, '_server_requests'):
-                        self._server_requests = set()
                     task = asyncio.create_task(self._handle_server_request(msg))
                     self._server_requests.add(task)
                     task.add_done_callback(self._server_requests.discard)
@@ -257,7 +253,7 @@ class CodexAgent(Agent):
             if not self._shutdown.is_set():
                 logger.warning("WebSocket connection lost for %s, attempting reconnect", self.name)
                 self.status = AgentStatus.DEGRADED
-                asyncio.create_task(self._reconnect())
+                self._reconnect_task = asyncio.create_task(self._reconnect())
         except asyncio.CancelledError:
             pass
 
@@ -296,7 +292,9 @@ class CodexAgent(Agent):
                 if not isinstance(answer, dict):
                     answer = {'answers': {q['id']: {'answers': [str(answer)]} for q in req.params.get('questions', [])}}
                 await self._send_raw({'id': req.id, 'result': answer})
-            except (TimeoutError, asyncio.CancelledError):
+            except asyncio.CancelledError:
+                raise
+            except TimeoutError:
                 await self._send_raw({'id': req.id, 'error': {'code': -32000, 'message': 'Input expired'}})
             return
 

@@ -425,10 +425,6 @@ async def _skill_run(obj, name, role, variables, cwd, supervised):
     orch = _get_orch(obj.get("config_path"))
     await orch.start(restore=True)
     try:
-        running = orch.registry.get_running_agents()
-        if not running:
-            click.echo("No running agents. Start the orchestrator first.")
-            return
         response = await orch.run_skill(name, role, variables=variables, cwd=cwd, supervised=supervised)
         click.echo(response)
     finally:
