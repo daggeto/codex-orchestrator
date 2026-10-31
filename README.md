@@ -276,6 +276,46 @@ Development and preview servers proxy `/api` and `/health` to port 8420.
 The navigation is repository → Main/worktree → task → agent. Hash routes support
 reload and back navigation. The service monitor is available at `#/monitor`.
 
+The interface uses Horizon UI Free's rounded cards and purple accents, adapted
+within the existing app. **Light mode** / **Dark mode** in the top bar changes
+appearance. Dark is the default. The browser remembers the choice under
+`orchestrator.ui.theme.v1`; invalid or unavailable storage falls back to dark.
+On narrow screens, **Open navigation** opens the repository tree. Close it with
+**Close navigation**, Escape, or by selecting a destination. Horizon attribution
+and its MIT license are included in `web/public/third-party-notices.txt`.
+
+Manual acceptance checklist for the appearance refresh:
+
+- On desktop and a narrow mobile viewport, open repositories, Main/worktrees,
+  tasks, agents, and `#/monitor`. Check active navigation, direct URL reload,
+  browser Back, and long paths. Open mobile navigation with the keyboard, check
+  that Tab stays inside it, and use Escape to return focus to its trigger.
+- Switch both themes and reload. Check forms, errors, status labels, and code
+  readability. In browser storage tools, try an invalid theme value and confirm
+  that reload returns to dark.
+- Register a Git repository using the folder picker. Check root selection,
+  parent/subfolder navigation, and an unavailable or disallowed folder error.
+- In a disposable repository, submit a workflow and an agent conversation.
+  Check checkout selection, optional/required publication summaries, role/model/
+  effort/recipe settings, and disabled controls during submission. Switch
+  workspaces and reload to check separate drafts. Page through task history;
+  check archive success and error feedback only on a disposable worktree.
+- Continue an agent conversation, answer a pending approval/input request, and
+  use completion/cancellation controls. Leave an execution result or action
+  detail expanded across polling updates. Check that long code lines scroll
+  within their block and raw HTML or unsafe links remain inert.
+- In the monitor, select each resource type and a branch diff. Check event
+  following and gap warnings. With no valuable tasks running, interrupt and
+  restore the API/stream: connection and stale labels must be explicit, stale
+  continuation/restart controls disabled, and recovery must retain data and
+  request identifiers. Review the continuation/restart explanations before
+  exercising either action on a disposable run.
+
+Implementation mapping and validation gates are in [docs/ui-refresh.md](docs/ui-refresh.md).
+Source review, automated tests/typecheck/build, manual acceptance, and provider
+CI are separate gates. The appearance implementation has not run automated or
+browser acceptance checks; the checklist above is for the reviewer to execute.
+
 If repository navigation or the folder picker reports a missing repository API,
 the service on port 8420 may still be running older code. After active tasks finish,
 stop it with Ctrl+C in its terminal and run `make start` from the current checkout

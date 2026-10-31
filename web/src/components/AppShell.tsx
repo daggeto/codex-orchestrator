@@ -20,7 +20,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   return <div className="app-shell">
     <a href="#page-content" className="skip-link" onClick={event => { event.preventDefault(); document.getElementById('page-content')?.focus(); }}>Skip to content</a>
     <div className="desktop-sidebar"><RepositorySidebar /></div>
-    <dialog ref={drawer} className="navigation-drawer" aria-label="Application navigation" onClose={() => { trigger.current?.focus(); }}>
+    <dialog ref={drawer} className="navigation-drawer" aria-label="Application navigation" onClose={() => { trigger.current?.focus(); }} onClick={event => { if (event.target instanceof Element && event.target.closest('a')) drawer.current?.close(); }}>
       <Button onClick={() => drawer.current?.close()}>Close navigation</Button>
       <RepositorySidebar />
     </dialog>

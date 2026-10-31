@@ -9,6 +9,8 @@
   --space-6: 32px;
   --radius-sm: 10px;
   --radius-card: 20px;
+  --code-surface: #0d1117;
+  --code-text: #e6edf3;
   --font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
 }
 :root, :root[data-theme=dark] {

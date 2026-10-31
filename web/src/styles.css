@@ -65,7 +65,7 @@ small, time, .muted { color: var(--muted); }
 .page-header > div { min-width: 0; }
 .eyebrow { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
 .page-description { color: var(--muted); line-height: 1.7; overflow-wrap: anywhere; }
-.page-actions { flex-shrink: 0; }
+.page-actions { max-width: 100%; }
 .card { min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); padding: var(--space-5); margin-bottom: var(--space-5); box-shadow: var(--shadow); overflow-wrap: anywhere; }
 .resource-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 20px; margin-bottom: 24px; }
 .resource-grid .card { margin: 0; }
@@ -110,7 +110,7 @@ small, time, .muted { color: var(--muted); }
 .message-content { min-width: 0; line-height: 1.7; }
 .message-content > :last-child { margin-bottom: 0; }
 .message-content img { max-width: 100%; }
-.message-content pre, .action-result pre, .workflow-timeline pre, .diff { white-space: pre; overflow: auto; overflow-wrap: normal; max-width: 100%; background: #0d1117; color: #e6edf3; padding: 16px; border-radius: 12px; }
+.message-content pre, .action-result pre, .workflow-timeline pre, .diff { white-space: pre; overflow: auto; overflow-wrap: normal; max-width: 100%; background: var(--code-surface); color: var(--code-text); padding: 16px; border-radius: 12px; }
 .message-content pre code { overflow-wrap: normal; }
 .message-content :not(pre) > code { overflow-wrap: anywhere; padding: 2px 5px; border-radius: 4px; background: var(--surface-raised); }
 .action-result { padding: 8px 16px; border: 1px solid var(--border); border-radius: 12px; margin: 10px 0; color: var(--muted); }
@@ -138,6 +138,10 @@ small, time, .muted { color: var(--muted); }
 .events { max-height: 360px; overflow: auto; }
 .events article { border-top: 1px solid var(--border); padding: 12px 0; }
 .diff { max-height: 600px; }
+.badge.connected { color: var(--success); }
+.badge.disconnected { color: var(--danger); }
+.badge.connecting, .badge.reconnecting { color: var(--warning); }
+.monitor-details > pre { max-height: 600px; overflow: auto; }
 .connection { display: inline-block; font-weight: 650; margin-bottom: 8px; }
 
 /* Compatibility for the retained Home components. */
