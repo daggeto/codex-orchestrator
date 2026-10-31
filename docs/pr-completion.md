@@ -61,6 +61,11 @@ orch workflow run pr-completion \
   -v resume_run=YOUR_SAVED_RUN_ID
 ```
 
+The workflow retains its isolated task worktree and records its path in `cwd` and
+`mr_repo`. Use that saved path as `--cwd` when resuming. The original checkout
+and branch remain unchanged; approved commits are pushed from the task checkout
+to the existing request's source branch.
+
 Resume creates a new run linked by `resumed_from`. It requires the same repository,
 branch and origin. Previously approved, unchanged commits can go directly to
 publication; changed commits receive a fresh review. Remote results are always

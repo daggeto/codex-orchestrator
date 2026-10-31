@@ -77,13 +77,14 @@ class PrepareCompletionStep(PrepareMergeRequestStep):
                 root = str(Path(v.get("cwd") or Path.cwd()).expanduser().resolve())
                 if root != saved.get("mr_repo"):
                     return _blocked("Resume must use the same repository as the saved run")
-                if await _run(root, "git", "branch", "--show-current") != saved.get("mr_branch"):
+                if await _run(root, "git", "branch", "--show-current") != saved.get("mr_checkout_branch", saved.get("mr_branch")):
                     return _blocked("Check out the saved PR/MR branch before resuming")
                 if await _run(root, "git", "status", "--porcelain", "--untracked-files=all"):
                     return _blocked("Commit or resolve interrupted edits before resuming; files were preserved")
                 if await _run(root, "git", "remote", "get-url", "origin") != saved.get("mr_remote_url"):
                     return _blocked("The origin remote differs from the saved run")
                 for key in (
+                    "task_worktree", "task_branch", "task_baseline", "task_commit", "mr_checkout_branch",
                     "mr_repo", "mr_branch", "mr_base", "mr_provider", "mr_baseline", "mr_remote_url",
                     "mr_url", "ci_repair_count", "review_revision_count", "implementation", "review_text",
                     "summary", "review_decision", "completion_reviewed_sha", "completion_repair_reason", "mr_ci_report",
@@ -267,7 +268,7 @@ class MonitorCompletionStep(Step):
         last_report = None
         try:
             while True:
-                if await _run(v["mr_repo"], "git", "branch", "--show-current") != v["mr_branch"]:
+                if await _run(v["mr_repo"], "git", "branch", "--show-current") != v.get("mr_checkout_branch", v["mr_branch"]):
                     return _blocked("Local branch changed during monitoring")
                 if await _run(v["mr_repo"], "git", "rev-parse", "HEAD") != v["mr_pushed_sha"]:
                     return _blocked("Local HEAD changed during monitoring; resume to review it")
@@ -342,7 +343,7 @@ class RepairCompletionStep(AssignStep):
             root = v["mr_repo"]
             if await _run(root, "git", "status", "--porcelain", "--untracked-files=all"):
                 return _blocked("Uncommitted work appeared before repair; files were preserved")
-            if await _run(root, "git", "branch", "--show-current") != v["mr_branch"]:
+            if await _run(root, "git", "branch", "--show-current") != v.get("mr_checkout_branch", v["mr_branch"]):
                 return _blocked("The selected branch changed before repair")
             before = await _run(root, "git", "rev-parse", "HEAD")
             if ci and before != v.get("mr_pushed_sha"):

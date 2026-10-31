@@ -91,9 +91,10 @@ COMMANDS = (
             "Requires NAME. Repeat --var/-v KEY=VALUE for workflow inputs. --cwd sets the target repository; "
             "--roles-dir selects role definitions independently. Most workflows require available agents. "
             "pr-completion automatically starts/reuses implementer and reviewer, publishes committed changes, "
-            "and monitors/repairs CI. feature can also create a draft PR/MR. The implementer must use "
-            "a separate task worktree unless the task explicitly requests main-branch implementation; "
-            "it reports the worktree path and branch for review/publication. See docs/pr-completion.md for its inputs.",
+            "and monitors/repairs CI. feature can also create a draft PR/MR. feature, bugfix, and pr-completion "
+            "create an isolated task worktree shared by implementation, review, QA, and publication. "
+            "Existing PR/MR source branches are preserved when publishing from the task checkout. "
+            "Worktrees are retained for inspection and resume. See docs/pr-completion.md for its inputs.",
             ("""make workflow-run ARGS='feature -v task_description="Add OAuth login" --cwd /path/to/repo -v mr_base=main'""",
              """make workflow-run ARGS='pr-completion --cwd /path/to/repo --roles-dir ./roles -v required_checks=Vercel'""")),
     Command("workflow-show", "Show a saved workflow phase and complete CI report.", "orch", ("workflow", "show"),

@@ -7,7 +7,7 @@ from pathlib import Path
 from aiohttp import web
 
 
-def normalize_directory(value: object, *, create: bool = False) -> str:
+def normalize_directory(value: object, *, create: bool = False, validate: bool = True) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("A server directory path is required")
     path = Path(value.strip()).expanduser()
@@ -16,6 +16,8 @@ def normalize_directory(value: object, *, create: bool = False) -> str:
     path = path.resolve()
     if create:
         path.mkdir(parents=True, exist_ok=True)
+    if not validate:
+        return str(path)
     if not path.is_dir():
         raise ValueError(f"Directory does not exist or is not a folder: {path}")
     if not os.access(path, os.R_OK | os.X_OK):

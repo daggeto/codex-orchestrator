@@ -77,6 +77,35 @@ async def _default_branch(root: str, provider: str, remote: str) -> str:
     return str(base)
 
 
+async def prepare_worktree(ctx, root: str, base: str) -> dict:
+    """Own checkout identity so every later agent and publisher uses the same work."""
+    # Keep worktrees outside the source checkout, including dirty local projects.
+    parent = tempfile.mkdtemp(prefix="orch-worktree-")
+    checkout = str(Path(parent) / "repo")
+    branch = f"orch/task-{ctx.run_id}"
+    try:
+        await _run(root, "git", "worktree", "add", "-b", branch, checkout, base)
+    except BaseException:
+        # Remove only an empty container; preserve any partially created checkout.
+        if not Path(checkout).exists():
+            Path(parent).rmdir()
+        raise
+    identity = {"cwd": checkout, "task_worktree": checkout, "task_branch": branch,
+                "task_baseline": await _run(checkout, "git", "rev-parse", "HEAD")}
+    ctx.variables.update(identity)
+    return identity
+
+
+class PrepareWorktreeStep(Step):
+    async def execute(self, ctx) -> StepResult:
+        try:
+            root = await _run(str(ctx.variables.get("cwd") or Path.cwd()),
+                              "git", "rev-parse", "--show-toplevel")
+            return StepResult(success=True, output=await prepare_worktree(ctx, root, "HEAD"))
+        except (OSError, RuntimeError, ValueError) as exc:
+            return StepResult(success=False, error=f"Cannot prepare task worktree: {exc}")
+
+
 class PrepareMergeRequestStep(Step):
     """Establish the Git baseline before any agent edits the repository."""
 
@@ -84,7 +113,10 @@ class PrepareMergeRequestStep(Step):
         cwd = str(Path(ctx.variables.get("cwd") or Path.cwd()).expanduser().resolve())
         ctx.variables["cwd"] = cwd
         if str(ctx.variables.get("create_mr", "true")).lower() in {"false", "0", "no"}:
-            return _status("skipped", "Disabled with create_mr=false")
+            result = await PrepareWorktreeStep(self.step_id).execute(ctx)
+            if not result.success:
+                return result
+            return _status("skipped", "Disabled with create_mr=false", **result.output)
         try:
             root = await _run(cwd, "git", "rev-parse", "--show-toplevel")
             if await _run(root, "git", "status", "--porcelain", "--untracked-files=all"):
@@ -118,13 +150,15 @@ class PrepareMergeRequestStep(Step):
             # Existing requests must keep their source branch. Reuse feature branches
             # with committed work; the reviewer must inspect the complete PR diff.
             reuse = bool(existing) or (current != base and bool(ahead))
-            branch = current if reuse else f"orch/feature-{ctx.run_id}"
-            if not reuse:
-                await _run(root, "git", "switch", "-c", branch)
+            identity = await prepare_worktree(ctx, root, "HEAD")
+            # Existing requests retain their remote source branch; a new request
+            # uses the workflow-owned task branch.
+            branch = current if reuse else identity["task_branch"]
             return _status(
                 "prepared", "Existing task branch selected" if reuse else "Task branch created",
                 mr_branch=branch, mr_base=base, mr_url=existing["url"] if existing else "",
-                mr_provider=provider, mr_baseline=baseline, mr_repo=root,
+                mr_provider=provider, mr_baseline=baseline, mr_repo=identity["cwd"],
+                mr_checkout_branch=identity["task_branch"], **identity,
                 mr_remote_url=remote_url,
             )
         except (OSError, RuntimeError, TimeoutError, ValueError, KeyError, TypeError) as exc:
@@ -142,8 +176,11 @@ class CreateMergeRequestStep(Step):
             return _status("blocked", "Code review has not approved the implementation")
         root, branch, base = v["mr_repo"], v["mr_branch"], v["mr_base"]
         try:
+            head = await _run(root, "git", "rev-parse", "HEAD")
+            if v.get("task_worktree") and head != (v.get("completion_reviewed_sha") or v.get("review_commit")):
+                return _status("blocked", "Task commit changed since approval; review it before publication")
             current = await _run(root, "git", "branch", "--show-current")
-            if current != branch:
+            if current != v.get("mr_checkout_branch", branch):
                 return _status("blocked", "Agent changed branches; task branch was not published")
             if await _run(root, "git", "status", "--porcelain", "--untracked-files=all"):
                 return _status("blocked", "Uncommitted changes remain; commit and review them before publishing")
@@ -169,7 +206,7 @@ class CreateMergeRequestStep(Step):
                 return _status("blocked", "Open PR/MR target changed or is ambiguous; publication stopped")
             if v.get("mr_url") and (not matches or matches[0]["url"] != v["mr_url"]):
                 return _status("blocked", "The selected PR/MR was closed or replaced during implementation")
-            await _run(root, "git", "push", "--set-upstream", "origin", f"refs/heads/{branch}:refs/heads/{branch}")
+            await _run(root, "git", "push", "--set-upstream", "origin", f"HEAD:refs/heads/{branch}")
             if matches:
                 return _status("existing", "Changes pushed to existing PR/MR", mr_url=matches[0]["url"], mr_files=pr_files)
             if provider == "github":

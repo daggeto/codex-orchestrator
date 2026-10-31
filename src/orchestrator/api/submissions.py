@@ -85,17 +85,31 @@ async def accept(request):
         if not isinstance(task, str) or not task.strip():
             raise ValueError("task_description is required")
         variables["task_description"] = task.strip()
-        variables["cwd"] = normalize_directory(variables.get("cwd"))
-        if not any(p["path"] == variables["cwd"] for p in await orch.store.list_projects()):
-            raise ValueError("Register this project before submitting a task")
         if workflow.publication_policy == "optional":
             variables.setdefault("create_mr", False)
         if workflow.publication_policy == "required" and str(variables.get("create_mr", True)).lower() in {"false", "0", "no"}:
             raise ValueError("This workflow requires PR/MR publication")
+        request_fingerprint = hashlib.sha256(json.dumps([workflow.name, variables], sort_keys=True).encode()).hexdigest()
+        previous = await orch.store.get_workflow_run(rid)
+        if previous:
+            matches = previous.config.get("request_fingerprint") == request_fingerprint
+            if not previous.config.get("request_fingerprint"):
+                # Compatibility for acceptances saved before raw request identity.
+                legacy = dict(variables)
+                legacy["cwd"] = normalize_directory(legacy.get("cwd"), validate=False)
+                matches = previous.config.get("submission_fingerprint") == hashlib.sha256(
+                    json.dumps([workflow.name, legacy], sort_keys=True).encode()).hexdigest()
+            if not matches:
+                return web.json_response({"error": "Run ID belongs to a different submission"}, status=409)
+            return web.json_response({"run_id": rid, "status_url": f"/api/workflows/runs/{rid}"}, status=202)
+        variables["cwd"] = normalize_directory(variables.get("cwd"))
+        if not any(p["path"] == variables["cwd"] for p in await orch.store.list_projects()):
+            raise ValueError("Register this project before submitting a task")
         fingerprint = hashlib.sha256(json.dumps([workflow.name, variables], sort_keys=True).encode()).hexdigest()
         record = WorkflowRunRecord(
             run_id=rid, workflow_name=workflow.name, status="accepted",
-            config={"variables": variables, "submission_fingerprint": fingerprint},
+            config={"variables": variables, "submission_fingerprint": fingerprint,
+                    "request_fingerprint": request_fingerprint},
             state={"phase": "accepted", "required_roles": workflow.required_roles},
         )
         if await orch.store.reserve_workflow_run(record):

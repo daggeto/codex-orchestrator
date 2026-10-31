@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from orchestrator.workflows.engine import Workflow
-from orchestrator.workflows.merge_request import CreateMergeRequestStep, PrepareMergeRequestStep, VerifyMergeRequestStep
+from orchestrator.workflows.merge_request import CreateMergeRequestStep, PrepareMergeRequestStep, PrepareWorktreeStep, VerifyMergeRequestStep
 from orchestrator.workflows.pr_completion import (
     CompletionReviewStep, MonitorCompletionStep, PrepareCompletionStep,
     PublishCompletionStep, RepairCompletionStep,
@@ -133,6 +133,7 @@ def bugfix_workflow() -> Workflow:
         name="bugfix",
         description="Bug investigation → fix → verification",
         steps=[
+            PrepareWorktreeStep(step_id="prepare-worktree", name="Prepare Task Worktree"),
             AssignStep(
                 step_id="investigate",
                 name="Bug Investigation",

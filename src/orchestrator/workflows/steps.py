@@ -59,6 +59,13 @@ class AssignStep(Step):
             return StepResult(success=False, error=f"No running agent with role '{self.role}'")
 
         message = self.message_template.format(**ctx.variables)
+        if self.role == "implementer" and ctx.variables.get("task_worktree"):
+            message += (
+                "\n\nThe workflow has already created this task's isolated worktree: "
+                f"{ctx.variables['task_worktree']} on branch {ctx.variables['task_branch']}. "
+                "Reuse this checkout and branch for all edits and commits. Do not create "
+                "another worktree or switch branches; review and publication use this checkout."
+            )
         cwd = self.cwd.format(**ctx.variables) if self.cwd else ctx.variables.get("cwd")
 
         thread = ctx.get_or_create_thread(agent, self.step_id)
@@ -69,9 +76,23 @@ class AssignStep(Step):
 
         result = await agent.send_message(thread, message, model=self.model)
 
+        identity = {}
+        if self.role == "implementer" and ctx.variables.get("task_worktree"):
+            from orchestrator.workflows.merge_request import _run
+            try:
+                root = ctx.variables["task_worktree"]
+                if await _run(root, "git", "branch", "--show-current") != ctx.variables["task_branch"]:
+                    raise ValueError("Implementer changed the workflow task branch")
+                identity["task_commit"] = await _run(root, "git", "rev-parse", "HEAD")
+                await _run(root, "git", "merge-base", "--is-ancestor",
+                           ctx.variables["task_baseline"], identity["task_commit"])
+            except (OSError, RuntimeError, ValueError) as exc:
+                return StepResult(success=False, error=f"Invalid task worktree: {exc}")
+
         return StepResult(
             success=result.ok,
             output={
+                **identity,
                 self.output_key: result.full_text,
                 f"{self.output_key}_files": result.files_changed,
                 f"{self.output_key}_commands": result.commands_run,
@@ -118,7 +139,22 @@ class ReviewStep(Step):
             ctx.set_thread(agent, self.step_id, thread_info.thread_id)
             thread = thread_info.thread_id
 
+        reviewed = {}
+        if ctx.variables.get("task_worktree"):
+            from orchestrator.workflows.merge_request import _run
+            try:
+                root = ctx.variables["task_worktree"]
+                if await _run(root, "git", "branch", "--show-current") != ctx.variables["task_branch"]:
+                    raise ValueError("Task branch changed before review")
+                reviewed["review_commit"] = await _run(root, "git", "rev-parse", "HEAD")
+            except (OSError, RuntimeError, ValueError) as exc:
+                return StepResult(success=False, error=str(exc))
         result = await agent.send_message(thread, message)
+        if reviewed:
+            if await _run(root, "git", "rev-parse", "HEAD") != reviewed["review_commit"]:
+                return StepResult(success=False, error="Task commit changed during review")
+        if not result.ok:
+            return StepResult(success=False, error=result.error or "Review failed")
         text = result.full_text.upper()
 
         approved = self.approve_keyword.upper() in text
@@ -127,7 +163,7 @@ class ReviewStep(Step):
         if approved and not rejected:
             return StepResult(
                 success=True,
-                output={"review_decision": "approved", "review_text": result.full_text},
+                output={**reviewed, "review_decision": "approved", "review_text": result.full_text},
                 next_step=self.on_approve,
             )
         elif rejected:
