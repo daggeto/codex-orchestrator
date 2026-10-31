@@ -39,6 +39,11 @@ This is the opposite. Persistent agents with dedicated processes, strict prompts
 
 ## Install
 
+Codex backends require `lsof` on PATH to verify listener ownership. Ports use
+shared per-user locks in `~/.codex-orchestrator/ports`, including when services
+use different projects or data directories. Occupied ports are skipped; startup
+and reconnects reject listeners not owned by the spawned backend process.
+
 Project commands are available through Make:
 
 ```bash

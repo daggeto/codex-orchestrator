@@ -16,6 +16,7 @@ from orchestrator.agents.claude import ClaudeAgent
 from orchestrator.config import OrchestratorConfig
 from orchestrator.events.bus import EventBus
 from orchestrator.processes import owner_alive, process_identity
+from orchestrator.ports import PortReservations
 from orchestrator.roles.loader import RoleConfig
 from orchestrator.state.store import AgentRecord, StateStore
 
@@ -31,6 +32,7 @@ class AgentRegistry:
         self._bus = bus
         self._agents: dict[str, Agent] = {}
         self._allocated_ports: dict[int, str] = {}
+        self._port_reservations = PortReservations()
         self._health_task: asyncio.Task | None = None
         self._shutdown = asyncio.Event()
         self._observations: asyncio.Queue = asyncio.Queue(maxsize=256)
@@ -62,17 +64,16 @@ class AgentRegistry:
         return dict(self._agents)
 
     def _allocate_port(self, agent_id: str) -> int:
-        port = self._config.base_port
-        while port in self._allocated_ports:
-            port += 1
-            if port > self._config.base_port + 1000:
-                raise RuntimeError("No available ports in range")
-        self._allocated_ports[port] = agent_id
-        return port
+        for port in range(self._config.base_port, self._config.base_port + 1001):
+            if port not in self._allocated_ports and self._port_reservations.reserve(port):
+                self._allocated_ports[port] = agent_id
+                return port
+        raise RuntimeError("No available ports in range")
 
     def _release_port(self, port: int, agent_id: str):
         if self._allocated_ports.get(port) == agent_id:
             self._allocated_ports.pop(port)
+            self._port_reservations.release(port)
 
     async def create_agent(
         self,
@@ -287,7 +288,6 @@ class AgentRegistry:
             except Exception:
                 logger.exception("Error cleaning up agent %s", agent_id)
         self._agents.clear()
-        self._allocated_ports.clear()
         if self._observation_task:
             self._observation_task.cancel()
             await asyncio.gather(self._observation_task, return_exceptions=True)

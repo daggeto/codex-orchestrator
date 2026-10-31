@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import shutil
 import subprocess
 
 
@@ -68,3 +69,24 @@ async def stop_process_group(proc):
             await asyncio.wait_for(wait_group(), 5)
         except TimeoutError as exc:
             raise RuntimeError(f'Process group {proc.pid} did not stop; checkout retained') from exc
+
+
+async def process_owns_listener(pid, port):
+    """Require OS evidence that the spawned PID exclusively owns this listener."""
+    lsof = shutil.which('lsof')
+    if not lsof:
+        raise RuntimeError('lsof is required to verify Codex listener ownership; install it before starting agents')
+    probe = await asyncio.create_subprocess_exec(
+        lsof, '-nP', f'-iTCP:{port}', '-sTCP:LISTEN', '-Fp',
+        start_new_session=True, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    try:
+        stdout, stderr = await asyncio.wait_for(probe.communicate(), 5)
+    except BaseException:
+        await stop_process_group(probe)
+        raise
+    if probe.returncode not in (0, 1) or stderr.strip():
+        raise RuntimeError('Cannot verify Codex listener ownership: ' + stderr.decode(errors='replace')[:500])
+    owners = {int(line[1:]) for line in stdout.decode().splitlines() if line.startswith('p') and line[1:].isdigit()}
+    if owners and owners != {pid}:
+        raise RuntimeError(f'Port {port} belongs to another process; refusing to connect')
+    return owners == {pid}

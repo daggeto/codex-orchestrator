@@ -16,6 +16,7 @@ from orchestrator.api.filesystem import directories
 from orchestrator.archives import ArchiveService
 from orchestrator.core import Orchestrator
 from orchestrator.processes import owner_alive, stop_process_group
+from orchestrator.ports import PortReservations
 from orchestrator.roles.loader import RoleConfig
 from orchestrator.state import migrations
 from orchestrator.state.store import AgentRecord, StateStore
@@ -29,6 +30,10 @@ class LifecycleRevisionTests(unittest.IsolatedAsyncioTestCase):
         registry = AgentRegistry(SimpleNamespace(base_port=15000, max_agents=10),
                                  SimpleNamespace(write=AsyncMock(), update_agent_status=AsyncMock()),
                                  SimpleNamespace(publish=AsyncMock()))
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        registry._port_reservations = PortReservations(directory.name)
+        self.addCleanup(lambda: [registry._release_port(port, owner) for port, owner in list(registry._allocated_ports.items())])
         first = CodexAgent('a', RoleConfig(name='writer'), registry._allocate_port('a'))
         registry._agents['a'] = first
         registry._release_port(first.port, 'a')

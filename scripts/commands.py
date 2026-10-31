@@ -37,7 +37,8 @@ COMMANDS = (
             "--api-port to change the port, --no-api to disable HTTP, and repeat --spawn-team for initial agents. "
             "The API port defaults to 8420. The task home registers server projects persistently, "
             "accepts durable tasks asynchronously, and starts a task-owned team. "
-            "Browser disconnects leave accepted work running; service shutdown interrupts it.",
+            "Browser disconnects leave accepted work running; service shutdown interrupts it. "
+            "Codex backends require lsof and reserve ports across processes using shared per-user locks.",
             ("make start",
              'make start ARGS="--cwd /path/to/repo --roles-dir ./roles --spawn-team architect"')),
     Command("task", "Submit a task to the running service without prompts.", "orch", ("task",),
@@ -96,7 +97,8 @@ COMMANDS = (
             "Review uses the selected publication target even when the task branch differs. "
             "Existing PR/MR source and target branches are resolved before isolation and preserved when publishing from the task checkout. "
             "Worktrees and session history survive shutdown. Web deletion verifies a private archive before removal; "
-            "failed captures retain the checkout. See docs/pr-completion.md for its inputs.",
+            "failed captures retain the checkout. Codex backends require lsof and verify listener ownership before connecting. "
+            "See docs/pr-completion.md for its inputs.",
             ("""make workflow-run ARGS='feature -v task_description="Add OAuth login" --cwd /path/to/repo -v mr_base=main'""",
              """make workflow-run ARGS='pr-completion --cwd /path/to/repo --roles-dir ./roles -v required_checks=Vercel'""")),
     Command("workflow-show", "Show a saved workflow phase and complete CI report.", "orch", ("workflow", "show"),
