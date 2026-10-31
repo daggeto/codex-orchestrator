@@ -62,7 +62,7 @@ class WorkspaceService:
             if not workspace:
                 continue
             import json
-            tid = 'legacy-' + run['run_id']
+            tid = run['created_at'] + '-legacy-' + run['run_id']
             prompt = variables.get('task_description') or run['workflow_name']
             status = run['status'] if run['status'] in {'completed','failed','cancelled','interrupted'} else 'interrupted'
             await self.store.write('INSERT OR IGNORE INTO tasks (task_id,workspace_id,title,prompt,kind,status,phase,settings_json,fingerprint,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',

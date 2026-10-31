@@ -33,6 +33,9 @@ def snapshot(root):
             if stat.S_ISLNK(metadata.st_mode):
                 result[relative] = {'link': os.readlink(path)}
             elif stat.S_ISREG(metadata.st_mode):
+                with path.open('rb') as source:
+                    if source.read(128).startswith(b'version https://git-lfs.github.com/spec/v1'):
+                        raise RuntimeError('LFS pointer capture is unsupported; checkout retained')
                 result[relative] = {'sha256': digest(path), 'size': metadata.st_size}
             elif stat.S_ISDIR(metadata.st_mode):
                 result[relative] = {'directory': True}
@@ -87,7 +90,7 @@ class ArchiveService:
     async def stage(self, aid, stage, error=None):
         await self.store.write('UPDATE archives SET stage=?,error=?,updated_at=? WHERE archive_id=?', (stage, error, now(), aid))
 
-    async def archive_and_delete(self, workspace_id):
+    async def begin(self, workspace_id):
         async with self.orch.tasks.accept_lock:
             workspace = await self.store.workspace_record(workspace_id)
             if not workspace:
@@ -95,13 +98,21 @@ class ArchiveService:
             if workspace['kind'] != 'worktree':
                 raise Conflict('Main folders cannot be deleted')
             if workspace['status'] == 'archived':
-                return await self.store.one('SELECT * FROM archives WHERE workspace_id=? ORDER BY created_at DESC LIMIT 1', (workspace_id,))
+                raise Conflict('Workspace is already archived')
             if workspace_id in self.running:
                 raise Conflict('Deletion is already running')
             aid = uuid.uuid4().hex
             self.running[workspace_id] = aid
             await self.store.write("UPDATE workspaces SET status='archiving',updated_at=? WHERE workspace_id=?", (now(), workspace_id))
             await self.store.write('INSERT INTO archives (archive_id,workspace_id,stage,created_at,updated_at) VALUES (?,?,?,?,?)', (aid, workspace_id, 'blocking', now(), now()))
+        return workspace, aid
+
+    async def archive_and_delete(self, workspace_id):
+        workspace, aid = await self.begin(workspace_id)
+        return await self.execute_archive(workspace, aid)
+
+    async def execute_archive(self, workspace, aid):
+        workspace_id = workspace['workspace_id']
         try:
             await self.stage(aid, 'stopping')
             for task in await self.store.rows('SELECT task_id,status FROM tasks WHERE workspace_id=?', (workspace_id,)):
@@ -109,6 +120,15 @@ class ArchiveService:
                     await self.orch.tasks.cancel(task['task_id'])
                 for agent in await self.store.rows('SELECT agent_id FROM agents WHERE task_id=?', (task['task_id'],)):
                     await self.orch.registry.destroy_agent(agent['agent_id'])
+            # Legacy/direct agents may predate task ownership. Stop those using
+            # this checkout too, and reject globally shared active processes.
+            for agent in self.orch.registry.agents.values():
+                matching = any(info.cwd and Path(info.cwd).resolve() == Path(workspace['path']).resolve() for info in agent._threads.values())
+                if matching:
+                    other = [turn for turn in agent.activity['threads'] if turn.get('workspace') and Path(turn['workspace']).resolve() != Path(workspace['path']).resolve()]
+                    if other:
+                        raise Conflict('A legacy agent is active in multiple workspaces; stop it before deletion')
+                    await self.orch.registry.destroy_agent(agent.agent_id)
             async with self.orch.workspaces.lock(workspace_id):
                 root = Path(workspace['path'])
                 repository = await self.store.one('SELECT * FROM repositories WHERE repository_id=?', (workspace['repository_id'],))
@@ -119,10 +139,12 @@ class ArchiveService:
                         raise Conflict('Checkout identity changed; deletion blocked')
                     # A bundle cannot capture external submodule/LFS object stores.
                     # Fail closed until a complete capture strategy is available.
-                    if (root / '.gitmodules').exists():
+                    entries = await _run(str(root), 'git', 'ls-files', '--stage')
+                    if (root / '.gitmodules').exists() or any(line.startswith('160000 ') for line in entries.splitlines()):
                         raise Conflict('Submodule archive capture is unsupported; checkout retained')
                     lfs_config = Path(repository['common_dir'], 'lfs')
-                    if lfs_config.exists() or any('filter=lfs' in p.read_text(errors='replace') for p in root.rglob('.gitattributes') if not p.is_symlink()):
+                    lfs_storage = await _run(str(root), 'git', 'config', '--default', '', '--get', 'lfs.storage')
+                    if lfs_storage or lfs_config.exists() or any('filter=lfs' in p.read_text(errors='replace') for p in root.rglob('.gitattributes') if not p.is_symlink()):
                         raise Conflict('Git LFS archive capture is unsupported; checkout retained')
                     await self.stage(aid, 'capturing')
                     directory = self.orch.config.data_dir / 'archives' / aid

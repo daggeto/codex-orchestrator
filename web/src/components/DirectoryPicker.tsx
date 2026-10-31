@@ -1,0 +1,25 @@
+import { useState } from 'react';
+import { post } from '../api';
+import { useResource } from '../useResource';
+import type { RepositoryRecord } from '../types';
+
+interface Listing { path: string; parent: string | null; roots: string[]; directories: { name: string; path: string }[] }
+export function DirectoryPicker({ onAdded }: { onAdded: (repository: RepositoryRecord) => void }) {
+  const [path, setPath] = useState('');
+  const [failure, setFailure] = useState('');
+  const [busy, setBusy] = useState(false);
+  const { data, error } = useResource<Listing>(`/api/filesystem/directories?path=${encodeURIComponent(path)}`, 0);
+  return <section aria-label="Add repository"><h2>Add repository</h2><p>Choose a Git folder on the service machine.</p>
+    {data && <><select aria-label="Browse root" value={data.roots.find(root => data.path.startsWith(root)) || ''} onChange={event => setPath(event.target.value)}>
+      {data.roots.map(root => <option key={root}>{root}</option>)}</select>
+      <p><code>{data.path}</code></p>
+      {data.parent && <button onClick={() => setPath(data.parent!)}>Parent folder</button>}
+      <div className="directory-list">{data.directories.map(entry => <button key={entry.path} onClick={() => setPath(entry.path)}>{entry.name}/</button>)}</div>
+      <button disabled={busy} onClick={async () => {
+        setBusy(true); setFailure('');
+        try { const result = await post<{ repository: RepositoryRecord }>('/api/repositories', { path: data.path }); onAdded(result.repository); }
+        catch (reason) { setFailure(String(reason)); } finally { setBusy(false); }
+      }}>Add this repository</button></>}
+    {(error || failure) && <p role="alert" className="error">{failure || error}</p>}
+  </section>;
+}

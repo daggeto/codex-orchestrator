@@ -40,3 +40,34 @@ export interface TaskSubmission {
   run_id: string; workflow: string;
   variables: { task_description: string; cwd: string; create_mr?: boolean };
 }
+
+export interface RepositoryRecord {
+  repository_id: string; name: string; main_path: string; available: boolean;
+}
+export interface WorkspaceRecord {
+  workspace_id: string; repository_id: string; kind: 'main' | 'worktree'; path: string;
+  branch: string; status: string; available?: boolean;
+  archive?: { stage: string; path: string | null; error: string | null };
+}
+export interface TaskRecord {
+  task_id: string; workspace_id: string; title: string; prompt: string; kind: 'agent' | 'workflow';
+  status: string; phase: string; settings: Record<string, unknown>; created_at: string;
+}
+export interface OwnedAgent {
+  agent_id: string; role: string; backend: string; task_id: string | null; status: string; retired_at: string | null;
+  activity?: { state: string };
+}
+export interface DurableEvent {
+  id: number; kind: string; payload: Record<string, unknown>; turn_id: string; item_id: string | null; created_at: string;
+}
+export interface StepExecution {
+  execution_id: string; step_id: string; attempt: number; parent_id: string | null; dependencies: string[];
+  agent_id: string | null; thread_id: string | null; status: string; output: Record<string, unknown>;
+}
+export interface InputRequest {
+  request_id: string; kind: string; prompt: string; options: unknown[];
+}
+export interface TaskView {
+  task: TaskRecord; agents: OwnedAgent[]; workflow: { workflow_name: string } | null;
+  steps: StepExecution[]; pending_input: InputRequest[];
+}

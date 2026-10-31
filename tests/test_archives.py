@@ -22,7 +22,6 @@ class ArchiveCaptureTests(unittest.TestCase):
             bundle = base / 'history.bundle'
             bundle.write_bytes(b'bundle fixture')
             target = base / 'archive.tar.gz'
-            self.assertEqual(digest(target) if target.exists() else None, None)
             checksum = capture(root, target, bundle, {'tasks': [{'task_id': 'task'}]})
             self.assertEqual(digest(target), checksum)
             with tarfile.open(target) as archive:

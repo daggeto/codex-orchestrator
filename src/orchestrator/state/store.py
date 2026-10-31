@@ -17,7 +17,7 @@ from orchestrator.state.migrations import migrate
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+from orchestrator.state.migrations import VERSION as SCHEMA_VERSION
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -228,7 +228,7 @@ class StateStore(OwnershipStore):
         await self._db.execute(
             """INSERT INTO agents
                (agent_id, role, backend, port, pid, ws_url, status, config_json, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET role=excluded.role, backend=excluded.backend, port=excluded.port, pid=excluded.pid, ws_url=excluded.ws_url, status=excluded.status, config_json=excluded.config_json, created_at=excluded.created_at, updated_at=excluded.updated_at""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET role=excluded.role, backend=excluded.backend, port=excluded.port, pid=excluded.pid, ws_url=excluded.ws_url, status=excluded.status, config_json=excluded.config_json, updated_at=excluded.updated_at""",
             (
                 rec.agent_id, rec.role, rec.backend, rec.port, rec.pid,
                 rec.ws_url, rec.status, json.dumps(rec.config),
@@ -292,7 +292,7 @@ class StateStore(OwnershipStore):
         await self._db.execute(
             """INSERT INTO threads
                (thread_id, agent_id, cwd, model, status, metadata_json, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(thread_id) DO UPDATE SET agent_id=excluded.agent_id, cwd=excluded.cwd, model=excluded.model, status=excluded.status, metadata_json=excluded.metadata_json, created_at=excluded.created_at, updated_at=excluded.updated_at""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(thread_id) DO UPDATE SET agent_id=excluded.agent_id, cwd=excluded.cwd, model=excluded.model, status=excluded.status, metadata_json=excluded.metadata_json, updated_at=excluded.updated_at""",
             (
                 rec.thread_id, rec.agent_id, rec.cwd, rec.model,
                 rec.status, json.dumps(rec.metadata), rec.created_at, _now(),
@@ -342,7 +342,7 @@ class StateStore(OwnershipStore):
                 assigned_agent, assigned_thread, parent_item,
                 input_json, output_json, history_json, tags_json,
                 created_at, updated_at, completed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(item_id) DO UPDATE SET workflow_id=excluded.workflow_id, title=excluded.title, description=excluded.description, status=excluded.status, priority=excluded.priority, assigned_agent=excluded.assigned_agent, assigned_thread=excluded.assigned_thread, parent_item=excluded.parent_item, input_json=excluded.input_json, output_json=excluded.output_json, history_json=excluded.history_json, tags_json=excluded.tags_json, created_at=excluded.created_at, updated_at=excluded.updated_at, completed_at=excluded.completed_at""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(item_id) DO UPDATE SET workflow_id=excluded.workflow_id, title=excluded.title, description=excluded.description, status=excluded.status, priority=excluded.priority, assigned_agent=excluded.assigned_agent, assigned_thread=excluded.assigned_thread, parent_item=excluded.parent_item, input_json=excluded.input_json, output_json=excluded.output_json, history_json=excluded.history_json, tags_json=excluded.tags_json, updated_at=excluded.updated_at, completed_at=excluded.completed_at""",
             (
                 rec.item_id, rec.workflow_id, rec.title, rec.description,
                 rec.status, rec.priority, rec.assigned_agent, rec.assigned_thread,
@@ -426,7 +426,7 @@ class StateStore(OwnershipStore):
         await self._db.execute(
             """INSERT INTO workflow_runs
                (run_id, workflow_name, status, config_json, state_json, created_at, updated_at, completed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id) DO UPDATE SET workflow_name=excluded.workflow_name, status=excluded.status, config_json=excluded.config_json, state_json=excluded.state_json, created_at=excluded.created_at, updated_at=excluded.updated_at, completed_at=excluded.completed_at""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(run_id) DO UPDATE SET workflow_name=excluded.workflow_name, status=excluded.status, config_json=excluded.config_json, state_json=excluded.state_json, updated_at=excluded.updated_at, completed_at=excluded.completed_at""",
             (
                 rec.run_id, rec.workflow_name, rec.status,
                 json.dumps(rec.config), json.dumps(rec.state),

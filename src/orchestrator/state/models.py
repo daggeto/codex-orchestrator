@@ -17,7 +17,8 @@ class OwnershipStore:
                 value = dict(row)
                 for key in list(value):
                     if key.endswith('_json'):
-                        value[key[:-5]] = json.loads(value.pop(key)) if value[key] is not None else None
+                        raw = value.pop(key)
+                        value[key[:-5]] = json.loads(raw) if raw is not None else None
                 result.append(value)
             return result
 
@@ -49,6 +50,7 @@ class OwnershipStore:
     async def task_status(self, task_id, status, phase):
         await self.write('UPDATE tasks SET status=?,phase=?,updated_at=?,completed_at=? WHERE task_id=?',
                          (status, phase, now(), now() if status in {'completed','failed','cancelled'} else None, task_id))
+        await self.append_events([(task_id, None, None, None, None, 'task/status', json.dumps({'status': status, 'phase': phase}), now())])
 
     async def append_events(self, events):
         await self._db.executemany('INSERT INTO task_events (task_id,agent_id,thread_id,turn_id,item_id,kind,payload_json,created_at) VALUES (?,?,?,?,?,?,?,?)', events)

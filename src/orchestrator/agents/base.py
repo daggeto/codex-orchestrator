@@ -24,6 +24,7 @@ def observed_stream(method):
     async def wrapped(self, thread_id, message, model=None):
         from orchestrator.state.store import ThreadRecord
         import json
+        self._turn_tasks[thread_id] = asyncio.current_task()
         self._begin_activity(thread_id, message)
         turn_id = uuid.uuid4().hex
         pending = []
@@ -46,7 +47,8 @@ def observed_stream(method):
         completed = False
         try:
             async for event in stream:
-                await record(event.method, event.params, event.item_id or (event.params.get('item') or {}).get('id'))
+                item = event.params.get('item')
+                await record(event.method, event.params, event.item_id or (item.get('id') if isinstance(item, dict) else None))
                 if store and event.params.get('session_id'):
                     await store.write('UPDATE threads SET metadata_json=? WHERE thread_id=?',
                                       (json.dumps({'session_id': event.params['session_id']}), thread_id))
@@ -70,6 +72,7 @@ def observed_stream(method):
                     await store.append_events(pending)
             finally:
                 self._active_turns.pop(thread_id, None)
+                self._turn_tasks.pop(thread_id, None)
                 self._notify_observer("agent.activity", {"activity": self.activity})
     return wrapped
 
@@ -131,6 +134,7 @@ class Agent(ABC):
         self.role = role
         self.status = AgentStatus.STOPPED
         self._threads: dict[str, ThreadInfo] = {}
+        self._turn_tasks: dict[str, asyncio.Task] = {}
         self._active_turns: dict[str, dict[str, Any]] = {}
         self._activity_error: str | None = None
         self._observer: asyncio.Queue[tuple[str, dict[str, Any]]] | None = None

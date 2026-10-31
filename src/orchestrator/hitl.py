@@ -244,6 +244,20 @@ class HITLManager:
             }, source="hitl")
             return esc
 
+        service = getattr(self, 'task_service', None)
+        if service:
+            agent = await service.store.one('SELECT task_id FROM agents WHERE agent_id=?', (agent_id,))
+            try:
+                response = await service.request_input(agent['task_id'] if agent else None,
+                    subject + '\n\n' + detail, kind='escalation', agent_id=agent_id,
+                    options=suggested_actions, timeout=timeout)
+                esc.response = str(response)
+                esc.status = 'resolved'
+            except TimeoutError:
+                esc.status = 'timeout'
+            self._escalation_history.append(esc)
+            return esc
+
         future: asyncio.Future[Escalation] = asyncio.get_event_loop().create_future()
         self._pending_escalations[escalation_id] = future
 

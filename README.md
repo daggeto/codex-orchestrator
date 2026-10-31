@@ -31,11 +31,11 @@ This is the opposite. Persistent agents with dedicated processes, strict prompts
 
 **Agents** run as long-lived processes. Codex gets a `codex app-server --listen ws://127.0.0.1:PORT` per instance. Claude gets subprocess sessions with `--resume` for persistence. Threads carry context across turns; you can send a follow-up message to the same thread hours later.
 
-**Roles** define what each agent does. Architect reads the codebase and designs plans (read-only sandbox). Implementer writes code (workspace-write sandbox, gets its own git worktree). Reviewer checks the work (read-only, must end with APPROVED or CHANGES_REQUESTED). QA runs tests. Planner decomposes tasks. All configured via TOML files.
+**Roles** define what each agent does. Architect reads the codebase and designs plans (read-only sandbox). Implementer writes code in the task workspace (workspace-write sandbox). Reviewer checks the work (read-only, must end with APPROVED or CHANGES_REQUESTED). QA runs tests. Planner decomposes tasks. All configured via TOML files.
 
 **Supervision** is not a separate agent; it's how the orchestrator talks. Every response gets checked for deliverables vs noise. If an implementer says "I'll get right on that!" instead of producing file changes, the orchestrator sends a direct correction and retries. Reviewers that don't produce a clear decision get bounced back.
 
-**Workspace isolation** via git worktrees. Write agents get their own branch per work item. Read agents share the main repo. No file conflicts, no race conditions. Merge back when approved, cleanup when rejected.
+**Workspace isolation** via persistent Git workspaces. Tasks started in an existing worktree reuse its checkout and branch. Main-folder tasks create an isolated checkout when needed. All agents in a task use the same workspace; workflows and conversational turns hold a workspace write lease. Deletion requires a verified archive first.
 
 ## Install
 
@@ -75,7 +75,7 @@ make task ARGS='"Investigate slow imports" --workflow research'
 ```
 
 `make task` connects to the running service, uses its target project, and starts
-missing workflow roles or reuses existing agents. It defaults to the feature
+task-owned workflow agents. It defaults to the feature
 workflow with local edits and commits. Add `-v create_mr=true -v mr_base=main`
 to publish a draft PR/MR and verify CI. Other inputs use `-v KEY=VALUE`;
 `--cwd` overrides the target project for that task.
@@ -151,7 +151,7 @@ Five built-in pipelines:
   PR/MR, poll CI, repair failures, review and push again until green
 
 Use `pr-completion` for finishing committed work or repairing an existing PR's
-CI. It automatically starts/reuses implementer and reviewer agents, polls through
+CI. It automatically starts task-owned implementer and reviewer agents, polls through
 provider CLIs without model turns, and supports resuming an interrupted run.
 See [usage, examples and manual validation](docs/pr-completion.md).
 
@@ -253,158 +253,118 @@ src/orchestrator/
 
 See [GUIDE.md](GUIDE.md) for the full reference.
 
-## Task home and local monitor
+## Repositories, tasks, and agent conversations
 
-The task home starts work on the orchestrator instance serving
-`http://127.0.0.1:8420`. A centered chat surface combines the task composer,
-project and workflow controls, required team, run status, recovery actions, and
-optional agent conversations. Expand the project control to search or register
-a server folder; expand workflow options for its description and publication
-controls. A publication summary stays visible before submission. Configuration
-changes preserve the draft; **Start another task** resets the composer. Hover or
-focus a role chip to see its configured model and reasoning effort. Missing
-settings are explicitly labeled as backend defaults. Role discovery stays tied
-to the service configuration, independently of the selected task directory.
-
-The Monitor navigation opens the existing read-only view of agents and their
-activity, tasks, workflow runs, SSE events, and committed branch diffs. Once
-opened, it stays mounted across navigation to retain selection and live events.
-
-Restart an existing API instance once to load the new observation fields and
-read-only endpoints. Start the API from your target project's directory so
-role discovery and agent context match that project. If no instance is running,
-use `make start ARGS="--cwd /absolute/path/to/project"` from this checkout.
-
-In a separate terminal, from this checkout:
+Start the service from the target repository, then the web app from this checkout:
 
 ```sh
+make start ARGS='--cwd /absolute/path/to/repository'
+# In another terminal:
 make web-install
 make dev
 ```
 
-Open the loopback URL printed by Vite, normally `http://127.0.0.1:5173`.
-Node.js 20.19+ or 22.12+ is required. Both development and preview servers bind
-to `127.0.0.1` and proxy `/api` and `/health` to port 8420. The npm scripts
-use npm's own Node executable to avoid older Node binaries in parent directories
-shadowing the selected runtime. Scripts use a POSIX shell (macOS/Linux).
+Open the loopback URL printed by Vite, usually `http://127.0.0.1:5173`.
+Development and preview servers proxy `/api` and `/health` to port 8420.
+The navigation is repository → Main/worktree → task → agent. Hash routes support
+reload and back navigation. The service monitor is available at `#/monitor`.
+
+Choose **Add repository** to browse Git folders on the service machine. This
+registers the repository and discovers its existing worktrees without creating
+one. By default browsing is restricted to the service user's home and the target
+project's parent. Set `browse_roots = ["/absolute/projects"]` in the service TOML
+to choose different roots. Canonical paths outside those roots are rejected.
+Browser mutations require a loopback Host and a trusted Origin. Configure
+`browser_origins` for a different local frontend port; remote authentication is
+outside this feature's scope.
+
+Opening a repository shows a fresh task composer with Main selected. Opening a
+worktree shows its composer and paginated task history. Each workspace keeps its
+own browser draft. A worktree is created only when execution requires isolation;
+selecting an existing worktree always reuses it, without switching branches.
+Main-folder execution can be selected explicitly. All workflow roles share the
+resolved checkout. Workspace leases serialize workflows and conversational turns
+in the same checkout. Different workspaces can execute concurrently.
+
+Choose Workflow or Agent conversation. Conversations support a role, model,
+Codex effort, and a recipe from the existing skill registry. A skill may include
+optional `settings` with `model` and `effort`. The task snapshots the effective
+configuration, including the recipe prompt. Defaults apply first, then role,
+recipe, and explicit choices. Selecting a recipe does not start a workflow.
+Roles loaded by the service are never modified by task settings.
+
+Task pages show status and phase, the participating agents, workflow attempts,
+parallel parents and dependencies, and pending user input. Agent pages show
+persisted messages and expandable action output. Markdown uses react-markdown
+with raw HTML disabled, and Shiki renders code tokens as React elements with
+on-demand grammars. Conversation records come from SQLite, including cursor
+recovery after disconnected previews. Browser storage contains drafts only.
+
+Agent conversations stay open between turns. Continue on the task page after a
+reload or service restart, then choose **Mark complete** when finished. An active
+turn must finish or be cancelled before completion. Completed tasks reject new
+messages. Navigation and browser disconnects leave accepted work running. Service
+restart marks unfinished execution interrupted and expires its old input requests;
+it never replays commands. Saved backend sessions resume only after a new message.
+Backend session retention and installed CLI credentials are still required.
+
+Feature tasks default to local edits and commits. **Create draft PR/MR** enables
+publication and CI/deployment monitoring. `pr-completion` requires publication.
+`make task` and `make workflow-run` use the same task lifecycle as the browser.
+The legacy project and workflow endpoints remain adapters; new integrations use:
+
+- `GET/POST /api/repositories` and `GET /api/filesystem/directories`
+- `GET /api/repositories/{id}/workspaces`
+- `GET /api/workspaces/{id}/tasks?before=...&limit=50`
+- `POST /api/tasks` with `workspace_id`, `prompt`, `kind`, `settings`,
+  `isolation` (`auto`, `always`, `never`), and optional `idempotency_key`
+- `GET /api/tasks/{id}`, `POST /api/tasks/{id}/messages`, `/complete`, `/cancel`
+- `POST /api/input-requests/{id}/resolve` with `response`
+- `GET /api/agents/{id}/events?after=0&limit=200`
+- `DELETE /api/workspaces/{id}` and `GET /api/workspaces/{id}/archive`
+
+Submission returns 202 with a task ID and status URL. Retrying the same key and
+payload returns the same task; changed payloads conflict. Missing resources return
+404, invalid input returns 400, and lifecycle conflicts return 409. Directory and
+checkout paths are resolved by the service rather than trusted from task settings.
+Older records are attached only where saved checkout and ownership evidence exists;
+ambiguous runs and globally reused agents remain accessible through the legacy APIs.
+Schema migrations are additive and versioned; back up the SQLite database before
+upgrading an existing installation.
+
+**Archive and delete worktree** blocks new work, cancels its execution, stops owned
+agents, flushes history, and captures tracked, untracked, and ignored files, a Git
+bundle, task settings, workflow steps, messages, and actions. Archives are stored
+outside the checkout in `<data_dir>/archives/<archive_id>/` with private permissions.
+Symlinks are preserved as links. File hashes, bundle validity, the saved manifest,
+and checkout stability are verified before Git removes the checkout. Database
+history and branches are retained. Main folders cannot be deleted this way.
+
+A failed stage retains the checkout and reports the failure in workspace history.
+Retry after resolving it. After a restart, an incomplete operation is marked
+interrupted; retry can reconcile an already removed checkout against its saved
+verified archive. Submodules, Git LFS, and special filesystem entries currently
+block removal because complete capture is unsupported. Archive restoration UI is
+outside scope. Restore manually into a fresh folder using `history.bundle` and the
+checkout files; never use an old worktree `.git` pointer as a restored Git repository.
+Archives may contain ignored secrets and should be handled as private backups.
+
+Implementation and validation are separate. The task ownership and archive tests
+are in `tests/test_task_ownership.py` and `tests/test_archives.py`; they do not launch
+agent backends. When validation is requested, run the appropriate gates once:
 
 ```sh
-# Frontend checks, from web/
-npm test
-npm run typecheck
-npm run build
-npm run preview
-
-# Python API and observation regression checks, from the repo root
-./.venv/bin/python -m unittest discover -s tests -v
+make test-python
+make typecheck
+make build
+make test
 ```
 
-The project picker searches registered server folders. Enter an absolute path
-and choose **Register existing folder**, or explicitly choose **Create folder and
-register** to create missing directories (including parents). Validation and
-permission errors appear in the picker. Canonical paths and timestamps are
-stored in SQLite's independent `projects` table, seeded with the service project
-on startup. Missing or inaccessible folders remain listed as unavailable.
-Temporary workspace registrations are unchanged.
-
-Feature submissions default to `create_mr=false`, which keeps implementation
-and review local. Enable publication explicitly to allow pushing approved
-commits and creating a draft PR/MR with CI/deployment verification.
-`pr-completion` always requires publication and shows a separate notice: it may
-push committed work and repair CI without a second browser confirmation.
-Other built-in workflows have no publication step. CLI defaults and synchronous
-submission contracts are unchanged.
-
-The home uses `POST /api/workflows/{name}/submit` with a client-generated run ID,
-`task_description`, and registered `cwd`. It persists acceptance before returning
-202 and starts/reuses exactly `Workflow.required_roles`, including nested steps.
-The same ID and normalized payload return the same acceptance; a conflicting
-payload returns 409. IDs cannot replace saved runs. `GET
-/api/workflows/runs/{run_id}` returns saved progress, results, and errors without
-the recent-history limit. The existing `/run` endpoint still waits for results.
-
-The browser saves the most recent submission before sending it. Reloading the
-page resumes polling; if acceptance is uncertain, **Retry same submission**
-resends the saved ID and payload. Navigation and disconnects do not stop service
-work. Storage must be available to initiate a task safely. A service shutdown or
-restart marks unfinished web submissions interrupted, retaining saved progress;
-it does not automatically replay steps. Inspect progress before starting a new
-task. Older runs remain accessible in Monitor or by individual run API lookup.
-
-The compact layout was source-reviewed against baseline `054b310`, including
-stable composer identity, separate task and agent forms, and keyboard-accessible
-disclosures and role tooltips. Runtime acceptance remains unverified.
-
-The reusable Chat accepts typed messages, an async transport callback, optional
-toolbar and content slots, and input presentation options. It
-provides a labeled multiline input, transcript, loading, error, and disabled
-states. Agent conversations create an explicit persisted thread first using
-`POST /api/agents/{agent_id}/threads`, then reuse `thread_id` and `cwd` on the
-existing message endpoint. The browser tab retains thread identity in session
-storage; transcripts remain in memory. Replies arrive at turn completion, with
-no streaming. A disconnected message may continue running, so inspect Monitor
-before sending again if its response is lost. Thread availability after a service
-restart depends on the agent backend; automatic conversation replay is not provided.
-
-The monitor uses `GET /health`, `/api/agents`, `/api/work`,
-`/api/work/{item_id}`, `/api/workflows/runs`, `/api/workspaces`,
-`/api/workspaces/{id}/diff?full=true`, and one `/api/events` SSE connection.
-`/api/workflows` continues to list definitions. Run history includes all
-unfinished runs and the latest 50 terminal runs with their persisted step state.
-Snapshots reconcile every two seconds, after relevant events, and on SSE
-reconnection. Only the selected branch diff refreshes, every five seconds.
-Failed reads retain previous data with a stale indicator.
-
-Limitations:
-
-- “Branch diff” includes committed branch changes against the base branch only;
-  uncommitted and untracked files are excluded.
-- Activity is in memory and separate from process health. Agent lifecycle
-  statuses and scheduling are unchanged. Text and command events are forwarded
-  best-effort through a bounded queue; slow or failing observers cannot block turns.
-- SSE has no replay IDs and may drop events. The latest 1,000 events are retained
-  in the browser, and interruptions are marked as possible log gaps.
-- Workspace registration is in memory. Historical workspaces may be unavailable
-  after cleanup or restart. Task relationships use stored IDs and assignment
-  history, never role names or path guesses.
-- CLI commands that create a separate orchestrator instance are outside this
-  monitor's view. The task home adds execution controls to this instance.
-  Keep the service and frontend on loopback; they have no authentication.
-
-Manual acceptance (requires a running instance with agents): open the monitor
-and check the connection status; send an agent work through the existing CLI or
-API and check idle/running transitions and live events; select a task and its
-workspace and inspect the branch diff; select an existing workflow run and
-reload to check persisted history. Stop the API and check the disconnected/stale
-state, then restart it and check automatic recovery and the log-gap notice.
-These browser checks are separate from the automated tests and build.
-
-Task-home manual acceptance is pending. The implementer reported 10 passing
-focused regression tests during revision; these were run despite the task's
-no-tests instruction. Typecheck, build, and browser checks remain unverified.
-
-1. Start the API and UI with the Make commands above. Check workflow changes,
-   nested research roles, and model/reasoning tooltips with mouse and keyboard,
-   including a role with no configured values. Check narrow-screen layout.
-2. Search and register an existing folder, create a missing folder explicitly,
-   and try a relative path, file path, and inaccessible folder. Restart the
-   service and confirm registrations persist and unavailable folders are labeled.
-3. Submit a local feature task in a disposable repository. Confirm 202 acceptance,
-   exactly the required team (reused on a second task), current step, final outputs,
-   and no PR/MR publication. Double-click submission and resend the same ID/payload;
-   check that only one execution exists. Change the payload with that ID and
-   confirm 409. Keep CLI `/run` clients synchronous.
-4. Navigate to Monitor, return home, and reload during execution. Disconnect the
-   client around acceptance and recover with the same submission. Stop/restart
-   the service during team startup and during a step; confirm explicit interrupted
-   progress. Simulate a team-start failure and check its persisted error. Confirm
-   individual lookup still works for a run outside recent history.
-5. Inspect feature publication opt-in and the required `pr-completion` notice.
-   Exercise publication only in an authorized disposable remote repository.
-6. Refresh running agents, send two conversation turns, and confirm the same
-   thread and cwd are used. Confirm errors are visible. Check monitor selection,
-   events, task details, and branch diffs still work across home navigation.
-
-Review the complete task diff against main in the isolated worktree, not the
-original checkout: `git -C .worktrees/task-home diff main HEAD`. Implementation
-is committed locally; publication belongs to the external review workflow.
+Manual acceptance still requires the real installed backends: migrate an existing
+store and restart twice; start two tasks in one worktree and check serialization;
+continue an agent conversation after reload/restart; inspect workflow retries and
+parallel steps; answer input once and reject a duplicate; disconnect/reconnect and
+check persisted output; archive a dirty worktree containing ignored files and an
+external symlink. Simulate capture failure and confirm the checkout remains.
+Verify that completed and archived history stays readable and that Main deletion
+and mutations from an untrusted browser Origin are rejected.

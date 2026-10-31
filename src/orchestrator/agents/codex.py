@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import signal
 import shutil
 import time
 from typing import Any, AsyncIterator
@@ -105,6 +107,7 @@ class CodexAgent(Agent):
 
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
+            start_new_session=True,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -153,6 +156,10 @@ class CodexAgent(Agent):
     async def stop(self) -> None:
         self.status = AgentStatus.STOPPING
         self._shutdown.set()
+        requests = list(getattr(self, '_server_requests', set()))
+        for task in requests:
+            task.cancel()
+        await asyncio.gather(*requests, return_exceptions=True)
 
         if self._reader_task:
             self._reader_task.cancel()
@@ -167,11 +174,12 @@ class CodexAgent(Agent):
 
         if self._proc:
             try:
-                self._proc.terminate()
+                os.killpg(self._proc.pid, signal.SIGTERM)
                 await asyncio.wait_for(self._proc.wait(), timeout=5)
             except (TimeoutError, ProcessLookupError):
                 try:
-                    self._proc.kill()
+                    os.killpg(self._proc.pid, signal.SIGKILL)
+                    await self._proc.wait()
                 except ProcessLookupError:
                     pass
             self._proc = None
@@ -221,7 +229,11 @@ class CodexAgent(Agent):
 
                 elif isinstance(msg, JSONRPCRequest):
                     # Server request (approval) — handle based on policy
-                    asyncio.create_task(self._handle_server_request(msg))
+                    if not hasattr(self, '_server_requests'):
+                        self._server_requests = set()
+                    task = asyncio.create_task(self._handle_server_request(msg))
+                    self._server_requests.add(task)
+                    task.add_done_callback(self._server_requests.discard)
 
                 elif isinstance(msg, JSONRPCNotification):
                     event = StreamEvent(

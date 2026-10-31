@@ -142,7 +142,7 @@ class CompletionReviewStep(ReviewStep):
                 step_id=self.step_id, role=self.role, cwd="{mr_repo}", output_key="review_text",
                 message_template=self.review_template.replace("{source}", "{implementation}"),
             )
-            result = await assignment.execute(ctx)
+            result = await ctx.execute_step(assignment)
             if not result.success:
                 return result
             report = result.output.get("review_text", "").strip()

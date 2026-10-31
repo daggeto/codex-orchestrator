@@ -40,8 +40,19 @@ async def workspaces(request):
 
 
 async def delete(request):
-    result = await asyncio.shield(own_task(request.app, request.app['orch'].archives.archive_and_delete(request.match_info['workspace_id'])))
-    return web.json_response({'archive': result})
+    async def accept():
+        service = request.app['orch'].archives
+        workspace, aid = await service.begin(request.match_info['workspace_id'])
+        own_task(request.app, service.execute_archive(workspace, aid))
+        return web.json_response({'archive_id': aid, 'status_url': '/api/workspaces/' + workspace['workspace_id'] + '/archive'}, status=202)
+    return await asyncio.shield(own_task(request.app, accept()))
+
+
+async def archive_status(request):
+    record = await request.app['orch'].store.one('SELECT * FROM archives WHERE workspace_id=? ORDER BY created_at DESC LIMIT 1', (request.match_info['workspace_id'],))
+    if not record:
+        raise LookupError('Archive operation not found')
+    return web.json_response({'archive': record})
 
 
 async def navigation(request):
@@ -56,6 +67,7 @@ async def navigation(request):
 
 def register(app):
     app.router.add_get('/api/navigation', navigation)
+    app.router.add_get('/api/workspaces/{workspace_id}/archive', archive_status)
     app.router.add_get('/api/repositories', repositories)
     app.router.add_post('/api/repositories', register_repository)
     app.router.add_get('/api/repositories/{repository_id}/workspaces', workspaces)

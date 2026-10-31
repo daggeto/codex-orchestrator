@@ -61,12 +61,14 @@ class AssignStep(Step):
         message = self.message_template.format(**ctx.variables)
         if self.role == "implementer" and ctx.variables.get("task_worktree"):
             message += (
-                "\n\nThe workflow has already created this task's isolated worktree: "
+                "\n\nThe task has selected this checkout: "
                 f"{ctx.variables['task_worktree']} on branch {ctx.variables['task_branch']}. "
                 "Reuse this checkout and branch for all edits and commits. Do not create "
                 "another worktree or switch branches; review and publication use this checkout."
             )
-        cwd = self.cwd.format(**ctx.variables) if self.cwd else ctx.variables.get("cwd")
+        if ctx.variables.get('workspace_kind') == 'main':
+            message += "\n\nThe task explicitly selected execution in this main checkout. Use this folder and its current branch for implementation."
+        cwd = ctx.variables.get("cwd") if ctx.variables.get("workspace_resolved") else (self.cwd.format(**ctx.variables) if self.cwd else ctx.variables.get("cwd"))
 
         thread = ctx.get_or_create_thread(agent, self.step_id)
         if not thread:

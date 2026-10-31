@@ -46,7 +46,8 @@ class TaskService:
             name='default', model=self.orch.config.default_model,
             approval_policy=self.orch.config.default_approval_policy,
             sandbox=self.orch.config.default_sandbox))
-        config['model'] = config['model'] or self.orch.config.default_model
+        if config['backend'] == 'codex':
+            config['model'] = config['model'] or self.orch.config.default_model
         recipe = settings.get('recipe')
         if recipe:
             skill = self.orch.skills.get(recipe)
@@ -69,6 +70,8 @@ class TaskService:
 
     async def submit(self, workspace_id, prompt, kind='workflow', settings=None, isolation='auto', idempotency_key=None):
         settings = dict(settings or {})
+        if not isinstance(settings.get('variables', {}), dict):
+            raise ValueError('variables must be an object')
         if kind not in {'workflow','agent'} or isolation not in {'auto','always','never'}:
             raise ValueError('Invalid task kind or isolation policy')
         if not isinstance(prompt, str) or not prompt.strip():
@@ -84,6 +87,8 @@ class TaskService:
                     if previous['fingerprint'] != fingerprint:
                         raise Conflict('Idempotency key belongs to a different submission')
                     return previous
+            if idempotency_key and await self.store.get_workflow_run(idempotency_key):
+                raise Conflict('Run ID belongs to legacy workflow history')
             workspace = await self.store.workspace_record(workspace_id)
             if not workspace:
                 raise LookupError('Workspace not found')
@@ -137,7 +142,7 @@ class TaskService:
                 settings = task['settings']
                 team = await self.orch.spawn_team(list(settings['roles']), task_id=task_id, configurations=settings['roles'])
                 variables = {**settings.get('variables', {}), 'task_description': task['prompt'],
-                             'cwd': workspace['path'], 'workspace_resolved': True, 'task_id': task_id}
+                             'cwd': workspace['path'], 'workspace_resolved': True, 'task_id': task_id, 'workspace_kind': workspace['kind']}
                 run = WorkflowRunRecord(run_id=task.get("idempotency_key") or uuid.uuid4().hex, workflow_name=settings['workflow'], status='accepted', config={'variables': variables}, state={'team': team})
                 await self.store.reserve_workflow_run(run)
                 await self.store.write('UPDATE workflow_runs SET task_id=? WHERE run_id=?', (task_id, run.run_id))

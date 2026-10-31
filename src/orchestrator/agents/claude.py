@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import signal
 import shutil
 import uuid
 from typing import Any, AsyncIterator
@@ -78,6 +80,7 @@ class ClaudeSession:
 
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
+            start_new_session=True,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=self.cwd,
@@ -94,6 +97,11 @@ class ClaudeSession:
                 except json.JSONDecodeError:
                     continue
 
+                # Claude embeds tool calls/results in message content blocks.
+                if data.get('type') in {'assistant', 'user'}:
+                    for block in data.get('message', {}).get('content', []):
+                        if block.get('type') in {'tool_use', 'tool_result'}:
+                            yield StreamEvent(method='item/completed', params={'threadId': self.thread_id, 'item': block})
                 event = self._parse_claude_event(data)
                 if event:
                     yield event
@@ -105,7 +113,14 @@ class ClaudeSession:
         finally:
             self._turn_active = False
             if self._proc and self._proc.returncode is None:
-                self._proc.terminate()
+                try:
+                    os.killpg(self._proc.pid, signal.SIGTERM)
+                    await asyncio.wait_for(self._proc.wait(), 5)
+                except TimeoutError:
+                    os.killpg(self._proc.pid, signal.SIGKILL)
+                    await self._proc.wait()
+                except ProcessLookupError:
+                    pass
 
     def _parse_claude_event(self, data: dict) -> StreamEvent | None:
         msg_type = data.get("type", "")
@@ -175,11 +190,11 @@ class ClaudeSession:
 
     async def interrupt(self):
         if self._proc and self._proc.returncode is None:
-            self._proc.send_signal(2)  # SIGINT
+            os.killpg(self._proc.pid, signal.SIGINT)
             try:
                 await asyncio.wait_for(self._proc.wait(), 10)
             except TimeoutError:
-                self._proc.kill()
+                os.killpg(self._proc.pid, signal.SIGKILL)
                 await self._proc.wait()
 
 

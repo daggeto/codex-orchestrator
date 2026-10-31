@@ -130,6 +130,7 @@ class AgentRegistry:
             raise RuntimeError(f"Maximum agents ({self._config.max_agents}) reached")
         if isinstance(agent, CodexAgent) and agent.port not in self._allocated_ports:
             agent.port = self._allocate_port()
+            agent._ws_url = f"ws://{agent.host}:{agent.port}"
         try:
             await agent.start()
             await self._store.update_agent_status(
@@ -153,15 +154,19 @@ class AgentRegistry:
         if not agent:
             raise KeyError(f"Agent {agent_id} not found")
 
+        turns = {task for task in agent._turn_tasks.values() if task is not asyncio.current_task()}
+        for task in turns:
+            task.cancel()
+        await asyncio.gather(*turns, return_exceptions=True)
         try:
             await agent.stop()
-        finally:
-            if isinstance(agent, CodexAgent):
-                self._release_port(agent.port)
-            await self._store.update_agent_status(agent_id, "stopped")
-            await self._bus.publish("agent.stopped", {
-                "agent_id": agent_id, "role": agent.role.name,
-            }, source="registry")
+        except BaseException:
+            await self._store.update_agent_status(agent_id, 'error')
+            raise
+        if isinstance(agent, CodexAgent):
+            self._release_port(agent.port)
+        await self._store.update_agent_status(agent_id, 'stopped')
+        await self._bus.publish('agent.stopped', {'agent_id': agent_id, 'role': agent.role.name}, source='registry')
 
     async def destroy_agent(self, agent_id: str) -> None:
         if agent_id in self._agents:
