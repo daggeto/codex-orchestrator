@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { TaskComposer } from '../components/TaskComposer';
-import { useNavigation } from '../components/RepositorySidebar';
+import { useNavigation } from '../navigation';
 import { useResource } from '../useResource';
 import type { TaskRecord } from '../types';
 

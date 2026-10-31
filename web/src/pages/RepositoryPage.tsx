@@ -1,6 +1,6 @@
 import { Link, useParams } from 'react-router';
 import { TaskComposer } from '../components/TaskComposer';
-import { useNavigation } from '../components/RepositorySidebar';
+import { useNavigation } from '../navigation';
 
 export function RepositoryPage() {
   const { repositoryId } = useParams();

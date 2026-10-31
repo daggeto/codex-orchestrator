@@ -1,13 +1,10 @@
-import { Link } from 'react-router';
-import type { OwnedAgent, RepositoryRecord, TaskRecord, WorkspaceRecord } from '../types';
-import { useResource } from '../useResource';
+import { NavLink as Link } from 'react-router';
+import { useNavigation } from '../navigation';
 
-export interface Navigation { repositories: RepositoryRecord[]; workspaces: WorkspaceRecord[]; tasks: TaskRecord[]; agents: OwnedAgent[] }
-export function useNavigation() { return useResource<Navigation>('/api/navigation'); }
 export function RepositorySidebar() {
   const { data, error } = useNavigation();
-  return <aside className="repository-sidebar"><Link className="brand" to="/">Orchestrator</Link><nav aria-label="Repositories">
-    <Link to="/">Add repository</Link><Link to="/monitor">Service monitor</Link>
+  return <aside className="repository-sidebar"><Link className="brand" to="/" end><span className="brand-mark" aria-hidden="true">O</span>Orchestrator</Link><p className="brand-subtitle">Build with your agents</p><nav aria-label="Repositories">
+    <p className="nav-caption">Workspace</p><Link to="/" end>Repositories / Add repository</Link><Link to="/monitor">Service monitor</Link>
     {data?.repositories.map(repository => <details key={repository.repository_id} open>
       <summary><Link to={`/repositories/${repository.repository_id}`}>{repository.name}</Link></summary>
       {data.workspaces.filter(workspace => workspace.repository_id === repository.repository_id).map(workspace => <details key={workspace.workspace_id} open>
