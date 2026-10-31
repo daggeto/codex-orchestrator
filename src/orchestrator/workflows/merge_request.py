@@ -192,17 +192,28 @@ class PrepareMergeRequestStep(Step):
 class CreateMergeRequestStep(Step):
     """Push only clean, approved task commits, then create a draft PR/MR."""
 
+    def __init__(self, step_id: str, require_ux_approval: bool = False, **kwargs):
+        super().__init__(step_id, **kwargs)
+        self.require_ux_approval = require_ux_approval
+
     async def execute(self, ctx: WorkflowContext) -> StepResult:
         v = ctx.variables
         if v.get("mr_status") != "prepared":
             return _status(v.get("mr_status", "blocked"), v.get("mr_reason", "No task branch prepared"))
         if v.get("review_decision") != "approved":
             return _status("blocked", "Code review has not approved the implementation")
+        if self.require_ux_approval and v.get("ux_review_decision") != "approved":
+            return _status("blocked", "UX review approval is missing, rejected, or unclear")
         root, branch, base = v["mr_repo"], v["mr_branch"], v["mr_base"]
         try:
             head = await _run(root, "git", "rev-parse", "HEAD")
-            if v.get("task_worktree") and head != (v.get("completion_reviewed_sha") or v.get("review_commit")):
+            if not self.require_ux_approval and v.get("task_worktree") and head != (v.get("completion_reviewed_sha") or v.get("review_commit")):
                 return _status("blocked", "Task commit changed since approval; review it before publication")
+            if self.require_ux_approval:
+                if head != v.get("review_commit"):
+                    return _status("blocked", "Code review approval is missing or stale for the current commit")
+                if head != v.get("ux_review_commit"):
+                    return _status("blocked", "UX review approval is missing or stale for the current commit")
             current = await _run(root, "git", "branch", "--show-current")
             if current != v.get("mr_checkout_branch", branch):
                 return _status("blocked", "Agent changed branches; task branch was not published")

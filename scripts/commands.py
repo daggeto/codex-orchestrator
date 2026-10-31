@@ -48,8 +48,11 @@ COMMANDS = (
             "(feature by default); --api-url selects another service port. Repeat --var/-v KEY=VALUE for inputs. "
             "Existing worktrees are reused without switching branches; Main tasks create one when isolation is needed. "
             "All workflow roles share the resolved checkout and a workspace lease. "
+            "Feature automatically includes senior-ux-designer for source assessment before planning and "
+            "UX review before code review. Either rejection repeats implementation and both reviews; "
+            "source inspection leaves visual/usability validation outstanding. "
             "Feature tasks default to create_mr=false (local edits and commits); -v create_mr=true enables "
-            "draft PR/MR publication and CI verification. pr-completion includes publication. "
+            "draft PR/MR publication after current UX and code approvals, plus CI verification. pr-completion includes publication. "
             "Ctrl+C closes the client while submitted work remains running. Failed tasks return a nonzero exit status. "
             "This command does not start or stop an orchestrator service.",
             ("""make task ARGS='"Add search to the transactions page"'""",
@@ -63,8 +66,9 @@ COMMANDS = (
             ("make status",)),
     Command("team", "Spawn a team using the supplied role names.", "orch", ("team",),
             "Pass space-separated roles, or omit them to use configured defaults. This CLI invocation stops "
-            "its orchestrator on completion; use start --spawn-team for a long-running team.",
-            ('make team ARGS="architect implementer reviewer"',)),
+            "its orchestrator on completion; use start --spawn-team for a long-running team. "
+            "Feature workflows discover required roles automatically, including read-only senior-ux-designer.",
+            ('make team ARGS="senior-ux-designer architect implementer reviewer"',)),
     Command("send", "Send a message to an agent by role.", "orch", ("send",),
             "Requires ROLE MESSAGE. Starts a saved non-task agent for the role on demand inside a leased task in a Git checkout; unavailable workspaces reject execution. Interrupted turns can continue from their task page using the saved session. Task-owned agents use task messaging. Quote the message inside ARGS to preserve it as one argument. "
             "Use --cwd to set the agent working directory. The implementer must use a separate task worktree "
@@ -92,7 +96,10 @@ COMMANDS = (
             "Requires NAME. Repeat --var/-v KEY=VALUE for workflow inputs. --cwd sets the target repository; "
             "--roles-dir selects role definitions independently. Required roles are started within the owning task. "
             "pr-completion starts implementer and reviewer, publishes committed changes, "
-            "and monitors/repairs CI. feature can also create a draft PR/MR. feature, bugfix, and pr-completion "
+            "and monitors/repairs CI. feature runs source UX assessment before planning, then implementation, "
+            "UX review, and code review. Either rejection returns to implementation and repeats both reviews. "
+            "Source inspection does not establish visual/usability validation. Optional feature publication "
+            "requires both approvals for the current commit. feature, bugfix, and pr-completion "
             "reuse a selected worktree or create one from Main, shared by implementation, review, QA, and publication. "
             "Review uses the selected publication target even when the task branch differs. "
             "Existing PR/MR source and target branches are resolved before isolation and preserved when publishing from the task checkout. "

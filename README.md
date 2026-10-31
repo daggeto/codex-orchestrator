@@ -140,6 +140,7 @@ orch skill run investigate-bug architect -v bug_description="OOM on large upload
 |------|---------|---------|-------------|
 | architect | codex | read-only | Designs, plans, reviews architecture |
 | implementer | codex | workspace-write | Writes code, runs commands, commits |
+| senior-ux-designer | codex | read-only | Assesses source before planning and reviews implementation UX |
 | reviewer | codex | read-only | Code review; must produce APPROVED or CHANGES_REQUESTED |
 | qa | codex | workspace-write | Runs tests, verifies fixes, checks regressions |
 | planner | claude | read-only | Decomposes tasks into work items with priorities |
@@ -150,7 +151,7 @@ Edit `roles/*.toml` to change models, sandbox, token budgets, system prompts.
 
 Five built-in pipelines:
 
-- **feature**: prepare task branch, architect plans, implementer codes, reviewer checks, revision loop if rejected, draft PR/MR, then implementer verifies CI and deployment
+- **feature**: prepare task branch → source UX assessment → architecture plan → implementation → UX review → code review → summary → optional draft PR/MR and CI/deployment verification
 - **bugfix**: architect investigates, implementer fixes, qa verifies
 - **review**: send code to reviewer
 - **research**: parallel investigation by multiple agents, then synthesis
@@ -169,8 +170,30 @@ orch workflow run pr-completion --cwd /path/to/repo \
   -v required_checks=Vercel
 ```
 
+Feature tasks automatically include `senior-ux-designer`. Before planning, this
+read-only role traces the affected task through routes, components, forms, state,
+and API responses. It records existing patterns, practical recommendations, and
+UX acceptance criteria in `ux_assessment`, which the architect and implementer
+receive. The architect incorporates applicable recommendations and explains tradeoffs.
+
+After implementation, UX review checks the actual source diff before code review.
+Either reviewer can request revisions; every revision repeats UX review and code
+review. Concrete usability failures block approval, while cosmetic preferences
+remain advisory. Backend-only features receive a brief applicability assessment
+without invented UI work. Both reviews use the selected publication target, or
+the task baseline when publication is disabled.
+
+UX findings cite files and lines, affected tasks, user impact, proposed fixes, and
+acceptance criteria. `ux_review_text`, `ux_review_decision` (`approved`,
+`changes_requested`, or `unclear`), and `ux_review_commit` remain separate from
+code-review fields. A missing or conflicting final UX decision cannot approve.
+The summary distinguishes source findings from outstanding browser and user
+validation; source inspection cannot establish visual quality or usability.
+The existing step budget and pause behavior remain in place. Older feature runs
+with a different workflow signature must restart under the checkpoint rules.
+
 The feature workflow creates a draft GitHub PR (`gh`) or GitLab MR (`glab`) after
-approval when Git confirms committed changes. Install and authenticate the matching
+both UX and code approval for the current commit when Git confirms committed changes. Install and authenticate the matching
 CLI (`gh auth login` or `glab auth login`) and make sure Git can push to `origin`.
 The workflow first looks for an open PR/MR on the current branch and reuses its
 source and target branches. Otherwise it discovers the provider's default branch
@@ -182,8 +205,8 @@ orch workflow run feature -v task_description="Improve transaction linking" --cw
 
 Start with a clean checkout. Existing PR/MR branches and feature branches with
 committed work are reused. Otherwise the workflow creates `orch/feature-<run_id>`
-before implementation and leaves it checked out for inspection. The reviewer
-inspects the entire proposed PR/MR diff, including existing branch commits.
+before implementation and leaves it checked out for inspection. Both reviewers
+inspect the entire proposed PR/MR diff, including existing branch commits.
 Approved commits are pushed without force, then the workflow uses the existing
 request or creates a draft. No request is created when there is no diff against
 the target. Dirty files, branch changes, missing tools, or publication errors
@@ -478,3 +501,10 @@ check persisted output; archive a dirty worktree containing ignored files and an
 external symlink. Simulate capture failure and confirm the checkout remains.
 Verify that completed and archived history stays readable and that Main deletion
 and mutations from an untrusted browser Origin are rejected.
+
+Manual acceptance for the UX workflow: run a UI feature and confirm the assessment
+reaches planning and implementation, then run a backend-only feature and confirm
+the applicability assessment stays scoped. Exercise a UX rejection and a code
+rejection separately; each revision must repeat both reviews. After approvals,
+create another commit and confirm publication blocks stale approvals. Check that
+the summary lists outstanding visual/usability validation.

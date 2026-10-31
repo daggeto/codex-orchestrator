@@ -19,21 +19,31 @@ from orchestrator.workflows.steps import (
 
 
 def feature_workflow() -> Workflow:
-    """
-    Standard feature implementation workflow:
-    1. Architect designs the approach
-    2. Implementer writes the code
-    3. Reviewer checks the work
-    4. If rejected, loop back to implementer with feedback
-    5. Push approved changes to an existing PR/MR or create a draft PR/MR
-    6. Implementer monitors pending CI/deployment until green, reporting failures
-    """
+    """Assess UX, plan, implement, review UX and code, revise, then optionally publish."""
     return Workflow(
         name="feature",
         publication_policy="optional",
-        description="Feature: plan → implement → review → draft PR/MR → CI/deployment verification",
+        initial_variables={"review_text": "Code review has not run yet.",
+                           "ux_review_text": "UX review has not run yet."},
+        description="Feature: UX assessment → plan → implement → UX review → code review → optional publication",
         steps=[
             PrepareMergeRequestStep(step_id="prepare-mr", name="Prepare Task Branch"),
+            AssignStep(
+                step_id="ux-assess",
+                name="Source UX Assessment",
+                role="senior-ux-designer",
+                message_template=(
+                    "Assess the existing source for this feature before architecture planning.\n\n"
+                    "Feature: {task_description}\nWorking directory: {cwd}\n\n"
+                    "Trace relevant existing flows and API contracts. Describe what works, reusable "
+                    "patterns, consequential risks, the smallest practical improvements, and UX "
+                    "acceptance criteria. Cite file and line evidence. Separate source findings "
+                    "from assumptions and outstanding browser/user validation. For backend-only "
+                    "work, give a brief applicability assessment without inventing UI work."
+                ),
+                cwd="{cwd}",
+                output_key="ux_assessment",
+            ),
             AssignStep(
                 step_id="plan",
                 name="Architecture Planning",
@@ -42,6 +52,9 @@ def feature_workflow() -> Workflow:
                     "Design an implementation plan for the following feature request. "
                     "Include file changes needed, data model changes, and key decisions.\n\n"
                     "Feature: {task_description}\n\n"
+                    "Source UX assessment:\n{ux_assessment}\n\n"
+                    "Incorporate applicable UX recommendations and acceptance criteria. "
+                    "Explain tradeoffs or recommendations you do not adopt.\n\n"
                     "Working directory: {cwd}"
                 ),
                 cwd="{cwd}",
@@ -54,12 +67,49 @@ def feature_workflow() -> Workflow:
                 message_template=(
                     "Implement the following plan. Write all the code changes needed.\n\n"
                     "Plan:\n{plan}\n\n"
+                    "Source UX assessment and acceptance criteria:\n{ux_assessment}\n\n"
                     "Original request: {task_description}\n\n"
                     "Stay on the current branch. Commit the task changes before finishing. "
                     "Do not push or open a PR/MR; the workflow handles publication after review."
                 ),
                 cwd="{cwd}",
                 output_key="implementation",
+            ),
+            ReviewStep(
+                step_id="ux-review",
+                name="Source UX Review",
+                role="senior-ux-designer",
+                review_template=(
+                    "Review the actual implementation source changes against the requested task "
+                    "and applicable UX acceptance criteria.\n\n"
+                    "Feature: {task_description}\nPlan: {plan}\n"
+                    "Source UX assessment: {ux_assessment}\n"
+                    "Implementation output: {source}\nFiles changed: {implementation_files}\n\n"
+                    "Publication status: {mr_status}\n"
+                    "Selected PR/MR: {mr_url}\n"
+                    "Publication source branch: {mr_branch}\n"
+                    "Selected target branch: {mr_base}\n"
+                    "Task checkout branch: {task_branch}\n\n"
+                    "When a target branch is selected, inspect the complete publication diff "
+                    "with git diff origin/{mr_base}...HEAD, including commits already on the "
+                    "branch. Use this selected target; do not rediscover the request from the "
+                    "task checkout branch or substitute the provider's default branch. "
+                    "If the selected target ref is unavailable, report a blocked review "
+                    "instead of approving another diff. When no target is selected, "
+                    "publication is disabled; review git diff {task_baseline}..HEAD.\n\n"
+                    "Cite file and line, affected task, user impact, proposed fix, and acceptance "
+                    "criterion for each finding, or explain with evidence why no relevant issues "
+                    "were found. Distinguish source inspection from outstanding browser/user "
+                    "validation. Backend-only work needs a brief applicability assessment, "
+                    "without invented UI work. Block concrete usability failures; cosmetic "
+                    "preferences remain advisory. End with exactly one standalone final line: "
+                    "APPROVED or CHANGES_REQUESTED. Do not use decision markers elsewhere."
+                ),
+                source_key="implementation",
+                output_namespace="ux_review",
+                strict_decision=True,
+                on_approve="review",
+                on_reject="revise",
             ),
             ReviewStep(
                 step_id="review",
@@ -94,22 +144,24 @@ def feature_workflow() -> Workflow:
                 name="Revision",
                 role="implementer",
                 message_template=(
-                    "The reviewer has requested changes to your implementation.\n\n"
-                    "Review feedback:\n{review_text}\n\n"
+                    "A review has requested changes to your implementation.\n\n"
+                    "UX review feedback:\n{ux_review_text}\n\n"
+                    "Code review feedback (may be from an earlier revision):\n{review_text}\n\n"
+                    "UX assessment and acceptance criteria:\n{ux_assessment}\n\n"
                     "Please address the feedback and update the code accordingly. "
                     "Stay on the current branch and commit the revision. Do not push or open a PR/MR."
                 ),
                 cwd="{cwd}",
                 output_key="implementation",
             ),
-            # After revision, go back to review
+            # Every revision repeats both reviews
             GateStep(
                 step_id="re-review-gate",
                 name="Loop Back to Review",
                 condition_key="review_decision",
                 expected_value="changes_requested",
-                on_true="review",
-                on_false="done",
+                on_true="ux-review",
+                on_false="ux-review",
             ),
             AssignStep(
                 step_id="done",
@@ -119,13 +171,17 @@ def feature_workflow() -> Workflow:
                     "The feature has been implemented and approved. "
                     "Summarize what was done:\n\n"
                     "Plan: {plan}\n"
-                    "Review: {review_text}\n"
+                    "UX assessment: {ux_assessment}\n"
+                    "UX review: {ux_review_text}\n"
+                    "Code review: {review_text}\n"
+                    "Report UX outcomes and outstanding visual/usability validation. "
+                    "Source inspection alone does not establish browser acceptance.\n"
                     "Files changed: {implementation_files}"
                 ),
                 output_key="summary",
                 cwd="{cwd}",
             ),
-            CreateMergeRequestStep(step_id="create-mr", name="Create Draft PR/MR"),
+            CreateMergeRequestStep(step_id="create-mr", name="Create Draft PR/MR", require_ux_approval=True),
             VerifyMergeRequestStep(step_id="verify-mr", name="Verify PR/MR CI and Deployment"),
         ],
     )

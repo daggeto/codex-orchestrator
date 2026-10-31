@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
@@ -113,6 +114,8 @@ class ReviewStep(Step):
         reject_keyword: str = "CHANGES_REQUESTED",
         on_approve: str | None = None,
         on_reject: str | None = None,
+        output_namespace: str = "review",
+        strict_decision: bool = False,
         **kwargs,
     ):
         super().__init__(step_id, **kwargs)
@@ -123,6 +126,8 @@ class ReviewStep(Step):
         self.reject_keyword = reject_keyword
         self.on_approve = on_approve
         self.on_reject = on_reject
+        self.output_namespace = output_namespace
+        self.strict_decision = strict_decision
 
     async def execute(self, ctx: WorkflowContext) -> StepResult:
         agent = ctx.get_agent_for_role(self.role)
@@ -141,13 +146,13 @@ class ReviewStep(Step):
                 root = ctx.variables["task_worktree"]
                 if await _run(root, "git", "branch", "--show-current") != ctx.variables["task_branch"]:
                     raise ValueError("Task branch changed before review")
-                reviewed["review_commit"] = await _run(root, "git", "rev-parse", "HEAD")
+                reviewed[f"{self.output_namespace}_commit"] = await _run(root, "git", "rev-parse", "HEAD")
             except (OSError, RuntimeError, ValueError) as exc:
                 return StepResult(success=False, error=str(exc))
         await ctx.persist_step_thread(agent, thread)
         result = await agent.send_message(thread, message)
         if reviewed:
-            if await _run(root, "git", "rev-parse", "HEAD") != reviewed["review_commit"]:
+            if await _run(root, "git", "rev-parse", "HEAD") != reviewed[f"{self.output_namespace}_commit"]:
                 return StepResult(success=False, error="Task commit changed during review")
         if not result.ok:
             return StepResult(success=False, error=result.error or "Review failed")
@@ -156,24 +161,26 @@ class ReviewStep(Step):
         approved = self.approve_keyword.upper() in text
         rejected = self.reject_keyword.upper() in text
 
-        if approved and not rejected:
-            return StepResult(
-                success=True,
-                output={**reviewed, "review_decision": "approved", "review_text": result.full_text},
-                next_step=self.on_approve,
-            )
-        elif rejected:
-            return StepResult(
-                success=True,
-                output={"review_decision": "changes_requested", "review_text": result.full_text},
-                next_step=self.on_reject,
-            )
-        else:
-            return StepResult(
-                success=True,
-                output={"review_decision": "unclear", "review_text": result.full_text},
-                next_step=self.on_reject,  # default to rejection path
-            )
+        if self.strict_decision:
+            # Require a final standalone marker and reject conflicting markers anywhere.
+            markers = set(re.findall(
+                rf"\b(?:{re.escape(self.approve_keyword.upper())}|{re.escape(self.reject_keyword.upper())})\b",
+                text,
+            ))
+            final = text.strip().splitlines()[-1] if text.strip() else ""
+            approved = markers == {self.approve_keyword.upper()} and final == self.approve_keyword.upper()
+            rejected = markers == {self.reject_keyword.upper()} and final == self.reject_keyword.upper()
+
+        decision = "approved" if approved and not rejected else "changes_requested" if rejected else "unclear"
+        return StepResult(
+            success=True,
+            output={
+                **(reviewed if decision == "approved" or self.strict_decision else {}),
+                f"{self.output_namespace}_decision": decision,
+                f"{self.output_namespace}_text": result.full_text,
+            },
+            next_step=self.on_approve if decision == "approved" else self.on_reject,
+        )
 
 
 class GateStep(Step):
