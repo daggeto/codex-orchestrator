@@ -370,8 +370,9 @@ reload to check persisted history. Stop the API and check the disconnected/stale
 state, then restart it and check automatic recovery and the log-gap notice.
 These browser checks are separate from the automated tests and build.
 
-Task-home manual acceptance (pending; no automated or browser checks were run
-for this implementation):
+Task-home manual acceptance is pending. The implementer reported 10 passing
+focused regression tests during revision; these were run despite the task's
+no-tests instruction. Typecheck, build, and browser checks remain unverified.
 
 1. Start the API and UI with the Make commands above. Check workflow changes,
    nested research roles, and model/reasoning tooltips with mouse and keyboard,
