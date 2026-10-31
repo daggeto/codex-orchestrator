@@ -1,6 +1,8 @@
 import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { post } from '../api';
+import { Card } from './ui/Card';
+import { Badge } from './ui/Badge';
 import { Chat } from './Chat';
 import { useResource } from '../useResource';
 import type { Role, WorkflowDefinition, WorkspaceRecord } from '../types';
@@ -21,7 +23,8 @@ export function TaskComposer({ workspace }: { workspace: WorkspaceRecord }) {
   const roles = useResource<{ roles: Role[] }>('/api/roles', 0);
   const recipes = useResource<{ skills: { name: string; roles: string[] }[] }>('/api/skills', 0);
   const selectedWorkflow = workflows.data?.workflows.find(item => item.name === workflow);
-  return <><p>New task in {workspace.kind === 'main' ? 'Main' : workspace.branch}: <code>{workspace.path}</code></p>
+  return <Card className="task-composer"><div className="composer-heading"><div><h2>Start a task</h2><p className="resource-path">{workspace.path}</p></div><Badge>{workspace.kind === 'main' ? 'Main' : workspace.branch || 'Worktree'}</Badge></div>
+    <div className="execution-summary"><span>Checkout: {workspace.kind !== 'main' ? 'Reuse selected worktree' : isolation === 'never' ? 'Use Main' : isolation === 'always' ? 'New worktree' : 'Isolate when needed'}</span><span>{kind === 'agent' ? 'Agent conversation' : selectedWorkflow?.publication_policy === 'required' ? 'Publishes approved commits' : selectedWorkflow?.publication_policy === 'optional' && publish ? 'Create draft PR/MR' : 'PR/MR publication disabled'}</span></div>
     <Chat label="Start a task" draftKey={`workspace:${workspace.workspace_id}`} messages={[]} submitLabel="Start task" disabled={workspace.status !== 'active'}
       toolbar={<div className="composer-settings">
         <label>Execution<select value={kind} onChange={event => setKind(event.target.value)}><option value="workflow">Workflow</option><option value="agent">Agent conversation</option></select></label>
@@ -47,5 +50,5 @@ export function TaskComposer({ workspace }: { workspace: WorkspaceRecord }) {
         navigate(`/tasks/${encodeURIComponent(result.task_id)}`);
       }} />
     {(workflows.error || roles.error || recipes.error) && <p className="error">Task settings could not be loaded. {workflows.error || roles.error || recipes.error}</p>}
-  </>;
+  </Card>;
 }

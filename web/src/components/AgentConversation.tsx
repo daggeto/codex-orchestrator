@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { get } from '../api';
 import type { DurableEvent, OwnedAgent } from '../types';
+import { ResourceState } from './ui/ResourceState';
 import { MessageContent } from './MessageContent';
 
 export function AgentHistory({ agentId, taskId }: { agentId: string; taskId?: string }) {
@@ -45,7 +46,7 @@ export function AgentHistory({ agentId, taskId }: { agentId: string; taskId?: st
   return <div className="chat-transcript" aria-label="Persisted conversation">
     {messages.map(message => message.kind === 'action' ? <details key={message.key} className="action-result"><summary>{message.text}</summary><pre>{JSON.stringify(message.event.payload, null, 2)}</pre></details> :
       <article key={message.key} className={`chat-message ${message.kind}`}><strong>{message.kind === 'user' ? 'You' : message.kind === 'assistant' ? 'Agent' : 'Error'}</strong><MessageContent text={message.text} /></article>)}
-    {!events.length && <p>No recorded messages yet.</p>}
+    {!events.length && <ResourceState>No recorded messages yet.</ResourceState>}
     {failure && <p className="error" role="alert">{failure}</p>}
   </div>;
 }

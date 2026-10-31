@@ -15,7 +15,7 @@ function Code({ text, language }: { text: string; language: string }) {
   return <code>{tokens ? tokens.map((line, i) => <span key={i}>{line.map((token, j) => <span key={j} style={{ color: token.color }}>{token.content}</span>)}{'\n'}</span>) : text}</code>;
 }
 export function MessageContent({ text }: { text: string }) {
-  return <Markdown skipHtml urlTransform={url => /^(https?:\/\/|mailto:|#|\/[^/])/.test(url) ? url : ''}
+  return <div className="message-content"><Markdown skipHtml urlTransform={url => /^(https?:\/\/|mailto:|#|\/[^/])/.test(url) ? url : ''}
     components={{
       a: ({ children, href }) => <a href={href} rel="noreferrer noopener">{children}</a>,
       img: ({ alt }) => <span>{alt}</span>,
@@ -23,5 +23,5 @@ export function MessageContent({ text }: { text: string }) {
         const language = /language-([\w+-]+)/.exec(className || '')?.[1];
         return language ? <Code text={String(children).replace(/\n$/, '')} language={language} /> : <code>{children}</code>;
       },
-    }}>{text}</Markdown>;
+    }}>{text}</Markdown></div>;
 }

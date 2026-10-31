@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ChatMessage } from '../types';
+import { Button } from './ui/Button';
 import { MessageContent } from './MessageContent';
 
 interface Props {
@@ -35,12 +36,12 @@ export function Chat({ draftKey, messages, onSubmit, label, placeholder, submitL
       catch (reason) { setFailure(reason instanceof Error ? reason.message : 'Message failed'); }
       finally { lock.current = false; setSending(false); }
     }}>
-      {toolbar}
+      {toolbar && <fieldset disabled={blocked} aria-label="Execution settings">{toolbar}</fieldset>}
       <label htmlFor={id}>{label}</label>
       <textarea id={id} rows={rows} value={draft} onChange={event => setDraft(event.target.value)}
         placeholder={placeholder} disabled={blocked} aria-describedby={hint ? `${id}-hint` : undefined} required />
       <div className="chat-actions">{hint && <small id={`${id}-hint`}>{hint}</small>}
-        <button className="primary" type="submit" disabled={blocked || !draft.trim()}>{loading || sending ? 'Sending…' : submitLabel}</button></div>
+        <Button variant="primary" type="submit" disabled={blocked || !draft.trim()}>{loading || sending ? 'Sending…' : submitLabel}</Button></div>
       {shownError && <p className="error" role="alert">{shownError}</p>}
     </form>
     {children}
