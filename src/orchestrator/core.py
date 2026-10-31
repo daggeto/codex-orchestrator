@@ -231,19 +231,10 @@ class Orchestrator:
         worktree = None
 
         if should_isolate and repo_path:
-            try:
+            if not Path(repo_path, ".git").is_file():
                 worktree = await self.workspace.create_worktree(
-                    repo_path=repo_path,
-                    agent_id=agent.agent_id,
-                    work_item_id=item_id,
-                )
+                    repo_path=repo_path, agent_id=agent.agent_id, work_item_id=item_id)
                 work_cwd = worktree.worktree_path
-                logger.info(
-                    "Isolated work item %s in worktree %s (branch=%s)",
-                    item_id, worktree.worktree_id, worktree.branch,
-                )
-            except Exception as e:
-                logger.warning("Failed to create worktree, using main repo: %s", e)
 
         await self.store.update_work_item_status(
             item_id, WorkItemStatus.IN_PROGRESS,

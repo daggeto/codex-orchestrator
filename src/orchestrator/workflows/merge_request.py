@@ -79,6 +79,13 @@ async def _default_branch(root: str, provider: str, remote: str) -> str:
 
 async def prepare_worktree(ctx, root: str, base: str) -> dict:
     """Own checkout identity so every later agent and publisher uses the same work."""
+    # TaskService has already persisted and leased the selected checkout.
+    if ctx.variables.get("workspace_resolved") or Path(root, ".git").is_file():
+        identity = {"cwd": root, "task_worktree": root,
+                    "task_branch": await _run(root, "git", "branch", "--show-current"),
+                    "task_baseline": await _run(root, "git", "rev-parse", "HEAD")}
+        ctx.variables.update(identity)
+        return identity
     # Keep worktrees outside the source checkout, including dirty local projects.
     parent = tempfile.mkdtemp(prefix="orch-worktree-")
     checkout = str(Path(parent) / "repo")
