@@ -91,6 +91,24 @@ async def accept(request):
     rid = data.get('run_id')
     if not isinstance(variables, dict) or not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', rid):
         raise ValueError('Expected run_id and workflow variables')
+    previous = await orch.store.one('SELECT * FROM tasks WHERE idempotency_key=?', (rid,))
+    if previous:
+        # Acceptance recovery must precede directory existence and upload checks.
+        # The original checkout may have been removed since the response was lost.
+        supplied = variables.get('cwd')
+        if not isinstance(supplied, str):
+            raise ValueError('Expected a saved workflow directory')
+        variables = {**variables, 'cwd': str(Path(supplied).expanduser().resolve())}
+        if data.get('copy_from_task_id'):
+            source = await orch.store.task(data['copy_from_task_id'])
+            source_workspace = await orch.store.workspace_record(source['workspace_id']) if source else None
+            if source_workspace and variables['cwd'] == source_workspace['path']:
+                variables['cwd'] = previous['settings'].get('variables', {}).get('cwd')
+        task = await orch.tasks.submit(previous['workspace_id'], variables.get('task_description'),
+            settings={'workflow': request.match_info['name'], 'variables': variables}, idempotency_key=rid,
+            attachment_ids=data.get('attachment_ids'), draft_id=data.get('draft_id'),
+            copy_from_task_id=data.get('copy_from_task_id'), omit_unavailable=data.get('omit_unavailable_attachments') is True)
+        return web.json_response({'run_id': rid, 'task_id': task['task_id'], 'status_url': f'/api/workflows/runs/{rid}'}, status=202)
     if data.get('copy_from_task_id'):
         source = await orch.store.task(data['copy_from_task_id'])
         source_workspace = await orch.store.workspace_record(source['workspace_id']) if source else None

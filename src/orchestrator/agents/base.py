@@ -195,7 +195,15 @@ class Agent(ABC):
             latest = await self.store.one('SELECT message_id FROM task_messages WHERE task_id=? ORDER BY created_at DESC LIMIT 1', (self.task_id,))
             message_id = latest['message_id'] if latest else None
         value = AgentInput(str(message), message_id, resources)
-        await self.validate_attachment_input(value)
+        try:
+            await self.validate_attachment_input(value)
+        except Exception as exc:
+            if getattr(self, 'store', None) and getattr(self, 'task_id', None):
+                import json
+                await self.store.append_events([(self.task_id, self.agent_id, None, None, None,
+                    'attachments/delivery', json.dumps({'attachment_ids': [a['attachment_id'] for a in resources],
+                    'outcome': 'failed', 'error': str(exc)}), datetime.now(timezone.utc).isoformat())])
+            raise
         return value
 
     async def validate_attachment_input(self, message):

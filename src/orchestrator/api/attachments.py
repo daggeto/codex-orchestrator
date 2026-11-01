@@ -54,12 +54,12 @@ async def content(request):
     if not row:
         raise web.HTTPNotFound()
     if row['state'] in {'deleted', 'deleting'}:
-        raise web.HTTPGone(text='Attachment permanently deleted during worktree cleanup')
+        raise web.HTTPGone(text='Attachment permanently deleted during worktree cleanup', headers={'Cache-Control': 'no-store'})
     if row['state'] != 'ready':
         raise web.HTTPConflict(text='Attachment is not ready')
     path = svc.path(row['storage_key'])
     if not path.is_file():
-        raise web.HTTPGone(text='Attachment content is unavailable')
+        raise web.HTTPGone(text='Attachment content is unavailable', headers={'Cache-Control': 'no-store'})
     disposition = 'inline' if row['width'] else 'attachment'
     # Browser caches must not retain private attachment responses.
     response = web.FileResponse(path, headers={

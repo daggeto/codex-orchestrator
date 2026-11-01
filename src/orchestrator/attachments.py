@@ -175,9 +175,17 @@ class AttachmentService:
                                  (size, digest.hexdigest(), media, width, height, now(), aid))
         except BaseException as exc:
             if not retry:
-                await self.store.write("UPDATE attachments SET state='failed',error=?,writer_pid=NULL,writer_started=NULL,updated_at=? WHERE attachment_id=?", (str(exc) or 'Upload interrupted; reselect file', now(), aid))
-                for path in (staging, self.path(key)):
-                    path.unlink(missing_ok=True)
+                async with self.store.transaction() as db:
+                    cleanup_error = ''
+                    for path in (staging, self.path(key)):
+                        try:
+                            path.unlink(missing_ok=True)
+                        except OSError as cleanup:
+                            cleanup_error = '; cleanup pending: ' + str(cleanup)
+                    # Keep the reservation until cleanup completes. A concurrent
+                    # retry must never have its new staging file unlinked here.
+                    await db.execute("UPDATE attachments SET state='failed',error=?,writer_pid=NULL,writer_started=NULL,updated_at=? WHERE attachment_id=?",
+                                     ((str(exc) or 'Upload interrupted; reselect file') + cleanup_error, now(), aid))
             raise
         return await self.store.one('SELECT * FROM attachments WHERE attachment_id=?', (aid,))
 
