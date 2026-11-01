@@ -62,23 +62,26 @@ export function useWorkspaceMerge(workspaceId: string) {
   const latest = eligibility.data?.latest_operation;
   // A newer externally accepted operation supersedes a completed local attempt.
   const operation = reconcile(ownOperation, latest);
+  // Cleanup follows the saved request's outcome, independently of display order.
+  const pendingOutcome = [ownOperation, latest].find(candidate => candidate && terminal(candidate) &&
+    candidate.operation_id === state.pending?.operation_id);
   useEffect(() => {
-    if (operation && terminal(operation) && state.pending?.operation_id === operation.operation_id) {
+    if (pendingOutcome) {
       // Preserve the result before stopping pending-operation polling.
-      remember(workspaceId, operation);
-      setAction(previous => previous.pending?.operation_id === operation.operation_id
+      remember(workspaceId, pendingOutcome);
+      setAction(previous => previous.pending?.operation_id === pendingOutcome.operation_id
         ? { ...previous, pending: null, transportWarning: undefined } : previous);
       try {
         const stored = saved(workspaceId);
-        if (stored?.operation_id === operation.operation_id) localStorage.removeItem(key(workspaceId));
+        if (stored?.operation_id === pendingOutcome.operation_id) localStorage.removeItem(key(workspaceId));
       } catch { /* Keep polling; an unavailable storage does not change the outcome. */ }
     }
-  }, [operation, state.pending, workspaceId]);
+  }, [pendingOutcome, state.pending, workspaceId]);
   const unresolved = operation && !terminal(operation);
   const uncertain = !!state.pending && !ownOperation;
   const busy = state.busy || !!unresolved || uncertain;
   const transportWarning = state.transportWarning?.operationId === state.pending?.operation_id &&
-    !(operation && operation.operation_id === state.transportWarning?.operationId && terminal(operation))
+    !pendingOutcome
     ? state.transportWarning?.message : '';
 
   async function merge() {

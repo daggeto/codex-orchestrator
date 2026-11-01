@@ -83,6 +83,53 @@ afterEach(() => {
 });
 
 describe('saved merge reconciliation', () => {
+  it.each(['merged', 'already_integrated', 'failed'] as const)(
+    'clears saved %s attempt A while displaying newer completed attempt B', async state => {
+      localStorage.setItem(storageKey, JSON.stringify(request));
+      const newer = { ...completed, operation_id: 'operation-B', created_at: '2026-11-01T12:01:00' };
+      harness.resources.set(`${endpoint}/merge`, { data: { ...eligibility, latest_operation: newer }, error: '' });
+      harness.resources.set(`${endpoint}/merges/${operationId}`, { data: { operation: { ...completed, state } }, error: '' });
+      const result = render();
+      expect(result.operation).toEqual(newer);
+      expect(localStorage.getItem(storageKey)).toBeNull();
+      expect(result.busy).toBe(false);
+      expect(result.uncertain).toBe(false);
+      harness.resources.delete(`${endpoint}/merges/${operationId}`);
+
+      // The next explicit click submits C instead of repeatedly checking A.
+      const nextId = '00000000-0000-4000-8000-000000000001';
+      vi.spyOn(crypto, 'randomUUID').mockReturnValue(nextId);
+      harness.get.mockResolvedValue({ ...eligibility, latest_operation: newer });
+      harness.post.mockResolvedValue({ operation: { ...accepted, operation_id: nextId, created_at: '2026-11-01T12:02:00' } });
+      await render().merge();
+      expect(harness.get).toHaveBeenCalledExactlyOnceWith(`${endpoint}/merge`);
+      expect(harness.post).toHaveBeenCalledExactlyOnceWith(`${endpoint}/merge`, { ...request, operation_id: nextId });
+      expect(render().operation?.operation_id).toBe(nextId);
+    });
+
+  it('clears completed A while keeping controls busy for newer running B', () => {
+    localStorage.setItem(storageKey, JSON.stringify(request));
+    const newer = { ...accepted, operation_id: 'operation-B', state: 'running' as const, created_at: '2026-11-01T12:01:00' };
+    harness.resources.set(`${endpoint}/merge`, { data: { ...eligibility, latest_operation: newer }, error: '' });
+    harness.resources.set(`${endpoint}/merges/${operationId}`, { data: { operation: completed }, error: '' });
+    const result = render();
+    expect(localStorage.getItem(storageKey)).toBeNull();
+    expect(result.operation).toEqual(newer);
+    expect(result.busy).toBe(true);
+    expect(result.uncertain).toBe(false);
+  });
+
+  it('does not clear unresolved A merely because newer B has completed', () => {
+    localStorage.setItem(storageKey, JSON.stringify(request));
+    const newer = { ...completed, operation_id: 'operation-B', created_at: '2026-11-01T12:01:00' };
+    harness.resources.set(`${endpoint}/merge`, { data: { ...eligibility, latest_operation: newer }, error: '' });
+    harness.resources.set(`${endpoint}/merges/${operationId}`, { data: { operation: accepted }, error: '' });
+    const result = render();
+    expect(localStorage.getItem(storageKey)).not.toBeNull();
+    expect(result.operation).toEqual(accepted);
+    expect(result.busy).toBe(true);
+  });
+
   it.each((['merged', 'already_integrated', 'failed'] as const).flatMap(state =>
     (['before', 'after'] as const).map(timing => ({ state, timing }))))(
     'removes obsolete timeout guidance when POST fails $timing polling confirms $state', async ({ state, timing }) => {
