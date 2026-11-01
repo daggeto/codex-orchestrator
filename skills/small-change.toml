@@ -1,0 +1,18 @@
+[skill]
+name = "small-change"
+description = "Make a narrowly scoped local change and stop before substantial expansion"
+roles = ["implementer"]
+tags = ["implementation", "scoped"]
+prompt_template = """Implement the user's request using the smallest safe change and existing patterns.
+Inspect direct dependencies with targeted reads. Before editing, stop and explain
+the smallest safe alternative if this requires a schema migration, a new background
+service or recovery system, a substantial public contract change, or more than five
+implementation files. End an escalation with a standalone SCOPE_ESCALATION line.
+Do not silently expand scope, refactor unrelated code, push, publish, or merge.
+Follow repository validation policy. Add or run tests only when authorized. Report
+the commit, affected files, checks actually run, and pending manual acceptance.
+This recipe guides an agent conversation; independent review and revision limits
+are provided by the small-change workflow, not by this recipe."""
+
+[skill.settings]
+effort = "medium"

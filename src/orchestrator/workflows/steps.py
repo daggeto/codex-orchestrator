@@ -45,6 +45,7 @@ class AssignStep(Step):
         cwd: str | None = None,
         model: str | None = None,
         output_key: str = "response",
+        thread_key: str | None = None,
         **kwargs,
     ):
         super().__init__(step_id, **kwargs)
@@ -53,6 +54,8 @@ class AssignStep(Step):
         self.cwd = cwd
         self.model = model
         self.output_key = output_key
+        if thread_key is not None:
+            self.thread_key = thread_key
 
     async def execute(self, ctx: WorkflowContext) -> StepResult:
         agent = ctx.get_agent_for_role(self.role)
@@ -71,7 +74,7 @@ class AssignStep(Step):
             message += "\n\nThe task explicitly selected execution in this main checkout. Use this folder and its current branch for implementation."
         cwd = ctx.variables.get("cwd") if ctx.variables.get("workspace_resolved") else (self.cwd.format(**ctx.variables) if self.cwd else ctx.variables.get("cwd"))
 
-        thread = await ctx.acquire_thread(agent, self.step_id, cwd=cwd, model=self.model)
+        thread = await ctx.acquire_thread(agent, getattr(self, 'thread_key', None) or self.step_id, cwd=cwd, model=self.model)
 
         await ctx.persist_step_thread(agent, thread)
         result = await agent.send_message(thread, message, model=self.model)
@@ -116,6 +119,7 @@ class ReviewStep(Step):
         on_reject: str | None = None,
         output_namespace: str = "review",
         strict_decision: bool = False,
+        thread_key: str | None = None,
         **kwargs,
     ):
         super().__init__(step_id, **kwargs)
@@ -128,6 +132,8 @@ class ReviewStep(Step):
         self.on_reject = on_reject
         self.output_namespace = output_namespace
         self.strict_decision = strict_decision
+        if thread_key is not None:
+            self.thread_key = thread_key
 
     async def execute(self, ctx: WorkflowContext) -> StepResult:
         agent = ctx.get_agent_for_role(self.role)
@@ -137,7 +143,7 @@ class ReviewStep(Step):
         source = ctx.variables.get(self.source_key, "")
         message = self.review_template.format(**{**ctx.variables, "source": source})
 
-        thread = await ctx.acquire_thread(agent, self.step_id, cwd=ctx.variables.get("cwd"))
+        thread = await ctx.acquire_thread(agent, getattr(self, 'thread_key', None) or self.step_id, cwd=ctx.variables.get("cwd"))
 
         reviewed = {}
         if ctx.variables.get("task_worktree"):

@@ -16,6 +16,54 @@ from orchestrator.workflows.steps import (
     ReviewStep,
     SequenceStep,
 )
+from orchestrator.workflows.small_change import (
+    SMALL_CHANGE_INSTRUCTIONS, SmallChangeAssignment, SmallChangeCheckpoint, SmallChangeSummary,
+)
+
+
+def small_change_workflow() -> Workflow:
+    """Implement, review, and permit exactly one revision before a user checkpoint."""
+    review = (
+        "Review the complete task diff with git diff {task_baseline}..HEAD in {cwd}.\n"
+        "Request: {task_description}\nDeliverables: {source}\n"
+        "Check correctness, security, and relevant usability together. Reuse existing UI "
+        "patterns; block concrete defects, not cosmetic preferences or unrelated hardening. "
+        "Respect repository validation policy; distinguish source review from checks run. "
+        "Be concise and cite files and lines for required fixes. End with exactly one "
+        "standalone final line: APPROVED or CHANGES_REQUESTED. Do not use these markers elsewhere."
+    )
+    return Workflow(
+        name="small-change",
+        description="Small local change → combined review → at most one revision; larger scope stops for a user decision",
+        max_iterations=8,
+        role_overrides={
+            "implementer": {"config_overrides": {"model_reasoning_effort": '"medium"'}},
+            "reviewer": {"config_overrides": {"model_reasoning_effort": '"medium"'}},
+        },
+        steps=[
+            PrepareWorktreeStep(step_id="prepare-worktree", name="Prepare Task Worktree"),
+            SmallChangeAssignment(
+                step_id="implement", name="Small Change", role="implementer",
+                message_template="Request: {task_description}\nCheckout: {cwd}\n\n" + SMALL_CHANGE_INSTRUCTIONS,
+                output_key="implementation", thread_key="small-change-implementation",
+            ),
+            ReviewStep(step_id="review", name="Combined Review", role="reviewer",
+                       review_template=review, source_key="implementation", strict_decision=True,
+                       thread_key="small-change-review",
+                       on_approve="done", on_reject="revise"),
+            SmallChangeAssignment(
+                step_id="revise", name="Single Revision", role="implementer",
+                message_template="Request: {task_description}\nRequired fixes: {review_text}\n\n" + SMALL_CHANGE_INSTRUCTIONS,
+                output_key="implementation", thread_key="small-change-implementation",
+            ),
+            ReviewStep(step_id="verify", name="Verify Revision", role="reviewer",
+                       review_template=review, source_key="implementation", strict_decision=True,
+                       thread_key="small-change-review",
+                       on_approve="done", on_reject="checkpoint"),
+            SmallChangeCheckpoint(step_id="checkpoint", name="User Decision Required"),
+            SmallChangeSummary(step_id="done", name="Summary"),
+        ],
+    )
 
 
 def feature_workflow() -> Workflow:
@@ -332,6 +380,7 @@ def pr_completion_workflow() -> Workflow:
 
 
 BUILTIN_WORKFLOWS: dict[str, Workflow] = {
+    "small-change": small_change_workflow(),
     "feature": feature_workflow(),
     "bugfix": bugfix_workflow(),
     "review": review_workflow(),

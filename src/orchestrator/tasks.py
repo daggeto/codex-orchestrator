@@ -105,12 +105,18 @@ class TaskService:
             if workspace['status'] != 'active':
                 raise Conflict('Workspace is merging, awaiting merge recovery, being archived, or unavailable')
             if kind == 'workflow':
-                workflow = self.orch.workflows.get(settings.get('workflow', 'feature'))
+                workflow = self.orch.workflows.get(settings.get('workflow', 'small-change'))
                 if not workflow:
                     raise ValueError('Unknown workflow')
                 settings['workflow'] = workflow.name
                 settings['roles'] = {name: self.role({'role': name}) for name in workflow.required_roles}
+                for name, overrides in workflow.role_overrides.items():
+                    role = settings['roles'][name]
+                    role.update({key: value for key, value in overrides.items() if key != 'config_overrides'})
+                    role['config_overrides'].update(overrides.get('config_overrides', {}))
                 variables = settings.setdefault('variables', {})
+                if workflow.name == 'small-change' and str(variables.get('create_mr', False)).lower() not in {'false', '0', 'no'}:
+                    raise ValueError('small-change never publishes; select feature for PR/MR publication')
                 if workflow.publication_policy == 'optional':
                     variables.setdefault('create_mr', False)
                 if workflow.publication_policy == 'required' and str(variables.get('create_mr', True)).lower() in {'false','0','no'}:

@@ -48,7 +48,9 @@ COMMANDS = (
             "Requires a quoted DESCRIPTION inside ARGS. Connects to the service started by make start; "
             "starts task-owned workflow agents, waits for the result, and prints the run ID. "
             "Uses the service's project directory unless --cwd is supplied. --workflow selects a workflow "
-            "(feature by default); --api-url selects another service port. Repeat --var/-v KEY=VALUE for inputs. "
+            "(small-change by default); --api-url selects another service port. Repeat --var/-v KEY=VALUE for inputs. "
+            "small-change uses implementer and reviewer at medium effort, one combined review, and at most one revision. "
+            "Scope escalation or unresolved review stops with a saved report for an explicit follow-up task; it never publishes. "
             "Existing worktrees are reused without switching branches; Main tasks create one when isolation is needed. "
             "All workflow roles share the resolved checkout and a workspace lease. "
             "Checkouts reserved for a local-main merge or merge recovery reject task execution. "
@@ -61,7 +63,7 @@ COMMANDS = (
             "This command does not start or stop an orchestrator service.",
             ("""make task ARGS='"Add search to the transactions page"'""",
              """make task ARGS='"Investigate slow imports" --workflow research --api-url http://127.0.0.1:8421'""",
-             """make task ARGS='"Add OAuth login" -v create_mr=true -v mr_base=main'""")),
+             """make task ARGS='"Add OAuth login" --workflow feature -v create_mr=true -v mr_base=main'""")),
     Command("roles", "List available role definitions and models.", "orch", ("roles",),
             "Reads role definitions from the configured roles directory and project roles directory.",
             ("make roles",)),
@@ -94,16 +96,20 @@ COMMANDS = (
             "Requires AGENT_ID MESSAGE. Starts the selected saved non-task agent on demand inside a leased task in a Git checkout. Records task participation and retains continuation settings after interruption. Use --thread/-t to resume a thread and --cwd to set its working directory.",
             ("""make agent-send ARGS='design-agent "Continue the design" --thread THREAD_ID --cwd /path/to/repo'""",)),
     Command("workflow-list", "List workflows and their step counts.", "orch", ("workflow", "list"),
-            "Built-ins are feature, bugfix, review, research, and pr-completion.",
+            "Built-ins are small-change, feature, bugfix, review, research, and pr-completion.",
             ("make workflow-list",)),
     Command("workflow-run", "Run a named workflow with variables and a target directory.", "orch", ("workflow", "run"),
             "Requires NAME. Repeat --var/-v KEY=VALUE for workflow inputs. --cwd sets the target repository; "
             "--roles-dir selects role definitions independently. Required roles are started within the owning task. "
+            "small-change implements directly, combines correctness and usability review, permits one revision, "
+            "and generates its summary without another model call. It never publishes. Scope escalation or "
+            "unresolved findings stop at a saved failed checkpoint; inspect the report and submit a narrower task "
+            "or explicitly select feature. Continuing that checkpoint does not authorize additional implementation. "
             "pr-completion starts implementer and reviewer, publishes committed changes, "
             "and monitors/repairs CI. feature runs source UX assessment before planning, then implementation, "
             "UX review, and code review. Either rejection returns to implementation and repeats both reviews. "
             "Source inspection does not establish visual/usability validation. Optional feature publication "
-            "requires both approvals for the current commit. feature, bugfix, and pr-completion "
+            "requires both approvals for the current commit. small-change, feature, bugfix, and pr-completion "
             "reuse a selected worktree or create one from Main, shared by implementation, review, QA, and publication. "
             "Review uses the selected publication target even when the task branch differs. "
             "Existing PR/MR source and target branches are resolved before isolation and preserved when publishing from the task checkout. "
@@ -146,8 +152,8 @@ COMMANDS = (
     Command("dev", "Start repository navigation, task conversations, and the monitor.", "npm", ("run", "dev"),
             "Runs Vite in web/ with compact task navigation, a reversible task Archive, and task-scoped participant history. "
             "Worktree removal remains a separate confirmed operation. Start make start in another terminal for the API on port 8420. "
-            "The development server proxies /api and /health to that API. Task home defaults feature "
-            "submissions to local commits (create_mr=false); publication is opt-in for feature and "
+            "The development server proxies /api and /health to that API. Task home defaults to small-change "
+            "with local commits and no publication; publication is opt-in for feature and "
             "required for pr-completion. The monitor remains read-only.",
             ("make dev", 'make dev ARGS="--port 5174"')),
     Command("preview", "Serve the production web build locally.", "npm", ("run", "preview"),

@@ -82,8 +82,8 @@ make task ARGS='"Investigate slow imports" --workflow research'
 ```
 
 `make task` connects to the running service, uses its target project, and starts
-task-owned workflow agents. It defaults to the feature
-workflow with local edits and commits. Add `-v create_mr=true -v mr_base=main`
+task-owned workflow agents. It defaults to the small-change
+workflow with local edits and commits. Select `--workflow feature` and add `-v create_mr=true -v mr_base=main`
 to publish a draft PR/MR and verify CI. Other inputs use `-v KEY=VALUE`;
 `--cwd` overrides the target project for that task.
 
@@ -149,14 +149,43 @@ Edit `roles/*.toml` to change models, sandbox, token budgets, system prompts.
 
 ## Workflows
 
-Five built-in pipelines:
+Built-in pipelines:
 
+- **small-change** (task and web default): prepare checkout → implement → combined review → at most one revision and verification → recorded summary. No publication.
 - **feature**: prepare task branch → source UX assessment → architecture plan → implementation → UX review → code review → summary → optional draft PR/MR and CI/deployment verification
 - **bugfix**: architect investigates, implementer fixes, qa verifies
 - **review**: send code to reviewer
 - **research**: parallel investigation by multiple agents, then synthesis
 - **pr-completion**: review committed branch changes, push to an existing/new
   PR/MR, poll CI, repair failures, review and push again until green
+
+Use `small-change` for routine changes to existing behavior. Implementer and
+reviewer use medium reasoning effort and reuse their conversations for the single
+revision cycle. There is no separate UX assessment, architecture plan, or model
+summary. The full task diff is still reviewed after a revision.
+
+Before editing, the implementer must stop if the change needs a schema migration,
+new background service or recovery system, substantial public contract changes,
+or more than five implementation files. It reports the blocker, smallest safe
+alternative, and larger proposal with `SCOPE_ESCALATION`. The workflow routes
+that marker to a saved failed checkpoint without invoking review or expanding
+scope. Unresolved or unclear review after the one revision also stops there.
+Inspect the report and submit a narrower task or explicitly select `feature`.
+Continuing a stopped checkpoint does not grant another repair cycle.
+
+The `small-change` recipe offers the same scope guidance in an implementer agent
+conversation. It does not enforce the workflow's review or revision limit.
+Restart the orchestrator service to load the new workflow and recipe. Existing
+tasks retain their saved workflow and role configurations.
+
+This bounds model invocations, not dollars or tokens. Task-wide usage accounting,
+spending limits, and interruption during a turn remain separate work.
+
+Manual acceptance, when requested: submit a small UI change with the default
+workflow and confirm only implementer/reviewer participate; request a schema
+migration and confirm escalation stops before editing; inspect a rejected
+revision and confirm no second repair runs. Check that `feature` remains
+selectable for larger work and publication.
 
 Use `pr-completion` for finishing committed work or repairing an existing PR's
 CI. It automatically starts task-owned implementer and reviewer agents, polls through

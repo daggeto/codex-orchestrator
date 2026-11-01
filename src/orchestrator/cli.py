@@ -100,7 +100,7 @@ async def _start(obj: dict, api: bool, api_port: int, team: list[str]):
 
 @main.command("task")
 @click.argument("description")
-@click.option("--workflow", default="feature", show_default=True, help="Workflow to run on the service")
+@click.option("--workflow", default="small-change", show_default=True, help="Workflow to run on the service")
 @click.option("--api-url", default=None, help="Service URL (defaults to configured host and port)")
 @click.option("--cwd", type=click.Path(exists=True, file_okay=False), help="Override the service's target project")
 @click.option("--var", "-v", multiple=True, help="Workflow input as KEY=VALUE")
