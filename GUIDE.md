@@ -294,7 +294,10 @@ uploads may need **Recover uploaded files**, or removal and reselection from you
 device. If the request was accepted before its response was lost, recovery offers
 **Open accepted task** using the files' saved ownership. This opens the original
 task even when execution settings reset after reload; the files cannot be submitted
-again. Otherwise, retry an uncertain submission without changing its contents.
+again. If file recovery fails, sending and file edits stay blocked until
+**Retry file recovery** confirms their state. Otherwise, retry an uncertain
+submission without changing its contents. Workflow retries retain the original
+submission workspace even after execution moves into an isolated worktree.
 Completed selections expire if abandoned for 24 hours.
 
 Task files appear above the participant history, with references beside their

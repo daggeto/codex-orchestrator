@@ -152,8 +152,8 @@ class TaskService:
                             raise Conflict('Idempotency key belongs to a different submission')
                         return await self.store.task(previous['task_id'])
                 await AttachmentService.active(db, workspace_id)
-                await db.execute("INSERT INTO tasks (task_id,workspace_id,title,prompt,kind,settings_json,idempotency_key,fingerprint,created_at,updated_at,owner_pid,owner_started) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                                 (tid, workspace_id, (prompt.splitlines() or ['Attached files'])[0][:100], prompt, kind,
+                await db.execute("INSERT INTO tasks (task_id,workspace_id,submission_workspace_id,title,prompt,kind,settings_json,idempotency_key,fingerprint,created_at,updated_at,owner_pid,owner_started) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                 (tid, workspace_id, workspace_id, (prompt.splitlines() or ['Attached files'])[0][:100], prompt, kind,
                                   json.dumps(settings), idempotency_key, fingerprint, now(), now(), self.owner_pid, self.owner_started))
                 await self._insert_message(db, mid, tid, 'initial', prompt, idempotency_key, fingerprint)
                 if attachment_ids:

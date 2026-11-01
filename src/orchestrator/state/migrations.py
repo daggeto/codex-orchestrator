@@ -1,7 +1,7 @@
 """Ordered, additive migrations. Historical records without evidence stay unowned."""
 from __future__ import annotations
 
-VERSION = 7
+VERSION = 8
 MIGRATIONS = {2: """
 CREATE TABLE repositories (
  repository_id TEXT PRIMARY KEY, name TEXT NOT NULL, main_path TEXT NOT NULL UNIQUE,
@@ -139,6 +139,12 @@ CREATE INDEX attachment_task ON attachments(task_id,created_at);
 CREATE INDEX attachment_draft ON attachments(draft_id,state);
 CREATE INDEX draft_expiry ON attachment_drafts(state,expires_at);
 CREATE INDEX messages_task ON task_messages(task_id,created_at);
+""", 8: """
+ALTER TABLE tasks ADD COLUMN submission_workspace_id TEXT REFERENCES workspaces(workspace_id);
+UPDATE tasks SET submission_workspace_id=(
+ SELECT workspace_id FROM workspaces
+ WHERE path=json_extract(tasks.settings_json,'$.variables.cwd')
+);
 """}
 
 

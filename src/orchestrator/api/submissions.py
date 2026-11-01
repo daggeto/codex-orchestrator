@@ -104,7 +104,12 @@ async def accept(request):
             source_workspace = await orch.store.workspace_record(source['workspace_id']) if source else None
             if source_workspace and variables['cwd'] == source_workspace['path']:
                 variables['cwd'] = previous['settings'].get('variables', {}).get('cwd')
-        task = await orch.tasks.submit(previous['workspace_id'], variables.get('task_description'),
+        # Execution may have moved the task into an isolated checkout. Its
+        # original fingerprint belongs to the workspace used at acceptance.
+        submission_workspace_id = previous.get('submission_workspace_id')
+        if not submission_workspace_id:
+            raise ValueError('The original submission workspace is unavailable for this older task. Open the accepted task from task history.')
+        task = await orch.tasks.submit(submission_workspace_id, variables.get('task_description'),
             settings={'workflow': request.match_info['name'], 'variables': variables}, idempotency_key=rid,
             attachment_ids=data.get('attachment_ids'), draft_id=data.get('draft_id'),
             copy_from_task_id=data.get('copy_from_task_id'), omit_unavailable=data.get('omit_unavailable_attachments') is True)

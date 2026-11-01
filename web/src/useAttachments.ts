@@ -13,6 +13,7 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
   const [limits, setLimits] = useState<AttachmentLimits>();
   const [error, setError] = useState('');
   const [recovering, setRecovering] = useState(!!saved.draftId);
+  const [recoveryRequired, setRecoveryRequired] = useState(!!saved.draftId);
   const [submitted, setSubmitted] = useState(false);
   const [acceptedTaskId, setAcceptedTaskId] = useState<string>();
   const draftRef = useRef(saved.draftId);
@@ -34,7 +35,7 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
   }, [context?.workspaceId]);
   async function recover() {
     if (!draftRef.current) return;
-    setRecovering(true); setError('');
+    setRecovering(true); setRecoveryRequired(true); setError('');
     try {
       const draft = await get<AttachmentDraft>(`/api/attachment-drafts/${encodeURIComponent(draftRef.current)}`);
       // The server may have completed an upload after the browser last saved
@@ -49,6 +50,7 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
       });
       if (draft.state === 'submitted') {
         setSubmitted(true);
+        setRecoveryRequired(false);
         const owners = new Set(draft.files.map(file => file.task_id).filter((id): id is string => !!id));
         if (owners.size === 1) setAcceptedTaskId([...owners][0]);
         else setError('These files were accepted, but their task could not be identified. Open task history to find the accepted request.');
@@ -56,9 +58,11 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
       }
       if (draft.state !== 'open' || Date.parse(draft.expires_at) <= Date.now()) {
         replace(previous => previous.map(file => ({ ...file, state: 'failed', localError: 'Draft expired. Remove and reselect this file.' })));
+        setRecoveryRequired(false);
         throw new Error('Upload draft expired. Remove selections and reselect files for a new message.');
       }
       setLimits(draft.limits);
+      setRecoveryRequired(false);
     } catch (reason) { setError(String(reason)); }
     finally { setRecovering(false); }
   }
@@ -72,6 +76,7 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
     return creating.current;
   }
   async function upload(selection: Selection) {
+    if (recoveryRequired || recovering || submitted) return;
     if (!selection.local) { setError('Reselect this file from your device to retry.'); return; }
     uploadCount.current += 1;
     replace(previous => previous.map(row => row.attachment_id === selection.attachment_id ? { ...row, state: 'uploading', localError: undefined } : row));
@@ -84,7 +89,7 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
     } finally { uploadCount.current -= 1; }
   }
   async function select(selected: FileList | File[]) {
-    if (!limits?.enabled) return;
+    if (!limits?.enabled || recoveryRequired || recovering || submitted) return;
     const incoming = Array.from(selected);
     if (selections.current.length + incoming.length > limits.files_per_message) { setError(`Choose at most ${limits.files_per_message} files per message.`); return; }
     setError('');
@@ -99,7 +104,7 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
     }
   }
   async function remove(id: string) {
-    if (removing || uploadCount.current) return;
+    if (removing || uploadCount.current || recoveryRequired || recovering || submitted) return;
     setRemoving(true); setError('');
     try {
       // A failed draft may be expired. Removing it locally is safe: it cannot be
@@ -119,11 +124,11 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
   }
   function clear() {
     replace(() => []); draftRef.current = undefined; setDraftId(undefined); setError('');
-    setSubmitted(false); setAcceptedTaskId(undefined);
+    setSubmitted(false); setAcceptedTaskId(undefined); setRecoveryRequired(false);
     try { sessionStorage.removeItem(storageKey); } catch { /* Optional storage. */ }
   }
-  const ready = !submitted && !recovering && !removing && files.every(file => file.state === 'ready');
+  const ready = !recoveryRequired && !submitted && !recovering && !removing && files.every(file => file.state === 'ready');
   const payload: AttachmentSubmission = { ...(draftId ? { draft_id: draftId } : {}), attachment_ids: files.map(file => file.attachment_id) };
-  return { files, limits, error, ready, recovering, removing, submitted, acceptedTaskId, select, upload, remove, recover, clear, payload };
+  return { files, limits, error, ready, recovering, recoveryRequired, removing, submitted, acceptedTaskId, select, upload, remove, recover, clear, payload };
 }
 export type AttachmentController = ReturnType<typeof useAttachments>;
