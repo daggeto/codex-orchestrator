@@ -140,7 +140,8 @@ COMMANDS = (
             "Runs npm ci in web/. Requires Node 20.19+ or 22.12+. Replaces node_modules using the lockfile.",
             ("make web-install",)),
     Command("dev", "Start repository navigation, task conversations, and the monitor.", "npm", ("run", "dev"),
-            "Runs Vite in web/. Start make start in another terminal for the API on port 8420. "
+            "Runs Vite in web/ with compact task navigation, a reversible task Archive, and task-scoped participant history. "
+            "Worktree removal remains a separate confirmed operation. Start make start in another terminal for the API on port 8420. "
             "The development server proxies /api and /health to that API. Task home defaults feature "
             "submissions to local commits (create_mr=false); publication is opt-in for feature and "
             "required for pr-completion. The monitor remains read-only.",

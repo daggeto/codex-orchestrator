@@ -7,7 +7,7 @@ export interface Navigation { repositories: RepositoryRecord[]; workspaces: Work
 const NavigationContext = createContext<(ReturnType<typeof useResource<Navigation>> & { expanded: Record<string, boolean>; toggle: (id: string) => void }) | null>(null);
 export function NavigationProvider({ children }: { children: ReactNode }) {
   const resource = useResource<Navigation>('/api/navigation');
-  const [expanded, setExpanded] = useState<Record<string, boolean>>(() => { try { return JSON.parse(localStorage.getItem('repository-expansion') || '{}'); } catch { return {}; } });
+  const [expanded, setExpanded] = useState<Record<string, boolean>>(() => { try { const saved: unknown = JSON.parse(localStorage.getItem('repository-expansion') || '{}'); return saved && typeof saved === 'object' && !Array.isArray(saved) ? Object.fromEntries(Object.entries(saved).filter(([, value]) => typeof value === 'boolean')) : {}; } catch { return {}; } });
   const toggle = (id: string) => setExpanded(previous => { const next = { ...previous, [id]: previous[id] === false }; try { localStorage.setItem('repository-expansion', JSON.stringify(next)); } catch { /* Storage is optional. */ } return next; });
   return <NavigationContext.Provider value={{ ...resource, expanded, toggle }}>{children}</NavigationContext.Provider>;
 }

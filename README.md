@@ -296,18 +296,27 @@ make dev
 
 Open the loopback URL printed by Vite, usually `http://127.0.0.1:5173`.
 Development and preview servers proxy `/api` and `/health` to port 8420.
-The navigation is repository → Main/worktree → task → agent. Hash routes support
-reload and back navigation. The service monitor is available at `#/monitor`.
+The compact sidebar groups tasks by repository, with workspace labels beneath titles.
+Open `#/tasks` for the complete paginated list and use **Open tasks** to find older
+unfinished work. `#/tasks?tab=archive` shows archived tasks with Restore controls.
+Participant chips inside each task select one agent conversation at a time; agent
+links include explicit task context. Hash routes support reload and back navigation. The service monitor is available at `#/monitor`.
 
 The interface uses Horizon UI Free's rounded cards and purple accents, adapted
 within the existing app. **Light mode** / **Dark mode** in the top bar changes
 appearance. Dark is the default. The browser remembers the choice under
 `orchestrator.ui.theme.v1`; invalid or unavailable storage falls back to dark.
-On narrow screens, **Open navigation** opens the repository tree. Close it with
+On narrow screens, **Open navigation** opens task navigation. Close it with
 **Close navigation**, Escape, or by selecting a destination. Horizon attribution
 and its MIT license are included in `web/public/third-party-notices.txt`.
 
-Manual acceptance checklist for the appearance refresh:
+Manual acceptance checklist (also see `docs/plans/web-ux-refactor.md`):
+
+- At 360px and desktop in both themes, check long titles, multiple participants,
+  approvals, failed tools, archived task restore, and clear Working / Ready /
+  Waiting for me / Finished states. Read earlier history during updates and use
+  New messages to return to the bottom. Check contrast and screen-reader status
+  announcements; routine activity must stay quiet.
 
 - On desktop and a narrow mobile viewport, open repositories, Main/worktrees,
   tasks, agents, and `#/monitor`. Check active navigation, direct URL reload,
@@ -322,7 +331,8 @@ Manual acceptance checklist for the appearance refresh:
   Check checkout selection, optional/required publication summaries, role/model/
   effort/recipe settings, and disabled controls during submission. Switch
   workspaces and reload to check separate drafts. Page through task history;
-  check archive success and error feedback only on a disposable worktree.
+  archive and restore a finished task, then check confirmed worktree removal only
+  on a disposable worktree. These are separate operations.
 - Continue an agent conversation, answer a pending approval/input request, and
   use completion/cancellation controls. Leave an execution result or action
   detail expanded across polling updates. Check that long code lines scroll
@@ -405,6 +415,12 @@ The legacy project and workflow endpoints remain adapters; new integrations use:
 - `GET/POST /api/repositories` and `GET /api/filesystem/directories`
 - `GET /api/repositories/{id}/workspaces`
 - `GET /api/workspaces/{id}/tasks?before=...&limit=50`
+- `GET /api/tasks?archived=exclude|only|all&limit=50` with optional `repository_id`,
+  `workspace_id`, `status` (including `open`), and descending `before` cursor;
+  returns `{tasks, next_cursor}` with a cursor only when another page exists.
+  Workspace history supports the same filters and defaults to all archive states.
+- `POST /api/tasks/{id}/archive` with `{archived: boolean}` returns `{task}`;
+  invalid bodies return 400, missing tasks 404, and unfinished archive attempts 409.
 - `POST /api/tasks` with `workspace_id`, `prompt`, `kind`, `settings`,
   `isolation` (`auto`, `always`, `never`), and optional `idempotency_key`
 - `GET /api/tasks/{id}`, `POST /api/tasks/{id}/messages`, `/complete`, `/cancel`
@@ -421,7 +437,14 @@ ambiguous runs and globally reused agents remain accessible through the legacy A
 Schema migrations are additive and versioned; back up the SQLite database before
 upgrading an existing installation.
 
-**Archive and delete worktree** blocks new work, cancels its execution, stops owned
+**Archive task** organizes a completed, failed, or cancelled task independently of
+its workspace. Archive and Restore persist across service restarts and preserve
+execution status, agents, messages, leases, and checkout files. Unfinished tasks
+must be completed or cancelled before archiving. Restoring a task never recreates
+a removed worktree. Legacy messages with uncertain item identity are retained
+separately, so older recordings may show duplicate text rather than lose content.
+
+**Remove worktree** asks for confirmation, blocks new work, cancels its execution, stops owned
 agents, including legacy sessions whose thread directory belongs to the checkout,
 and awaits shutdown of backend and command process groups. A live execution in
 another service blocks deletion. It flushes history and captures tracked, untracked, and ignored files, a Git

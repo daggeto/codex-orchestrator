@@ -185,3 +185,18 @@ build, browser acceptance, and user acceptance are separate evidence. Manual
 acceptance covers 360px and desktop, both themes, keyboard navigation, drawer
 focus restoration, screen-reader status feedback, long output, and recognition
 of Working, Waiting for me, and Finished.
+
+## Implementation handoff
+
+All three checkpoints received source UX and code review; the reported findings
+were addressed and both reviews approved the final source. Focused verification
+passed: 16 ownership tests, 2 task-navigation API tests, and 6 transcript reducer
+tests. Frontend typecheck and production build passed. The API tests needed a
+temporary loopback listener outside the filesystem sandbox. No agents or task
+backends were launched by these tests.
+
+Browser and user acceptance are still pending. Run the manual checklist above
+and in README at 360px and desktop, both themes, with long histories and titles.
+Specifically verify request expiry during editing, restore after reload, older
+waiting-task discovery, independent participant histories, keyboard scrolling,
+activity disclosure persistence, drawer focus restoration, and status announcements.

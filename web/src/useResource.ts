@@ -3,6 +3,7 @@ import { get } from './api';
 
 // Polling persisted cursors repairs missed live observations and reconnects.
 export function useResource<T>(path: string | null, interval = 3000) {
+  const [revision, setRevision] = useState(0);
   const [state, setState] = useState<{ path: string | null; data?: T; error: string }>({ path, error: '' });
   useEffect(() => {
     if (!path) return;
@@ -20,6 +21,7 @@ export function useResource<T>(path: string | null, interval = 3000) {
     }
     void refresh();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [path, interval]);
-  return state.path === path ? state : { path, data: undefined, error: '' };
+  }, [path, interval, revision]);
+  const current = state.path === path ? state : { path, data: undefined, error: '' };
+  return { ...current, refresh: () => setRevision(value => value + 1) };
 }

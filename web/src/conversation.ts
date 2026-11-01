@@ -4,6 +4,12 @@ export interface ConversationEntry {
   events: DurableEvent[];
 }
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' ? value as Record<string, unknown> : {};
+const readable = (value: unknown): string => {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.map(readable).filter(Boolean).join('\n');
+  const record = object(value);
+  return record.message ? readable(record.message) : record.text ? readable(record.text) : value ? JSON.stringify(value) : '';
+};
 const scope = (event: DurableEvent) => JSON.stringify([event.agent_id, event.thread_id, event.turn_id]);
 export function activityLabel(event: DurableEvent): string {
   const item = object(event.payload.item);
@@ -33,7 +39,7 @@ export function reduceConversation(records: DurableEvent[]): ConversationEntry[]
     const finalMessage = item.type === 'agentMessage' && !event.kind.endsWith('/started');
     const failed = event.kind.toLowerCase().includes('error') || !!payload.error || !!item.error || !!turn.error || payload.is_error === true || item.is_error === true || ['failed', 'error'].includes(String(turn.status)) || ['failed', 'error'].includes(String(item.status || payload.status)) || (typeof item.exitCode === 'number' && item.exitCode !== 0) || (typeof payload.exitCode === 'number' && payload.exitCode !== 0);
     if (failed) {
-      entries.push({ key: String(event.id), kind: 'error', text: String(payload.message || payload.error || item.error || item.aggregatedOutput || item.content || payload.result || turn.error || 'Action failed. Expand details for the recorded result.'), events: [event] });
+      entries.push({ key: String(event.id), kind: 'error', text: readable(payload.message || payload.error || item.error || item.aggregatedOutput || item.content || payload.result || turn.error || 'Action failed. Expand details for the recorded result.'), events: [event] });
       lastDelta = undefined;
     } else if (event.kind === 'user') {
       entries.push({ key: String(event.id), kind: 'user', text: String(payload.text || ''), events: [event] });

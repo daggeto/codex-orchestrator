@@ -6,9 +6,10 @@ import { TaskRow } from './TaskRow';
 export function RepositorySidebar() {
   const { data, error, expanded, toggle } = useNavigation();
   const { pathname, search } = useLocation();
-  const selectedId = pathname.startsWith('/tasks/') ? decodeURIComponent(pathname.slice(7)) : pathname.startsWith('/agents/') ? new URLSearchParams(search).get('task_id') : null;
+  const contextId = pathname.startsWith('/tasks/') ? decodeURIComponent(pathname.slice(7)) : pathname.startsWith('/agents/') ? new URLSearchParams(search).get('task_id') : null;
   // Fetch detail independently of the capped preview, including on contextual agent routes.
-  const selected = useResource<TaskView>(selectedId ? `/api/tasks/${encodeURIComponent(selectedId)}` : null, selectedId ? 3000 : 0);
+  const selected = useResource<TaskView>(contextId ? `/api/tasks/${encodeURIComponent(contextId)}` : null, contextId ? 3000 : 0);
+  const selectedId = pathname.startsWith('/agents/') && !selected.data?.agents.some(a => pathname === `/agents/${a.agent_id}`) ? null : contextId;
   const tasks = [...(data?.tasks || [])];
   if (selectedId && selected.data?.task.task_id === selectedId && !tasks.some(t => t.task_id === selectedId)) tasks.unshift(selected.data.task);
   return <aside className="repository-sidebar"><Link className="brand" to="/"><span className="brand-mark" aria-hidden="true">O</span>Orchestrator</Link><nav aria-label="Task navigation">

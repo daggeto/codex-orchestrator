@@ -40,7 +40,7 @@ export function AgentHistory({ agentId, taskId, label = 'Agent' }: { agentId: st
     return () => { controller.abort(); clearTimeout(timer); };
   }, [agentId, taskId]);
   const messages = reduceConversation(events);
-  return <><div ref={transcript} className="chat-transcript conversation-scroll" aria-label="Persisted conversation" onScroll={event => {
+  return <><div ref={transcript} className="chat-transcript conversation-scroll" aria-label="Persisted conversation" role="region" tabIndex={0} onScroll={event => {
     const node = event.currentTarget;
     following.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80;
     if (following.current) setUnread(false);
