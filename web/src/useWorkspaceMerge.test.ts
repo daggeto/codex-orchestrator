@@ -83,6 +83,38 @@ afterEach(() => {
 });
 
 describe('saved merge reconciliation', () => {
+  it.each((['merged', 'already_integrated', 'failed'] as const).flatMap(state =>
+    (['before', 'after'] as const).map(timing => ({ state, timing }))))(
+    'removes obsolete timeout guidance when POST fails $timing polling confirms $state', async ({ state, timing }) => {
+      let reject!: (reason: Error) => void;
+      harness.get.mockResolvedValue(eligibility);
+      harness.post.mockReturnValue(new Promise((_resolve, fail) => { reject = fail; }));
+      vi.spyOn(crypto, 'randomUUID').mockReturnValue(operationId);
+      const submission = render().merge();
+      await Promise.resolve();
+      expect(harness.post).toHaveBeenCalledOnce();
+      if (timing === 'before') {
+        reject(new Error('POST timed out'));
+        await submission;
+        expect(render().error).toContain('Check the saved attempt before retrying.');
+      }
+      const terminalResult = { ...completed, state,
+        error_message: state === 'failed' ? 'Merge conflict. No changes were merged.' : null };
+      harness.resources.set(`${endpoint}/merges/${operationId}`, { data: { operation: terminalResult }, error: '' });
+      expect(render().operation).toEqual(terminalResult);
+      expect(localStorage.getItem(storageKey)).toBeNull();
+      harness.resources.delete(`${endpoint}/merges/${operationId}`);
+      if (timing === 'after') {
+        reject(new Error('POST timed out'));
+        await submission;
+      }
+      const result = render();
+      expect(result.operation).toEqual(terminalResult);
+      expect(result.error).toBe('');
+      expect(result.busy).toBe(false);
+      expect(result.uncertain).toBe(false);
+    });
+
   it.each(['merged', 'already_integrated', 'failed'] as const)(
     'retains %s when POST acceptance arrives after polling completion', async state => {
       let respond!: (value: { operation: MergeOperation }) => void;

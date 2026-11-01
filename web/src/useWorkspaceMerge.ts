@@ -27,7 +27,8 @@ export function useWorkspaceMerge(workspaceId: string) {
   const current = useRef(workspaceId);
   const mounted = useRef(true);
   current.current = workspaceId;
-  const [action, setAction] = useState<{ id: string; pending: MergeRequest | null; busy: boolean; error: string }>(
+  const [action, setAction] = useState<{ id: string; pending: MergeRequest | null; busy: boolean; error: string;
+    transportWarning?: { operationId: string; message: string } }>(
     () => ({ id: workspaceId, pending: saved(workspaceId), busy: false, error: '' }));
   useEffect(() => {
     mounted.current = true;
@@ -66,7 +67,7 @@ export function useWorkspaceMerge(workspaceId: string) {
       // Preserve the result before stopping pending-operation polling.
       remember(workspaceId, operation);
       setAction(previous => previous.pending?.operation_id === operation.operation_id
-        ? { ...previous, pending: null } : previous);
+        ? { ...previous, pending: null, transportWarning: undefined } : previous);
       try {
         const stored = saved(workspaceId);
         if (stored?.operation_id === operation.operation_id) localStorage.removeItem(key(workspaceId));
@@ -76,13 +77,17 @@ export function useWorkspaceMerge(workspaceId: string) {
   const unresolved = operation && !terminal(operation);
   const uncertain = !!state.pending && !ownOperation;
   const busy = state.busy || !!unresolved || uncertain;
+  const transportWarning = state.transportWarning?.operationId === state.pending?.operation_id &&
+    !(operation && operation.operation_id === state.transportWarning?.operationId && terminal(operation))
+    ? state.transportWarning?.message : '';
 
   async function merge() {
     const id = workspaceId;
     if (state.busy) return;
     const active = () => mounted.current && current.current === id;
-    setAction(previous => ({ ...previous, busy: true, error: '' }));
+    setAction(previous => ({ ...previous, busy: true, error: '', transportWarning: undefined }));
     let request = state.pending;
+    let awaitingOutcome = !!request;
     try {
       if (request) {
         try {
@@ -115,6 +120,7 @@ export function useWorkspaceMerge(workspaceId: string) {
       // Persist before sending. Failure to persist prevents an unrecoverable submission.
       localStorage.setItem(key(id), JSON.stringify(request));
       setAction({ id, pending: request, busy: true, error: '' });
+      awaitingOutcome = true;
       const response = await post<{ operation: MergeOperation }>(`${endpoint}/merge`, request);
       if (active()) remember(id, response.operation);
     } catch (reason) {
@@ -123,12 +129,19 @@ export function useWorkspaceMerge(workspaceId: string) {
         if (reason instanceof ApiError && [400, 404, 409].includes(reason.status)) {
           try { localStorage.removeItem(key(id)); } catch { /* The saved ID is still safe to reconcile. */ }
           setAction({ id, pending: null, busy: false, error: String(reason) });
-        } else setAction(previous => ({ ...previous, error: `${String(reason)}. Check the saved attempt before retrying.` }));
+        } else if (awaitingOutcome && request) {
+          const operationId = request.operation_id;
+          // Completion clears pending. Ignore failures arriving after reconciliation
+          // or after another operation has replaced this request.
+          setAction(previous => previous.pending?.operation_id === operationId
+            ? { ...previous, transportWarning: { operationId,
+              message: `${String(reason)}. Check the saved attempt before retrying.` } } : previous);
+        } else setAction(previous => ({ ...previous, error: String(reason) }));
       }
     } finally {
       if (active()) setAction(previous => ({ ...previous, busy: false }));
     }
   }
   return { eligibility, operation, busy, submitting: state.busy, uncertain,
-    error: state.error || eligibility.error || (uncertain ? attempt.error : ''), merge };
+    error: state.error || transportWarning || eligibility.error || (uncertain ? attempt.error : ''), merge };
 }
