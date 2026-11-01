@@ -1,6 +1,6 @@
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router';
-import { post } from '../api';
+import { post, submissionIdentity, clearSubmissionIdentity } from '../api';
 import { Card } from './ui/Card';
 import { Badge } from './ui/Badge';
 import { Chat } from './Chat';
@@ -17,15 +17,13 @@ export function TaskComposer({ workspace }: { workspace: WorkspaceRecord }) {
   const [recipe, setRecipe] = useState('');
   const [isolation, setIsolation] = useState('auto');
   const [publish, setPublish] = useState(false);
-  const key = useRef(crypto.randomUUID());
-  const fingerprint = useRef('');
   const workflows = useResource<{ workflows: WorkflowDefinition[] }>('/api/workflows', 0);
   const roles = useResource<{ roles: Role[] }>('/api/roles', 0);
   const recipes = useResource<{ skills: { name: string; roles: string[] }[] }>('/api/skills', 0);
   const selectedWorkflow = workflows.data?.workflows.find(item => item.name === workflow);
   return <Card className="task-composer"><div className="composer-heading"><div><h2>Start a task</h2><p className="resource-path">{workspace.path}</p></div><Badge>{workspace.kind === 'main' ? 'Main' : workspace.branch || 'Worktree'}</Badge></div>
     <div className="execution-summary"><span>Checkout: {workspace.kind !== 'main' ? 'Reuse selected worktree' : isolation === 'never' ? 'Use Main' : isolation === 'always' ? 'New worktree' : 'Isolate when needed'}</span><span>{kind === 'agent' ? 'Agent conversation' : selectedWorkflow?.publication_policy === 'required' ? 'Publishes approved commits' : selectedWorkflow?.publication_policy === 'optional' && publish ? 'Create draft PR/MR' : 'PR/MR publication disabled'}</span></div>
-    <Chat label="Start a task" draftKey={`workspace:${workspace.workspace_id}`} messages={[]} submitLabel="Start task" disabled={workspace.status !== 'active'}
+    <Chat label="Start a task" draftKey={`workspace:${workspace.workspace_id}`} messages={[]} attachmentContext={{ workspaceId: workspace.workspace_id }} submitLabel="Start task" disabled={workspace.status !== 'active'}
       toolbar={<div className="composer-settings">
         <label>Execution<select value={kind} onChange={event => setKind(event.target.value)}><option value="workflow">Workflow</option><option value="agent">Agent conversation</option></select></label>
         {kind === 'workflow' ? <><label>Workflow<select value={workflow} onChange={event => setWorkflow(event.target.value)}>
@@ -40,17 +38,15 @@ export function TaskComposer({ workspace }: { workspace: WorkspaceRecord }) {
         </>}
         {workspace.kind === 'main' && <label>Workspace<select value={isolation} onChange={event => setIsolation(event.target.value)}><option value="auto">Isolate when needed</option><option value="always">New worktree</option><option value="never">Use Main</option></select></label>}
       </div>}
-      onSubmit={async prompt => {
+      onSubmit={async (prompt, attachments) => {
         const settings = kind === 'workflow' ? { workflow, variables: {
           create_mr: selectedWorkflow?.publication_policy === 'required' ||
             (selectedWorkflow?.publication_policy === 'optional' && publish),
         } } : { role: role || undefined, model: model || undefined, effort: effort || undefined, recipe: recipe || undefined };
-        const payload = { workspace_id: workspace.workspace_id, prompt, kind, isolation, settings };
-        const next = JSON.stringify(payload);
-        if (fingerprint.current && fingerprint.current !== next) key.current = crypto.randomUUID();
-        fingerprint.current = next;
-        const result = await post<{ task_id: string }>('/api/tasks', { ...payload, idempotency_key: key.current });
-        key.current = crypto.randomUUID();
+        const payload = { workspace_id: workspace.workspace_id, prompt, kind, isolation, settings, ...attachments };
+        const key = submissionIdentity(`workspace:${workspace.workspace_id}:submission`, payload);
+        const result = await post<{ task_id: string }>('/api/tasks', { ...payload, idempotency_key: key });
+        clearSubmissionIdentity(`workspace:${workspace.workspace_id}:submission`);
         navigate(`/tasks/${encodeURIComponent(result.task_id)}`);
       }} />
     {(workflows.error || roles.error || recipes.error) && <p className="error">Task settings could not be loaded. {workflows.error || roles.error || recipes.error}</p>}

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { post } from '../api';
+import { post, submissionIdentity, clearSubmissionIdentity } from '../api';
 import { useNavigation } from '../navigation';
 import { useResource } from '../useResource';
 import type { InputRequest, TaskView } from '../types';
@@ -8,6 +8,7 @@ import { ContinueRun, RestartRun } from '../components/WorkflowRecovery';
 import { WorkflowTimeline } from '../components/WorkflowTimeline';
 import { AgentHistory } from '../components/AgentConversation';
 import { Chat } from '../components/Chat';
+import { AttachmentList } from '../components/AttachmentList';
 import { PendingInput } from '../components/PendingInput';
 import { ParticipantStrip, TaskContext } from '../components/TaskContext';
 import { Button } from '../components/ui/Button';
@@ -50,10 +51,12 @@ function TaskContent({ taskId }: { taskId: string }) {
       <RestartRun key={`restart:${workflow.run_id}`} run={workflow} disabled={!!error || !!pending}
         select={(_runId, newTaskId) => navigate(newTaskId ? `/tasks/${encodeURIComponent(newTaskId)}` : '/monitor')} />
     </section>}
+    {!!data.attachments?.length && <section aria-label="Task attachments"><h2>Task files</h2><p>Available to every task role. Removing this worktree permanently deletes these files.</p><AttachmentList taskId={taskId} attachments={data.attachments} />
+      <details><summary>Files by message</summary>{data.messages?.filter(message => message.attachment_ids.length).map(message => <article key={message.message_id}><strong>{message.origin === 'initial' ? 'Original request' : message.origin === 'input_response' ? 'Question response' : 'Follow-up'}</strong><MessageContent text={message.text} /><AttachmentList taskId={taskId} attachments={data.attachments.filter(file => message.attachment_ids.includes(file.attachment_id))} /></article>)}</details></section>}
     <ParticipantStrip agents={agents} taskId={task.task_id} selected={participant?.agent_id} onSelect={setSelected} />
-    {[...retained, ...pending_input.filter(input => !retained.some(old => old.request_id === input.request_id))].filter(input => !dismissed.includes(input.request_id)).map(input => <PendingInput key={input.request_id} input={input} inactive={!pending_input.some(active => active.request_id === input.request_id)} onDismiss={() => setDismissed(previous => [...previous, input.request_id])} onResolved={() => { setDismissed(previous => [...previous, input.request_id]); refresh(); }} />)}
-    <section className="conversation-panel" aria-label="Task conversation">{participant ? <AgentHistory key={`${task.task_id}:${participant.agent_id}`} agentId={participant.agent_id} taskId={task.task_id} label={participant.role} /> : <ResourceState>{closed ? 'No recorded agent conversation.' : 'Waiting for an agent to join…'}</ResourceState>}
-      {task.kind === 'agent' && !closed && <Chat label="Continue conversation" rows={3} draftKey={`task:${task.task_id}`} messages={[]} disabled={busy || !!pending} onSubmit={async message => { await post(`/api/tasks/${encodeURIComponent(task.task_id)}/messages`, { message }); }} />}
+    {[...retained, ...pending_input.filter(input => !retained.some(old => old.request_id === input.request_id))].filter(input => !dismissed.includes(input.request_id)).map(input => <PendingInput key={input.request_id} input={input} attachmentContext={{ workspaceId: task.workspace_id, taskId }} inactive={!pending_input.some(active => active.request_id === input.request_id)} onDismiss={() => setDismissed(previous => [...previous, input.request_id])} onResolved={() => { setDismissed(previous => [...previous, input.request_id]); refresh(); }} />)}
+    <section className="conversation-panel" aria-label="Task conversation">{participant ? <AgentHistory key={`${task.task_id}:${participant.agent_id}`} agentId={participant.agent_id} taskId={task.task_id} attachments={data.attachments} label={participant.role} /> : <ResourceState>{closed ? 'No recorded agent conversation.' : 'Waiting for an agent to join…'}</ResourceState>}
+      {task.kind === 'agent' && !closed && <Chat label="Continue conversation" rows={3} draftKey={`task:${task.task_id}`} messages={[]} attachmentContext={{ workspaceId: task.workspace_id, taskId }} disabled={busy || !!pending} onSubmit={async (message, attachments) => { const payload = { message, ...attachments }; await post(`/api/tasks/${encodeURIComponent(task.task_id)}/messages`, { ...payload, idempotency_key: submissionIdentity(`task:${taskId}:submission`, payload) }); clearSubmissionIdentity(`task:${taskId}:submission`); refresh(); }} />}
     </section>
     <div className="task-controls">
       {task.kind === 'agent' && (!closed || task.status === 'cancelled') && <Button disabled={busy || !!pending} onClick={() => void action('complete')}>{pending === 'complete' ? 'Completing…' : 'Mark complete'}</Button>}

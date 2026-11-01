@@ -3,11 +3,12 @@ import { reduceConversation } from '../conversation';
 import { ActivityGroup } from './ActivityGroup';
 import { Button } from './ui/Button';
 import { get } from '../api';
-import type { DurableEvent, OwnedAgent } from '../types';
+import type { Attachment, DurableEvent, OwnedAgent } from '../types';
 import { ResourceState } from './ui/ResourceState';
+import { AttachmentList } from './AttachmentList';
 import { MessageContent } from './MessageContent';
 
-export function AgentHistory({ agentId, taskId, label = 'Agent' }: { agentId: string; taskId?: string; label?: string }) {
+export function AgentHistory({ agentId, taskId, attachments = [], label = 'Agent' }: { agentId: string; taskId?: string; attachments?: Attachment[]; label?: string }) {
   const [events, setEvents] = useState<DurableEvent[]>([]);
   const [failure, setFailure] = useState('');
   const [loading, setLoading] = useState(true);
@@ -46,7 +47,7 @@ export function AgentHistory({ agentId, taskId, label = 'Agent' }: { agentId: st
     if (following.current) setUnread(false);
   }}>
     {messages.map(message => message.kind === 'activity' ? <ActivityGroup key={message.key} events={message.events} /> :
-      <article key={message.key} className={`chat-message ${message.kind}`}><strong>{message.kind === 'user' ? 'You' : message.kind === 'assistant' ? label : 'Error'}</strong><MessageContent text={message.text} />{message.kind === 'error' && <details><summary>Failure details</summary><pre>{JSON.stringify(message.events[0].payload, null, 2)}</pre></details>}</article>)}
+      <article key={message.key} className={`chat-message ${message.kind}`}><strong>{message.kind === 'user' ? 'You' : message.kind === 'assistant' ? label : 'Error'}</strong><MessageContent text={message.text} />{taskId && message.attachmentIds?.length ? <AttachmentList taskId={taskId} attachments={attachments.filter(file => message.attachmentIds?.includes(file.attachment_id))} /> : null}{message.kind === 'error' && <details><summary>Failure details</summary><pre>{JSON.stringify(message.events[0].payload, null, 2)}</pre></details>}</article>)}
     {loading && <ResourceState>Loading conversation…</ResourceState>}
     {!loading && !failure && !events.length && <ResourceState>No recorded messages yet.</ResourceState>}
   </div>

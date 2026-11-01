@@ -117,8 +117,8 @@ COMMANDS = (
             "Review uses the selected publication target even when the task branch differs. "
             "Existing PR/MR source and target branches are resolved before isolation and preserved when publishing from the task checkout. "
             "Worktrees and session history survive shutdown. Web deletion verifies a private archive before removal; "
-            "failed captures retain the checkout. Codex backends require lsof and verify listener ownership before connecting. "
-            "In the web monitor, Continue workflow retries the unfinished step using saved outputs and threads; Restart run starts over. At its step budget the run pauses; Continue workflow can explicitly approve 20 more steps, including for older limit-failed runs with checkpoints. Continuation may publish when publication was enabled in the original inputs. "
+            "failed captures retain the checkout. After checkout removal, managed attachments for all tasks owned by that worktree are permanently purged; purge failures remain retryable and history cannot restore files. Completing or archiving a task retains attachments; restarting independently copies available files. Codex backends require lsof and verify listener ownership before connecting. "
+            "In the web monitor, Continue workflow retries the unfinished step using saved outputs and threads; Restart run starts over. After checkout removal, Restart offers the repository's active Main workspace with normal task isolation and requires explicit omission of unavailable attachments. At its step budget the run pauses; Continue workflow can explicitly approve 20 more steps, including for older limit-failed runs with checkpoints. Continuation may publish when publication was enabled in the original inputs. "
             "See docs/pr-completion.md for its inputs.",
             ("""make workflow-run ARGS='feature -v task_description="Add OAuth login" --cwd /path/to/repo -v mr_base=main'""",
              """make workflow-run ARGS='pr-completion --cwd /path/to/repo --roles-dir ./roles -v required_checks=Vercel'""")),

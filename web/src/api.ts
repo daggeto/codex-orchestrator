@@ -72,3 +72,32 @@ export async function post<T>(path: string, body: unknown, timeout = 15000): Pro
   if (!response.ok) throw new ApiError(typeof result.error === 'string' ? result.error : `Request failed (${response.status})`, response.status, result);
   return result as T;
 }
+
+// File bodies bypass the JSON helper and remain streaming request bodies.
+export async function uploadAttachment(draftId: string, uploadId: string, file: File, signal?: AbortSignal) {
+  const response = await fetch(`/api/attachment-drafts/${encodeURIComponent(draftId)}/files/${encodeURIComponent(uploadId)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(file.name) },
+    body: file, signal,
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new ApiError(result.error || `Upload failed (${response.status})`, response.status, result);
+  return result as import('./types').Attachment;
+}
+const submissionKeys = new Map<string, { fingerprint: string; key: string }>();
+export function clearSubmissionIdentity(storageKey: string) {
+  submissionKeys.delete(storageKey);
+  try { sessionStorage.removeItem(storageKey); } catch { /* Optional storage. */ }
+}
+export function submissionIdentity(storageKey: string, payload: unknown): string {
+  const fingerprint = JSON.stringify(payload);
+  try {
+    const previous = JSON.parse(sessionStorage.getItem(storageKey) || 'null');
+    if (previous?.fingerprint === fingerprint && typeof previous.key === 'string') return previous.key;
+  } catch { /* Allocate a fresh identity when storage is unavailable. */ }
+  const remembered = submissionKeys.get(storageKey);
+  if (remembered?.fingerprint === fingerprint) return remembered.key;
+  const key = crypto.randomUUID();
+  submissionKeys.set(storageKey, { key, fingerprint });
+  try { sessionStorage.setItem(storageKey, JSON.stringify({ key, fingerprint })); } catch { /* In-memory callers retain the key. */ }
+  return key;
+}

@@ -189,8 +189,9 @@ class ArchiveService:
                     await _run(str(root), 'git', 'bundle', 'verify', str(bundle))
                     history = {'repository': repository, 'workspace': workspace}
                     history['tasks'] = await self.store.rows('SELECT * FROM tasks WHERE workspace_id=?', (workspace_id,))
-                    for table in ('task_agents','task_threads','workflow_runs','work_items','step_executions','task_events','input_requests'):
+                    for table in ('task_agents','task_threads','workflow_runs','work_items','step_executions','task_events','input_requests','attachments','task_messages'):
                         history[table] = await self.store.rows(f'SELECT * FROM {table} WHERE task_id IN (SELECT task_id FROM tasks WHERE workspace_id=?)', (workspace_id,))
+                    history['message_attachments'] = await self.store.rows('SELECT ma.* FROM message_attachments ma JOIN task_messages m USING(message_id) WHERE m.task_id IN (SELECT task_id FROM tasks WHERE workspace_id=?)', (workspace_id,))
                     history['agents'] = await self.store.rows('SELECT DISTINCT a.* FROM agents a LEFT JOIN task_agents p USING(agent_id) WHERE a.task_id IN (SELECT task_id FROM tasks WHERE workspace_id=?) OR p.task_id IN (SELECT task_id FROM tasks WHERE workspace_id=?)', (workspace_id, workspace_id))
                     history['threads'] = await self.store.rows('SELECT DISTINCT t.* FROM threads t LEFT JOIN task_threads p USING(thread_id) WHERE t.task_id IN (SELECT task_id FROM tasks WHERE workspace_id=?) OR p.task_id IN (SELECT task_id FROM tasks WHERE workspace_id=?)', (workspace_id, workspace_id))
                     legacy_threads = [thread for thread in await self.store.rows('SELECT * FROM threads WHERE task_id IS NULL AND cwd IS NOT NULL')
@@ -215,6 +216,8 @@ class ArchiveService:
                     if not previous or not Path(previous['path']).is_file() or digest(previous['path']) != previous['checksum']:
                         raise Conflict('Checkout missing and no verified archive found')
                     await self.store.write('UPDATE archives SET path=?,checksum=? WHERE archive_id=?', (previous['path'], previous['checksum'], aid))
+                await self.stage(aid, 'purging_attachments')
+                await self.orch.attachments.purge_workspace(workspace_id)
                 await self.store.write("UPDATE workspaces SET status='archived',updated_at=? WHERE workspace_id=?", (now(), workspace_id))
                 self.orch.workspace._active.pop(workspace_id, None)
                 await self.stage(aid, 'archived')

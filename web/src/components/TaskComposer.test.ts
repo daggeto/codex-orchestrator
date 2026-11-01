@@ -18,7 +18,7 @@ vi.mock('react', async importOriginal => ({
   },
 }));
 vi.mock('react-router', () => ({ useNavigate: () => harness.navigate }));
-vi.mock('../api', () => ({ post: harness.post }));
+vi.mock('../api', () => ({ post: harness.post, submissionIdentity: () => 'stable-key', clearSubmissionIdentity: () => {} }));
 vi.mock('./Chat', () => ({ Chat: () => null }));
 vi.mock('../useResource', () => ({
   useResource: (path: string) => ({ data: path === '/api/workflows' ? { workflows: [
@@ -86,4 +86,11 @@ describe('workflow publication settings', () => {
       settings: { workflow: 'required', variables: { create_mr: true } },
     }));
   });
+});
+
+it('submits attachment-only requests without dropping upload identity', async () => {
+  await chat().props.onSubmit('', { draft_id: 'draft', attachment_ids: ['image'] });
+  expect(harness.post).toHaveBeenCalledWith('/api/tasks', expect.objectContaining({
+    prompt: '', draft_id: 'draft', attachment_ids: ['image'], idempotency_key: 'stable-key',
+  }));
 });

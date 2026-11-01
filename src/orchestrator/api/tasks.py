@@ -40,7 +40,7 @@ async def submit(request):
         raise ValueError('Workspace does not belong to repository')
     async def accept():
         task = await request.app['orch'].tasks.submit(workspace['workspace_id'], data.get('prompt'), data.get('kind', 'workflow'),
-                                                    settings, data.get('isolation', 'auto'), data.get('idempotency_key'))
+                                                    settings, data.get('isolation', 'auto'), data.get('idempotency_key'), data.get('attachment_ids'), data.get('draft_id'))
         return web.json_response({'task_id': task['task_id'], 'status_url': '/api/tasks/' + task['task_id']}, status=202)
     return await asyncio.shield(own_task(request.app, accept()))
 
@@ -51,6 +51,7 @@ async def detail(request):
     task = await orch.store.task(tid)
     if not task:
         raise LookupError('Task not found')
+    from orchestrator.api.attachments import public
     agents = await orch.store.task_agents(tid)
     for agent in agents:
         runtime = orch.registry.get_agent(agent['agent_id'])
@@ -58,6 +59,8 @@ async def detail(request):
     return web.json_response({'task': task, 'agents': agents,
         'workflow': await orch.store.one('SELECT * FROM workflow_runs WHERE task_id=?', (tid,)),
         'steps': await orch.store.rows('SELECT * FROM step_executions WHERE task_id=? ORDER BY created_at', (tid,)),
+        'attachments': [public(row) for row in await orch.store.rows('SELECT * FROM attachments WHERE task_id=? ORDER BY created_at,attachment_id', (tid,))],
+        'messages': await orch.store.rows('SELECT m.*, (SELECT json_group_array(attachment_id) FROM (SELECT attachment_id FROM message_attachments WHERE message_id=m.message_id ORDER BY position)) AS attachment_ids_json FROM task_messages m WHERE task_id=? ORDER BY created_at', (tid,)),
         'pending_input': await orch.store.pending_inputs(tid)})
 
 
@@ -91,7 +94,7 @@ async def archive(request):
 
 async def message(request):
     data = await body(request)
-    await request.app['orch'].tasks.send_message(request.match_info['task_id'], data.get('message'))
+    await asyncio.shield(own_task(request.app, request.app['orch'].tasks.send_message(request.match_info['task_id'], data.get('message', ''), data.get('attachment_ids'), data.get('draft_id'), data.get('idempotency_key'))))
     return web.json_response({'status': 'queued'}, status=202)
 
 
@@ -113,7 +116,7 @@ async def resolve(request):
     data = await body(request)
     if 'response' not in data:
         raise ValueError('A response is required')
-    await request.app['orch'].tasks.resolve_input(request.match_info['request_id'], data['response'])
+    await asyncio.shield(own_task(request.app, request.app['orch'].tasks.resolve_input(request.match_info['request_id'], data['response'], data.get('attachment_ids'), data.get('draft_id'))))
     return web.json_response({'status': 'resolved'})
 
 

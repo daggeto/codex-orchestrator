@@ -169,3 +169,23 @@ class WorkflowContinuationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(before, await self.store.get_workflow_run('run'))
         self.assertFalse(json.loads((await get_run(self.request)).text)['continuation']['available'])
         self.orch.spawn_team.assert_not_awaited()
+
+
+class SharedAttachmentContextTests(unittest.IsolatedAsyncioTestCase):
+    async def test_each_role_and_resumed_turn_resolves_current_task_resources(self):
+        from orchestrator.agents.codex import CodexAgent
+        from orchestrator.roles.loader import RoleConfig
+        resources = [{'attachment_id': 'file', 'filename': 'notes.txt', 'path': '/private/file',
+                      'media_type': 'application/octet-stream', 'byte_count': 10, 'width': None}]
+        for role in ('implementer', 'reviewer', 'senior-ux-designer'):
+            agent = CodexAgent(role, RoleConfig(name=role, sandbox='read-only'), 9001)
+            agent.task_id = 'task'
+            agent.attachment_resolver = AsyncMock(return_value=list(resources))
+            first = await agent.prepare_input('Assigned work')
+            self.assertEqual(resources, first.attachments)
+            current = resources + [{**resources[0], 'attachment_id': 'new'}]
+            agent.attachment_resolver.return_value = current
+            resumed = await agent.prepare_input('Continue')
+            self.assertEqual(current, resumed.attachments)
+            self.assertEqual('read-only', agent.role.sandbox)
+            self.assertEqual(2, agent.attachment_resolver.await_count)
