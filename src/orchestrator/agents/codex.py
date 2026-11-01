@@ -456,12 +456,18 @@ class CodexAgent(Agent):
         commands_run: list[str] = []
         token_usage: dict[str, int] = {}
         error: str | None = None
+        completed = False
+        final_text: str | None = None
         t0 = time.monotonic()
 
         async for event in self.stream_message(thread_id, message, model):
             events.append(event)
             if event.text_delta:
                 full_text_parts.append(event.text_delta)
+            item = event.params.get("item", {})
+            if (event.method == "item/completed" and item.get("type") == "agentMessage"
+                    and item.get("phase") == "final_answer"):
+                final_text = item.get("text", "")
             if event.event_type == EventType.FILE_CHANGE_OUTPUT:
                 path = event.params.get("filePath")
                 if path and path not in files_changed:
@@ -471,7 +477,8 @@ class CodexAgent(Agent):
                 if cmd:
                     commands_run.append(cmd if isinstance(cmd, str) else " ".join(cmd))
             if event.event_type == EventType.ERROR:
-                error = event.params.get("message", "Unknown error")
+                detail = event.params.get("error", event.params)
+                error = detail.get("message", "Unknown error") if isinstance(detail, dict) else str(detail)
             # Capture token usage from thread/tokenUsage/updated events
             if event.method in ("thread/tokenUsage/updated", EventType.THREAD_TOKEN_USAGE):
                 usage = event.params.get("tokenUsage", {})
@@ -485,7 +492,11 @@ class CodexAgent(Agent):
                     }
             # Also capture from turn/completed
             if event.is_turn_completed:
+                completed = True
                 turn_data = event.params.get("turn", {})
+                if turn_data.get("status") in {"failed", "interrupted"}:
+                    detail = turn_data.get("error") or {}
+                    error = detail.get("message") or f"Turn {turn_data['status']}"
                 if "tokenUsage" in turn_data:
                     tu = turn_data["tokenUsage"].get("total", {})
                     if tu:
@@ -497,10 +508,12 @@ class CodexAgent(Agent):
                         }
 
         duration_ms = int((time.monotonic() - t0) * 1000)
+        if not completed and not error:
+            error = "Turn ended without completion; implementation is not ready for review"
 
         return TurnResult(
             thread_id=thread_id,
-            full_text="".join(full_text_parts),
+            full_text=final_text if final_text is not None else "".join(full_text_parts),
             events=events,
             token_usage={**token_usage, "duration_ms": duration_ms},
             files_changed=files_changed,
@@ -544,6 +557,13 @@ class CodexAgent(Agent):
                 continue
 
         logger.warning("Turn timed out on thread %s after %ds", thread_id, self.role.max_turn_seconds)
+        try:
+            await self.interrupt(thread_id)
+        except Exception as exc:
+            logger.warning("Could not interrupt timed-out turn %s: %s", thread_id, exc)
+        yield StreamEvent(method="error", params={
+            "message": f"Turn timed out after {self.role.max_turn_seconds}s; resume implementation before review",
+        })
 
     async def interrupt(self, thread_id: str) -> None:
         await self._request("turn/interrupt", {"threadId": thread_id})

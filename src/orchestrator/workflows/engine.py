@@ -149,7 +149,12 @@ class Workflow:
     def signature(self) -> str:
         def describe(value):
             if isinstance(value, Step):
-                return {"type": type(value).__name__, "options": describe(vars(value))}
+                # New optional handoff/report behavior must not invalidate saved
+                # checkpoints for workflows whose routing has not changed.
+                options = {k: v for k, v in vars(value).items()
+                           if not ((k == "next_step" and v is None)
+                                   or (k in {"stable_snapshot", "advisory"} and v is False))}
+                return {"type": type(value).__name__, "options": describe(options)}
             if isinstance(value, dict):
                 return {k: describe(v) for k, v in value.items()}
             if isinstance(value, (list, tuple)):

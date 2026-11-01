@@ -151,7 +151,7 @@ Edit `roles/*.toml` to change models, sandbox, token budgets, system prompts.
 
 Five built-in pipelines:
 
-- **feature**: prepare task branch → source UX assessment → architecture plan → implementation → UX review → code review → summary → optional draft PR/MR and CI/deployment verification
+- **feature**: prepare task branch → UX plan → technical plan → implementation ⇄ code review → optional final advisory UX report → completion report → optional draft PR/MR and CI/deployment verification
 - **bugfix**: architect investigates, implementer fixes, qa verifies
 - **review**: send code to reviewer
 - **research**: parallel investigation by multiple agents, then synthesis
@@ -170,30 +170,49 @@ orch workflow run pr-completion --cwd /path/to/repo \
   -v required_checks=Vercel
 ```
 
-Feature tasks automatically include `senior-ux-designer`. Before planning, this
-read-only role traces the affected task through routes, components, forms, state,
-and API responses. It records existing patterns, practical recommendations, and
-UX acceptance criteria in `ux_assessment`, which the architect and implementer
-receive. The architect incorporates applicable recommendations and explains tradeoffs.
+Feature tasks automatically include `senior-ux-designer`. This read-only role
+plans the experience first: flows, interactions, recovery states, accessibility,
+and numbered acceptance criteria in `ux_assessment`. The architect consumes that
+plan and defines the technical implementation, contracts, ownership, concurrency,
+and lifecycle safeguards. Feasibility conflicts and tradeoffs belong in planning.
 
-After implementation, UX review checks the actual source diff before code review.
-Either reviewer can request revisions; every revision repeats UX review and code
-review. Concrete usability failures block approval, while cosmetic preferences
-remain advisory. Backend-only features receive a brief applicability assessment
-without invented UI work. Both reviews use the selected publication target, or
-the task baseline when publication is disabled.
+The implementer receives both plans. Code review checks the original request and
+both sets of criteria, including whether a plan itself misses the intended outcome.
+Routine revisions go directly from implementer back to code reviewer. They do not
+repeat UX or architecture review. The reviewer requests a scoped specialist
+consultation only for material experience or technical decisions, using a final
+`CONSULT_UX` or `CONSULT_ARCHITECT` marker instead of a review decision. Consultation
+advice returns to the reviewer, who decides whether implementation needs changes.
+The same specialist cannot be requested repeatedly for the same commit.
 
-UX findings cite files and lines, affected tasks, user impact, proposed fixes, and
-acceptance criteria. `ux_review_text`, `ux_review_decision` (`approved`,
-`changes_requested`, or `unclear`), and `ux_review_commit` remain separate from
-code-review fields. A missing or conflicting final UX decision cannot approve.
-The summary distinguishes source findings from outstanding browser and user
-validation; source inspection cannot establish visual quality or usability.
+Substantial UI changes can receive one final UX report after code approval. The
+UX plan or reviewer requests it with `FINAL_UX_REVIEW_REQUIRED` on its own line.
+Routine and backend-only changes can skip this pass. The report is advisory:
+even substantial violations are recorded as prioritized unresolved follow-up work,
+with file/line evidence, user impact, suggested fixes, and acceptance criteria.
+It never requests another implementation cycle and does not gate publication.
+`ux_report_text`, `ux_report_status`, and `ux_report_commit` identify this evidence;
+they are separate from the code review decision and are not UX approval fields.
+
+The completion report combines the implementation, code review, consultations,
+and any final UX report without another architect assignment. It is visible on
+the task page and included in new PR/MR descriptions. Source inspection does not
+establish visual or usability acceptance; outstanding validation stays explicit.
+
+Agent timeouts or incomplete turns fail their step instead of starting review.
+Task handoffs and reviews require a clean committed checkout. Branch/commit changes
+or uncommitted edits invalidate the handoff; preserve unrelated edits and resolve
+ownership before resuming. Existing workspace leases serialize orchestrator tasks;
+external tools must not edit the task checkout during review. Explicit task workspace
+selection takes precedence over generic role worktree instructions.
+
 The existing step budget and pause behavior remain in place. Older feature runs
 with a different workflow signature must restart under the checkpoint rules.
 
 The feature workflow creates a draft GitHub PR (`gh`) or GitLab MR (`glab`) after
-both UX and code approval for the current commit when Git confirms committed changes. Install and authenticate the matching
+code approval for the current clean commit when Git confirms committed changes.
+Final UX findings remain in the report and do not block this authorized publication.
+Install and authenticate the matching
 CLI (`gh auth login` or `glab auth login`) and make sure Git can push to `origin`.
 The workflow first looks for an open PR/MR on the current branch and reuses its
 source and target branches. Otherwise it discovers the provider's default branch
@@ -525,9 +544,14 @@ external symlink. Simulate capture failure and confirm the checkout remains.
 Verify that completed and archived history stays readable and that Main deletion
 and mutations from an untrusted browser Origin are rejected.
 
-Manual acceptance for the UX workflow: run a UI feature and confirm the assessment
-reaches planning and implementation, then run a backend-only feature and confirm
-the applicability assessment stays scoped. Exercise a UX rejection and a code
-rejection separately; each revision must repeat both reviews. After approvals,
-create another commit and confirm publication blocks stale approvals. Check that
-the summary lists outstanding visual/usability validation.
+Manual acceptance for the feature workflow: run a UI feature and confirm both
+plans reach implementation and code review. Request a code revision and confirm
+it returns directly to code review. Exercise a material UX or architecture
+consultation and confirm advice returns to the reviewer, without another planning
+cycle. For a substantial UI task, have the final UX report record a violation:
+completion must retain it as unresolved follow-up work without starting revision.
+For a backend-only task, confirm the final UX report can be skipped. Check that
+publication still requires current code approval and a clean checkout. Interrupt
+an implementation at its turn limit and confirm review never starts on partial
+work. Change the checkout during review and confirm the review fails safely.
+Verify readable stage names and the saved completion report on the task page.

@@ -16,7 +16,9 @@ Before any implementation, bug fix, revision, or CI repair:
 - Inspect the repository root, current branch, and `git worktree list` before editing
 - Use a separate Git worktree on a task branch for all implementation, unless the
   task explicitly asks you to implement in the main branch. A supplied --cwd,
-  current main checkout, or workflow-created branch is not that permission
+  current main checkout, or workflow-created branch alone is not that permission.
+  Reuse an explicitly workflow-selected task checkout and branch; do not create
+  another worktree when the workflow has already assigned the workspace
 - Reuse an existing isolated worktree for this task; otherwise create one with
   `git worktree add -b <task-branch> <worktree-path> <base-ref>` and perform all
   edits, commands, and commits from that worktree
@@ -33,16 +35,20 @@ Before any implementation, bug fix, revision, or CI repair:
 
 1. IMPLEMENT: Write clean, production-quality code based on plans/specs given to you.
    - Follow existing code conventions in the project
-   - Write tests alongside implementation
+   - Add regression coverage when appropriate and permitted by repository policy
    - Handle errors properly
    - Keep changes minimal and focused
 
 2. FIX: When given bug reports with investigations, implement targeted fixes.
    - Fix the root cause, not symptoms
-   - Add regression tests
+   - Add regression tests when appropriate and permitted by repository policy
    - Don't refactor unrelated code
 
-3. REVISE: When given review feedback, address each point specifically.
+3. REVISE: Address every finding and the underlying invariant.
+   - Inspect related async orderings: delayed success/failure, reload, multiple tabs,
+     and different operation IDs
+   - Map findings to fixes and explain deviations from UX and technical criteria
+   - Complete and commit task changes before handoff; partial progress is not done
 
 4. PR COMPLETION: Own publication diagnosis and CI/deployment completion.
    - Inspect the current branch and its open PR/MR before deciding what to publish
@@ -69,7 +75,9 @@ Before any implementation, bug fix, revision, or CI repair:
    - Never treat missing, skipped, or pending deployment results as green
    - Do not push fixes, rerun jobs, or merge unless separately instructed
 
-Always run tests after making changes. Commit with clear messages."""
+Follow repository validation restrictions. Run checks only when authorized.
+Report executed checks separately from pending automated and manual validation.
+Commit with clear messages."""
 
 [role.features]
 

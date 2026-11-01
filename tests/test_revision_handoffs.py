@@ -22,7 +22,10 @@ class WorktreeTests(unittest.IsolatedAsyncioTestCase):
         Path(self.root, 'file').write_text('original')
         await _run(self.root, 'git', 'add', 'file')
         await _run(self.root, 'git', 'commit', '-m', 'baseline')
-        self.ctx = SimpleNamespace(run_id='test', variables={'cwd': self.root, 'create_mr': False})
+        self.ctx = SimpleNamespace(run_id='test',
+            variables=dict(feature_workflow().initial_variables, cwd=self.root, create_mr=False,
+                           task_description='Fix bug', ux_assessment='Preserve behavior'),
+            acquire_thread=AsyncMock(return_value='thread'), persist_step_thread=AsyncMock())
 
     async def asyncTearDown(self):
         checkout = self.ctx.variables.get('task_worktree')
@@ -55,9 +58,37 @@ class WorktreeTests(unittest.IsolatedAsyncioTestCase):
         result = await feature_workflow().get_step('review').execute(self.ctx)
         self.assertTrue(result.success)
         self.assertEqual(result.output['review_commit'], await _run(checkout, 'git', 'rev-parse', 'HEAD'))
-        self.assertEqual(agent.start_thread.call_args.kwargs['cwd'], checkout)
+        self.assertEqual(self.ctx.acquire_thread.call_args.kwargs['cwd'], checkout)
         self.assertIn(f"git diff {self.ctx.variables['task_baseline']}..HEAD", agent.send_message.call_args.args[1])
         self.assertEqual(await _run(self.root, 'git', 'branch', '--show-current'), 'main')
+
+    async def test_dirty_implementation_cannot_advance_to_review(self):
+        prepared = await PrepareMergeRequestStep('prepare').execute(self.ctx)
+        self.ctx.variables.update(prepared.output)
+        checkout = self.ctx.variables['cwd']
+        Path(checkout, 'file').write_text('partial implementation')
+        agent = SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(
+            ok=True, full_text='Done', files_changed=['file'], commands_run=[], error=None)))
+        self.ctx.get_agent_for_role = lambda role: agent
+        result = await AssignStep('implement', role='implementer', message_template='Fix').execute(self.ctx)
+        self.assertFalse(result.success)
+        self.assertIn('Uncommitted changes', result.error)
+        self.assertEqual(Path(checkout, 'file').read_text(), 'partial implementation')
+
+    async def test_foreign_commit_invalidates_review_before_agent_starts(self):
+        prepared = await PrepareMergeRequestStep('prepare').execute(self.ctx)
+        self.ctx.variables.update(prepared.output)
+        self.ctx.variables.update(task_commit=self.ctx.variables['task_baseline'],
+                                  plan='Plan', implementation='Changes', implementation_files=['file'])
+        checkout = self.ctx.variables['cwd']
+        Path(checkout, 'file').write_text('concurrent change')
+        await _run(checkout, 'git', 'commit', '-am', 'foreign change')
+        agent = SimpleNamespace(send_message=AsyncMock())
+        self.ctx.get_agent_for_role = lambda role: agent
+        result = await feature_workflow().get_step('review').execute(self.ctx)
+        self.assertFalse(result.success)
+        self.assertIn('changed since implementation', result.error)
+        agent.send_message.assert_not_awaited()
 
     async def test_existing_request_keeps_publication_branch(self):
         await _run(self.root, 'git', 'remote', 'add', 'origin', 'https://github.com/example/repo.git')

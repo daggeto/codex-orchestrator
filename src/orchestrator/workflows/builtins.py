@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from orchestrator.workflows.engine import Workflow
+from orchestrator.workflows.feature import FeatureReviewStep, FeatureSummaryStep, UXPlanStep
 from orchestrator.workflows.merge_request import CreateMergeRequestStep, PrepareMergeRequestStep, PrepareWorktreeStep, VerifyMergeRequestStep
 from orchestrator.workflows.pr_completion import (
     CompletionReviewStep, MonitorCompletionStep, PrepareCompletionStep,
@@ -19,169 +20,162 @@ from orchestrator.workflows.steps import (
 
 
 def feature_workflow() -> Workflow:
-    """Assess UX, plan, implement, review UX and code, revise, then optionally publish."""
+    """Plan UX and technology once; revise through code review; report final UX findings."""
+    diff_scope = (
+        "Publication status: {mr_status}\nSelected PR/MR: {mr_url}\n"
+        "Publication source branch: {mr_branch}\nSelected target branch: {mr_base}\n"
+        "Task checkout branch: {task_branch}\n\n"
+        "When a target branch is selected, inspect the complete publication diff with "
+        "git diff origin/{mr_base}...HEAD, including commits already on the branch. "
+        "Use this selected target, not the provider default. If unavailable, report "
+        "the review blocked instead of approving another diff. When no target is "
+        "selected, publication is disabled; review git diff {task_baseline}..HEAD.\n\n"
+    )
     return Workflow(
         name="feature",
         publication_policy="optional",
         initial_variables={"review_text": "Code review has not run yet.",
-                           "ux_review_text": "UX review has not run yet."},
-        description="Feature: UX assessment → plan → implement → UX review → code review → optional publication",
+                           "ux_consultation": "No UX consultation requested.",
+                           "architecture_consultation": "No architecture consultation requested.",
+                           "ux_final_required": False},
+        description="Feature: UX plan → technical plan → implement ⇄ code review → optional final UX report → optional publication",
         steps=[
             PrepareMergeRequestStep(step_id="prepare-mr", name="Prepare Task Branch"),
-            AssignStep(
-                step_id="ux-assess",
-                name="Source UX Assessment",
-                role="senior-ux-designer",
+            UXPlanStep(
+                step_id="ux-assess", name="UX Planning", role="senior-ux-designer",
                 message_template=(
-                    "Assess the existing source for this feature before architecture planning.\n\n"
+                    "Plan the user experience before technical planning.\n\n"
                     "Feature: {task_description}\nWorking directory: {cwd}\n\n"
-                    "Trace relevant existing flows and API contracts. Describe what works, reusable "
-                    "patterns, consequential risks, the smallest practical improvements, and UX "
-                    "acceptance criteria. Cite file and line evidence. Separate source findings "
-                    "from assumptions and outstanding browser/user validation. For backend-only "
-                    "work, give a brief applicability assessment without inventing UI work."
-                ),
-                cwd="{cwd}",
-                output_key="ux_assessment",
+                    "Trace existing flows and contracts. Define the smallest practical user flow, "
+                    "interactions, loading/empty/error/success states, recovery, accessibility, "
+                    "and numbered UX acceptance criteria with file and line evidence. "
+                    "Own experience decisions; leave implementation architecture to the architect. "
+                    "Separate source findings from assumptions and outstanding browser/user validation. "
+                    "For backend-only work, give a brief applicability assessment without inventing UI work. "
+                    "For a substantial UI/visual redesign, include the standalone marker "
+                    "FINAL_UX_REVIEW_REQUIRED to request one final advisory report after code approval. "
+                    "Routine or backend-only changes do not need that pass."
+                ), cwd="{cwd}", output_key="ux_assessment",
             ),
             AssignStep(
-                step_id="plan",
-                name="Architecture Planning",
-                role="architect",
+                step_id="plan", name="Technical Planning", role="architect",
                 message_template=(
-                    "Design an implementation plan for the following feature request. "
-                    "Include file changes needed, data model changes, and key decisions.\n\n"
-                    "Feature: {task_description}\n\n"
-                    "Source UX assessment:\n{ux_assessment}\n\n"
-                    "Incorporate applicable UX recommendations and acceptance criteria. "
-                    "Explain tradeoffs or recommendations you do not adopt.\n\n"
-                    "Working directory: {cwd}"
-                ),
-                cwd="{cwd}",
-                output_key="plan",
+                    "Design the technical implementation supporting the UX plan.\n\n"
+                    "Feature: {task_description}\nUX plan and acceptance criteria:\n{ux_assessment}\n\n"
+                    "Working directory: {cwd}\n"
+                    "Specify files, data models, API/protocol contracts, ownership, persistence, "
+                    "security, concurrency invariants, and technical acceptance criteria. "
+                    "Trace all affected entry points, including continuation, restart, archive, "
+                    "cleanup, and legacy paths where applicable. Verify external protocol contracts "
+                    "from installed schemas or authoritative documentation before relying on them. "
+                    "For async operations, define operation identity and monotonic terminal outcomes "
+                    "across delayed success/failure, reloads, multiple tabs, and different operation IDs. "
+                    "Resolve feasibility conflicts before implementation and explain tradeoffs or "
+                    "UX recommendations you do not adopt. Do not independently redesign the experience."
+                ), cwd="{cwd}", output_key="plan",
             ),
             AssignStep(
-                step_id="implement",
-                name="Implementation",
-                role="implementer",
+                step_id="implement", name="Implementation", role="implementer",
                 message_template=(
-                    "Implement the following plan. Write all the code changes needed.\n\n"
-                    "Plan:\n{plan}\n\n"
-                    "Source UX assessment and acceptance criteria:\n{ux_assessment}\n\n"
+                    "Implement both plans and the original request.\n\n"
+                    "Technical plan:\n{plan}\n\nUX plan:\n{ux_assessment}\n\n"
                     "Original request: {task_description}\n\n"
-                    "Stay on the current branch. Commit the task changes before finishing. "
-                    "Do not push or open a PR/MR; the workflow handles publication after review."
-                ),
-                cwd="{cwd}",
-                output_key="implementation",
+                    "Map acceptance criteria to the implementation and explain deviations. "
+                    "Follow repository validation restrictions. Finish and commit all task changes "
+                    "before handing off; progress commentary or uncommitted code is not completion. "
+                    "Stay on the selected branch. Do not push or open a PR/MR."
+                ), cwd="{cwd}", output_key="implementation",
             ),
-            ReviewStep(
-                step_id="ux-review",
-                name="Source UX Review",
-                role="senior-ux-designer",
+            FeatureReviewStep(
+                step_id="review", name="Code Review", role="reviewer",
                 review_template=(
-                    "Review the actual implementation source changes against the requested task "
-                    "and applicable UX acceptance criteria.\n\n"
-                    "Feature: {task_description}\nPlan: {plan}\n"
-                    "Source UX assessment: {ux_assessment}\n"
-                    "Implementation output: {source}\nFiles changed: {implementation_files}\n\n"
-                    "Publication status: {mr_status}\n"
-                    "Selected PR/MR: {mr_url}\n"
-                    "Publication source branch: {mr_branch}\n"
-                    "Selected target branch: {mr_base}\n"
-                    "Task checkout branch: {task_branch}\n\n"
-                    "When a target branch is selected, inspect the complete publication diff "
-                    "with git diff origin/{mr_base}...HEAD, including commits already on the "
-                    "branch. Use this selected target; do not rediscover the request from the "
-                    "task checkout branch or substitute the provider's default branch. "
-                    "If the selected target ref is unavailable, report a blocked review "
-                    "instead of approving another diff. When no target is selected, "
-                    "publication is disabled; review git diff {task_baseline}..HEAD.\n\n"
-                    "Cite file and line, affected task, user impact, proposed fix, and acceptance "
-                    "criterion for each finding, or explain with evidence why no relevant issues "
-                    "were found. Distinguish source inspection from outstanding browser/user "
-                    "validation. Backend-only work needs a brief applicability assessment, "
-                    "without invented UI work. Block concrete usability failures; cosmetic "
-                    "preferences remain advisory. End with exactly one standalone final line: "
-                    "APPROVED or CHANGES_REQUESTED. Do not use decision markers elsewhere."
-                ),
-                source_key="implementation",
-                output_namespace="ux_review",
-                strict_decision=True,
-                on_approve="review",
-                on_reject="revise",
-            ),
-            ReviewStep(
-                step_id="review",
-                name="Code Review",
-                role="reviewer",
-                review_template=(
-                    "Review the following implementation for correctness, security, and quality.\n\n"
-                    "Original plan:\n{plan}\n\n"
-                    "Implementation output:\n{source}\n\n"
-                    "Files changed: {implementation_files}\n\n"
-                    "Publication status: {mr_status}\n"
-                    "Selected PR/MR: {mr_url}\n"
-                    "Publication source branch: {mr_branch}\n"
-                    "Selected target branch: {mr_base}\n"
-                    "Task checkout branch: {task_branch}\n\n"
-                    "When a target branch is selected, inspect the complete publication diff "
-                    "with git diff origin/{mr_base}...HEAD, including commits already on the "
-                    "branch. Use this selected target; do not rediscover the request from the "
-                    "task checkout branch or substitute the provider's default branch. "
-                    "If the selected target ref is unavailable, report a blocked review "
-                    "instead of approving another diff. When no target is selected, "
-                    "publication is disabled; review git diff {task_baseline}..HEAD.\n\n"
-                    "End your review with either APPROVED or CHANGES_REQUESTED followed by "
-                    "specific feedback."
-                ),
-                source_key="implementation",
-                on_approve="done",
-                on_reject="revise",
+                    "Review actual source for correctness, security, lifecycle safety, and compliance "
+                    "with both plans. Plans may be wrong: verify the user's outcome too.\n\n"
+                    "Original request: {task_description}\nTechnical plan:\n{plan}\n\n"
+                    "UX plan and acceptance criteria:\n{ux_assessment}\n\n"
+                    "Implementation output:\n{source}\nFiles changed: {implementation_files}\n\n"
+                    "UX consultation:\n{ux_consultation}\nArchitecture consultation:\n{architecture_consultation}\n\n"
+                ) + diff_scope + (
+                    "Own protocol contracts, concurrency, persistence, and lifecycle checks. "
+                    "Check every applicable UX and technical criterion, all supported blockers in "
+                    "this snapshot, and the surrounding state model, not only the last reported symptom. "
+                    "Keep cosmetic suggestions advisory. Source review is not browser acceptance. "
+                    "Routine corrections go directly to the implementer. Consult UX only for a "
+                    "material user-flow change, unresolved experience tradeoff, or design judgment. "
+                    "Consult the architect only for material contract/data/ownership/concurrency/security "
+                    "deviations requiring an architecture decision. Explain the exact question and end "
+                    "with CONSULT_UX or CONSULT_ARCHITECT to request that consultation. "
+                    "Use saved consultation advice before deciding; do not repeat a consultation for "
+                    "the same commit. Neither specialist is a routine additional approval gate. "
+                    "For substantial UI work, include FINAL_UX_REVIEW_REQUIRED on its own line. "
+                    "Otherwise end with exactly one standalone final line: APPROVED or CHANGES_REQUESTED. "
+                    "List all required fixes with file/line evidence, impact, and acceptance criteria "
+                    "before that final line. Do not use decision markers elsewhere."
+                ), source_key="implementation", strict_decision=True,
+                on_approve="final-ux-gate", on_reject="revise",
             ),
             AssignStep(
-                step_id="revise",
-                name="Revision",
-                role="implementer",
+                step_id="revise", name="Implementation Revision", role="implementer",
                 message_template=(
-                    "A review has requested changes to your implementation.\n\n"
-                    "UX review feedback:\n{ux_review_text}\n\n"
-                    "Code review feedback (may be from an earlier revision):\n{review_text}\n\n"
-                    "UX assessment and acceptance criteria:\n{ux_assessment}\n\n"
-                    "Please address the feedback and update the code accordingly. "
-                    "Stay on the current branch and commit the revision. Do not push or open a PR/MR."
-                ),
-                cwd="{cwd}",
-                output_key="implementation",
+                    "Address the code review findings, then return directly to code review.\n\n"
+                    "Original request: {task_description}\nTechnical plan:\n{plan}\nUX plan:\n{ux_assessment}\n\n"
+                    "Current code review feedback:\n{review_text}\n\n"
+                    "UX consultation:\n{ux_consultation}\nArchitecture consultation:\n{architecture_consultation}\n\n"
+                    "Resolve every finding and the underlying invariant, not just its reported symptom. "
+                    "For async state, inspect delayed success/failure, reloads, multiple tabs, and "
+                    "different operation IDs. Report each finding's resolution and any plan deviations. "
+                    "Respect repository validation restrictions. Finish and commit the revision on "
+                    "the selected branch. Do not push or open a PR/MR."
+                ), cwd="{cwd}", output_key="implementation", next_step="review",
             ),
-            # Every revision repeats both reviews
+            AssignStep(
+                step_id="ux-consult", name="UX Consultation", role="senior-ux-designer",
+                message_template=(
+                    "Answer the reviewer's specific experience question.\n"
+                    "Request: {task_description}\nUX plan: {ux_assessment}\nTechnical plan: {plan}\n"
+                    "Implementation: {implementation}\nReviewer question: {review_text}\n"
+                    "Give a scoped decision, tradeoffs, and updated acceptance criteria. "
+                    "Do not edit files or request a new workflow cycle. The reviewer consumes "
+                    "your advice and owns the next implementation decision."
+                ), cwd="{cwd}", output_key="ux_consultation", next_step="review", stable_snapshot=True,
+            ),
+            AssignStep(
+                step_id="architect-consult", name="Architecture Consultation", role="architect",
+                message_template=(
+                    "Answer the reviewer's specific architecture question.\n"
+                    "Request: {task_description}\nUX plan: {ux_assessment}\nTechnical plan: {plan}\n"
+                    "Implementation: {implementation}\nReviewer question: {review_text}\n"
+                    "Give a scoped technical decision, affected contracts/invariants, and acceptance "
+                    "criteria. Do not edit files, redesign UX, or start another review cycle. "
+                    "The reviewer consumes your advice and owns the next implementation decision."
+                ), cwd="{cwd}", output_key="architecture_consultation", next_step="review", stable_snapshot=True,
+            ),
             GateStep(
-                step_id="re-review-gate",
-                name="Loop Back to Review",
-                condition_key="review_decision",
-                expected_value="changes_requested",
-                on_true="ux-review",
-                on_false="ux-review",
+                step_id="final-ux-gate", name="Final UX Report Selection",
+                condition_key="ux_final_required", on_true="ux-report", on_false="done",
             ),
-            AssignStep(
-                step_id="done",
-                name="Summary",
-                role="architect",
-                message_template=(
-                    "The feature has been implemented and approved. "
-                    "Summarize what was done:\n\n"
-                    "Plan: {plan}\n"
-                    "UX assessment: {ux_assessment}\n"
-                    "UX review: {ux_review_text}\n"
-                    "Code review: {review_text}\n"
-                    "Report UX outcomes and outstanding visual/usability validation. "
-                    "Source inspection alone does not establish browser acceptance.\n"
-                    "Files changed: {implementation_files}"
-                ),
-                output_key="summary",
-                cwd="{cwd}",
+            ReviewStep(
+                step_id="ux-report", name="Final UX Report (Advisory)", role="senior-ux-designer",
+                review_template=(
+                    "Provide ONE final advisory UX report after code approval.\n\n"
+                    "Feature: {task_description}\nUX plan: {ux_assessment}\nTechnical plan: {plan}\n"
+                    "Implementation: {source}\nFiles changed: {implementation_files}\n"
+                    "Code review: {review_text}\n\n"
+                ) + diff_scope + (
+                    "Inspect the agreed experience and cite file/line, affected task, user impact, "
+                    "suggested fix, and acceptance criterion for remaining violations. "
+                    "Record even substantial problems as prioritized unresolved follow-up work in "
+                    "this report, then finish. Do not edit files, request changes, start another "
+                    "cycle, or use approval/rejection decision markers. Findings are advisory and "
+                    "do not block workflow completion or publication. Backend-only work needs a "
+                    "brief applicability assessment. Distinguish source evidence from outstanding "
+                    "visual, keyboard, responsive, and user validation. Do not run browser checks "
+                    "or claim source alone establishes usability."
+                ), source_key="implementation", output_namespace="ux_report", advisory=True,
+                on_approve="done", on_reject="done",
             ),
-            CreateMergeRequestStep(step_id="create-mr", name="Create Draft PR/MR", require_ux_approval=True),
+            FeatureSummaryStep(step_id="done", name="Completion Report"),
+            CreateMergeRequestStep(step_id="create-mr", name="Create Draft PR/MR"),
             VerifyMergeRequestStep(step_id="verify-mr", name="Verify PR/MR CI and Deployment"),
         ],
     )

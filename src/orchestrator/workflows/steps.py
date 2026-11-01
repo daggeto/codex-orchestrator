@@ -34,6 +34,19 @@ class Step(ABC):
         ...
 
 
+async def task_snapshot(ctx: WorkflowContext) -> str | None:
+    """Require a clean, committed task checkout at agent handoff boundaries."""
+    root = ctx.variables.get("task_worktree")
+    if not root:
+        return None
+    from orchestrator.workflows.merge_request import _run
+    if await _run(root, "git", "branch", "--show-current") != ctx.variables["task_branch"]:
+        raise ValueError("Task branch changed; restore the selected checkout before continuing")
+    if await _run(root, "git", "status", "--porcelain", "--untracked-files=all"):
+        raise ValueError("Uncommitted changes remain; finish implementation and commit task changes before review. Preserve unrelated edits.")
+    return await _run(root, "git", "rev-parse", "HEAD")
+
+
 class AssignStep(Step):
     """Assign a task to an agent and collect the response."""
 
@@ -45,6 +58,8 @@ class AssignStep(Step):
         cwd: str | None = None,
         model: str | None = None,
         output_key: str = "response",
+        next_step: str | None = None,
+        stable_snapshot: bool = False,
         **kwargs,
     ):
         super().__init__(step_id, **kwargs)
@@ -53,6 +68,8 @@ class AssignStep(Step):
         self.cwd = cwd
         self.model = model
         self.output_key = output_key
+        self.next_step = next_step
+        self.stable_snapshot = stable_snapshot
 
     async def execute(self, ctx: WorkflowContext) -> StepResult:
         agent = ctx.get_agent_for_role(self.role)
@@ -71,21 +88,29 @@ class AssignStep(Step):
             message += "\n\nThe task explicitly selected execution in this main checkout. Use this folder and its current branch for implementation."
         cwd = ctx.variables.get("cwd") if ctx.variables.get("workspace_resolved") else (self.cwd.format(**ctx.variables) if self.cwd else ctx.variables.get("cwd"))
 
+        try:
+            before = await task_snapshot(ctx) if self.stable_snapshot else None
+        except (OSError, RuntimeError, ValueError) as exc:
+            return StepResult(success=False, error=str(exc))
         thread = await ctx.acquire_thread(agent, self.step_id, cwd=cwd, model=self.model)
 
         await ctx.persist_step_thread(agent, thread)
         result = await agent.send_message(thread, message, model=self.model)
+        if not result.ok:
+            return StepResult(success=False, error=result.error or "Agent turn did not complete")
 
         identity = {}
-        if self.role == "implementer" and ctx.variables.get("task_worktree"):
+        if (self.role == "implementer" or self.stable_snapshot) and ctx.variables.get("task_worktree"):
             from orchestrator.workflows.merge_request import _run
             try:
                 root = ctx.variables["task_worktree"]
-                if await _run(root, "git", "branch", "--show-current") != ctx.variables["task_branch"]:
-                    raise ValueError("Implementer changed the workflow task branch")
-                identity["task_commit"] = await _run(root, "git", "rev-parse", "HEAD")
+                head = await task_snapshot(ctx)
+                if self.stable_snapshot and head != before:
+                    raise ValueError("Task commit changed during consultation; use a stable checkout")
+                if self.role == "implementer":
+                    identity["task_commit"] = head
                 await _run(root, "git", "merge-base", "--is-ancestor",
-                           ctx.variables["task_baseline"], identity["task_commit"])
+                           ctx.variables["task_baseline"], head)
             except (OSError, RuntimeError, ValueError) as exc:
                 return StepResult(success=False, error=f"Invalid task worktree: {exc}")
 
@@ -98,6 +123,7 @@ class AssignStep(Step):
                 f"{self.output_key}_commands": result.commands_run,
             },
             error=result.error,
+            next_step=self.next_step,
         )
 
 
@@ -116,6 +142,7 @@ class ReviewStep(Step):
         on_reject: str | None = None,
         output_namespace: str = "review",
         strict_decision: bool = False,
+        advisory: bool = False,
         **kwargs,
     ):
         super().__init__(step_id, **kwargs)
@@ -128,6 +155,7 @@ class ReviewStep(Step):
         self.on_reject = on_reject
         self.output_namespace = output_namespace
         self.strict_decision = strict_decision
+        self.advisory = advisory
 
     async def execute(self, ctx: WorkflowContext) -> StepResult:
         agent = ctx.get_agent_for_role(self.role)
@@ -141,21 +169,30 @@ class ReviewStep(Step):
 
         reviewed = {}
         if ctx.variables.get("task_worktree"):
-            from orchestrator.workflows.merge_request import _run
             try:
-                root = ctx.variables["task_worktree"]
-                if await _run(root, "git", "branch", "--show-current") != ctx.variables["task_branch"]:
-                    raise ValueError("Task branch changed before review")
-                reviewed[f"{self.output_namespace}_commit"] = await _run(root, "git", "rev-parse", "HEAD")
+                head = await task_snapshot(ctx)
+                if ctx.variables.get("task_commit", head) != head:
+                    raise ValueError("Task commit changed since implementation handoff; finish implementation before review")
+                reviewed[f"{self.output_namespace}_commit"] = head
             except (OSError, RuntimeError, ValueError) as exc:
                 return StepResult(success=False, error=str(exc))
         await ctx.persist_step_thread(agent, thread)
         result = await agent.send_message(thread, message)
         if reviewed:
-            if await _run(root, "git", "rev-parse", "HEAD") != reviewed[f"{self.output_namespace}_commit"]:
-                return StepResult(success=False, error="Task commit changed during review")
+            try:
+                if await task_snapshot(ctx) != reviewed[f"{self.output_namespace}_commit"]:
+                    return StepResult(success=False, error="Task commit changed during review")
+            except (OSError, RuntimeError, ValueError) as exc:
+                return StepResult(success=False, error=str(exc))
         if not result.ok:
             return StepResult(success=False, error=result.error or "Review failed")
+        if self.advisory:
+            return StepResult(success=True, output={
+                **reviewed,
+                f"{self.output_namespace}_status": "reported" if result.full_text.strip() else "unavailable",
+                f"{self.output_namespace}_text": result.full_text.strip() or
+                    "No final UX report was returned. UX assessment remains outstanding follow-up work.",
+            }, next_step=self.on_approve)
         text = result.full_text.upper()
 
         approved = self.approve_keyword.upper() in text

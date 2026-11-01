@@ -1,4 +1,4 @@
-"""UX workflow contracts; agent turns and publication providers are mocked."""
+"""Feature routing and advisory-report regressions; agents/providers are mocked."""
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -17,20 +17,24 @@ class FeatureUXTests(unittest.IsolatedAsyncioTestCase):
         agent = SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(
             ok=True, full_text=text, error=None, files_changed=[], commands_run=[])))
         variables = dict(workflow.initial_variables, cwd='/repo', task_worktree='/repo',
-                         task_branch='task', task_baseline='baseline', task_description='Improve form',
-                         ux_assessment='Preserve labels', plan='Plan', implementation='Changes',
+                         task_branch='task', task_baseline='baseline', task_commit='head',
+                         task_description='Improve form', ux_assessment='Preserve labels',
+                         plan='Technical plan', implementation='Changes',
                          implementation_files=['form.tsx'], mr_status='prepared', mr_url='',
                          mr_branch='feature', mr_base='main', review_decision='approved',
-                         review_commit='old-code-commit')
+                         review_commit='head')
         return SimpleNamespace(variables=variables, get_agent_for_role=lambda role: agent,
                                acquire_thread=AsyncMock(return_value='thread'),
                                persist_step_thread=AsyncMock()), agent
 
-    async def review(self, text, step=None):
-        ctx, agent = self.context(text)
-        with patch('orchestrator.workflows.merge_request._run',
-                   AsyncMock(side_effect=['task', 'head', 'head'])):
-            result = await (step or feature_workflow().get_step('ux-review')).execute(ctx)
+    async def review(self, text, step_id='review', ctx=None):
+        if ctx is None:
+            ctx, agent = self.context(text)
+        else:
+            agent = ctx.get_agent_for_role('reviewer')
+            agent.send_message.return_value.full_text = text
+        with patch('orchestrator.workflows.steps.task_snapshot', AsyncMock(return_value='head')):
+            result = await feature_workflow().get_step(step_id).execute(ctx)
         return result, ctx, agent
 
     def test_role_discovery_and_prompt(self):
@@ -41,107 +45,127 @@ class FeatureUXTests(unittest.IsolatedAsyncioTestCase):
         for requirement in ('keyboard', 'permission', 'destructive', 'file and line', 'source alone'):
             self.assertIn(requirement, prompt)
 
-    async def test_ux_output_is_independent_and_commit_bound(self):
-        result, ctx, _ = await self.review('form.tsx:12 labels preserved.\nAPPROVED')
-        self.assertEqual(result.next_step, 'review')
-        self.assertEqual(result.output['ux_review_commit'], 'head')
-        self.assertEqual(result.output['ux_review_decision'], 'approved')
-        self.assertFalse(any(key.startswith('review_') for key in result.output))
+    async def test_revision_returns_directly_to_code_review_with_both_plans(self):
+        workflow = feature_workflow()
+        result, ctx, agent = await self.review('Required fix\nCHANGES_REQUESTED')
+        self.assertEqual(result.next_step, 'revise')
         ctx.variables.update(result.output)
-        self.assertEqual(ctx.variables['review_commit'], 'old-code-commit')
-        self.assertEqual(ctx.variables['review_decision'], 'approved')
+        with patch('orchestrator.workflows.steps.task_snapshot', AsyncMock(return_value='head')), \
+             patch('orchestrator.workflows.merge_request._run', AsyncMock(return_value='')):
+            revised = await workflow.get_step('revise').execute(ctx)
+        self.assertEqual(revised.next_step, 'review')
+        prompt = agent.send_message.call_args.args[1]
+        for text in ('Required fix', 'Preserve labels', 'Technical plan'):
+            self.assertIn(text, prompt)
+        approved, _, _ = await self.review('APPROVED', ctx=ctx)
+        self.assertEqual(approved.next_step, 'final-ux-gate')
 
-    async def test_missing_conflicting_and_embedded_decisions_fail_closed(self):
+    async def test_unclear_decision_does_not_request_pointless_implementation(self):
         for text in ('', 'Looks good', 'Not APPROVED', 'UNAPPROVED',
-                     'APPROVED\nFurther comments', 'CHANGES_REQUESTED\nAPPROVED',
-                     'APPROVED\nCHANGES_REQUESTED'):
+                     'APPROVED\nFurther comments', 'CHANGES_REQUESTED\nAPPROVED'):
             with self.subTest(text=text):
                 result, _, _ = await self.review(text)
-                self.assertEqual(result.output['ux_review_decision'], 'unclear')
-                self.assertEqual(result.next_step, 'revise')
+                self.assertFalse(result.success)
+                self.assertIsNone(result.next_step)
 
-    async def test_ux_rejection_and_code_rejection_repeat_both_reviews(self):
+    async def test_material_consultation_returns_advice_then_reviewer_decides(self):
+        for marker, step_id, key in (('CONSULT_UX', 'ux-consult', 'ux_consultation'),
+                                     ('CONSULT_ARCHITECT', 'architect-consult', 'architecture_consultation')):
+            with self.subTest(marker=marker):
+                result, ctx, agent = await self.review('Resolve this material tradeoff\n' + marker)
+                self.assertEqual(result.next_step, step_id)
+                ctx.variables.update(result.output)
+                agent.send_message.return_value.full_text = 'Scoped advice'
+                with patch('orchestrator.workflows.steps.task_snapshot', AsyncMock(return_value='head')), \
+                     patch('orchestrator.workflows.merge_request._run', AsyncMock(return_value='')):
+                    advice = await feature_workflow().get_step(step_id).execute(ctx)
+                self.assertEqual(advice.next_step, 'review')
+                self.assertEqual(advice.output[key], 'Scoped advice')
+                ctx.variables.update(advice.output)
+                approved, _, agent = await self.review('APPROVED', ctx=ctx)
+                self.assertTrue(approved.success)
+                self.assertIn('Scoped advice', agent.send_message.call_args.args[1])
+                repeated, _, _ = await self.review(marker, ctx=ctx)
+                self.assertFalse(repeated.success)
+                self.assertIn('already consulted', repeated.error)
+
+    async def test_final_ux_violations_are_reported_without_revision_or_approval(self):
+        text = 'P1 form.tsx:12: keyboard flow broken. Follow-up: restore focus.\nCHANGES_REQUESTED'
+        result, ctx, _ = await self.review(text, 'ux-report')
+        self.assertTrue(result.success)
+        self.assertEqual(result.next_step, 'done')
+        self.assertEqual(result.output['ux_report_text'], text)
+        self.assertEqual(result.output['ux_report_status'], 'reported')
+        self.assertNotIn('ux_review_decision', result.output)
+        ctx.variables.update(result.output)
+        with patch('orchestrator.workflows.feature.task_snapshot', AsyncMock(return_value='head')):
+            summary = await feature_workflow().get_step('done').execute(ctx)
+        self.assertTrue(summary.success)
+        self.assertIn(text, summary.output['summary'])
+        self.assertIn('were not automatically fixed', summary.output['summary'])
+        self.assertFalse(hasattr(feature_workflow().get_step('done'), 'role'))
+
+    async def test_final_ux_report_is_selective_and_follows_code_approval(self):
         workflow = feature_workflow()
-        for step_id in ('ux-review', 'review'):
-            result, ctx, _ = await self.review('Required fix\nCHANGES_REQUESTED', workflow.get_step(step_id))
-            self.assertEqual(result.next_step, 'revise')
-            ctx.variables.update(result.output)
-            feedback = workflow.get_step('revise').message_template.format(**ctx.variables)
-            self.assertIn('Required fix', feedback)
-            self.assertIn('Preserve labels', feedback)
-            gate = await workflow.get_step('re-review-gate').execute(ctx)
-            self.assertEqual(gate.next_step, 'ux-review')
-            self.assertEqual(workflow.get_step('ux-review').on_approve, 'review')
-            self.assertEqual(workflow.get_step('review').on_approve, 'done')
+        ctx, agent = self.context('UX criteria\nFINAL_UX_REVIEW_REQUIRED')
+        ctx.variables.pop('task_worktree')
+        assessment = await workflow.get_step('ux-assess').execute(ctx)
+        self.assertTrue(assessment.output['ux_final_required'])
+        ctx.variables.update(assessment.output)
+        self.assertEqual((await workflow.get_step('final-ux-gate').execute(ctx)).next_step, 'ux-report')
+        ctx.variables['ux_final_required'] = False
+        self.assertEqual((await workflow.get_step('final-ux-gate').execute(ctx)).next_step, 'done')
+        reviewer, _, _ = await self.review('FINAL_UX_REVIEW_REQUIRED\nAPPROVED')
+        self.assertTrue(reviewer.output['ux_final_required'])
+        self.assertEqual(reviewer.next_step, 'final-ux-gate')
 
     async def test_both_reviews_use_same_selected_target_or_baseline(self):
         for base in ('release', ''):
-            prompts = []
-            for step_id in ('ux-review', 'review'):
+            for step_id in ('ux-report', 'review'):
                 ctx, agent = self.context()
                 ctx.variables['mr_base'] = base
-                with patch('orchestrator.workflows.merge_request._run',
-                           AsyncMock(side_effect=['task', 'head', 'head'])):
+                with patch('orchestrator.workflows.steps.task_snapshot', AsyncMock(return_value='head')):
                     await feature_workflow().get_step(step_id).execute(ctx)
-                prompts.append(agent.send_message.call_args.args[1])
-            for prompt in prompts:
+                prompt = agent.send_message.call_args.args[1]
                 self.assertIn(f'git diff origin/{base}...HEAD', prompt)
                 self.assertIn('git diff baseline..HEAD', prompt)
 
-    async def test_commit_changed_during_ux_review_fails(self):
+    async def test_commit_changed_during_review_fails(self):
         ctx, _ = self.context()
-        with patch('orchestrator.workflows.merge_request._run',
-                   AsyncMock(side_effect=['task', 'head', 'new-head'])):
-            result = await feature_workflow().get_step('ux-review').execute(ctx)
+        with patch('orchestrator.workflows.steps.task_snapshot', AsyncMock(side_effect=['head', 'new-head'])):
+            result = await feature_workflow().get_step('review').execute(ctx)
         self.assertFalse(result.success)
         self.assertIn('changed during review', result.error)
 
-    async def test_assessment_reaches_architect_and_implementer(self):
+    async def test_both_plans_reach_implementation_and_reviewer(self):
         workflow = feature_workflow()
-        ids = [step.step_id for step in workflow.steps]
-        self.assertLess(ids.index('prepare-mr'), ids.index('ux-assess'))
-        self.assertLess(ids.index('ux-assess'), ids.index('plan'))
         ctx, agent = self.context()
         ctx.variables.pop('task_worktree')
-        for step_id in ('plan', 'implement'):
+        for step_id in ('plan', 'implement', 'review'):
             result = await workflow.get_step(step_id).execute(ctx)
             self.assertTrue(result.success)
             self.assertIn('Preserve labels', agent.send_message.call_args.args[1])
         self.assertIn('tradeoffs', workflow.get_step('plan').message_template)
         self.assertIn('backend-only', workflow.get_step('ux-assess').message_template)
-        self.assertIn('Backend-only', workflow.get_step('ux-review').review_template)
-        self.assertIn('outstanding visual/usability validation', workflow.get_step('done').message_template)
         self.assertEqual(workflow.max_iterations, 20)
 
-    async def test_publication_blocks_missing_rejected_or_unclear_ux(self):
-        for decision in (None, 'changes_requested', 'unclear'):
+    async def test_publication_requires_current_code_approval_not_ux_approval(self):
+        step = feature_workflow().get_step('create-mr')
+        self.assertFalse(step.require_ux_approval)
+        for commit, expected in (('old', 'changed since approval'), ('head', 'changed branches')):
             ctx, _ = self.context()
-            ctx.variables['ux_review_decision'] = decision
-            with patch('orchestrator.workflows.merge_request._run', AsyncMock()) as run:
-                result = await feature_workflow().get_step('create-mr').execute(ctx)
-            self.assertFalse(result.success)
-            self.assertIn('UX review approval', result.error)
-            run.assert_not_awaited()
+            ctx.variables.update(mr_repo='/repo', review_commit=commit,
+                                 ux_report_text='Unresolved UX violation', ux_report_status='reported')
+            with patch('orchestrator.workflows.merge_request._run',
+                       AsyncMock(side_effect=['head', 'wrong-branch'])):
+                result = await step.execute(ctx)
+            self.assertIn(expected, result.error)
 
-    async def test_publication_requires_both_current_commit_approvals(self):
-        for code, ux, expected in (('head', None, 'UX'), ('head', 'old', 'UX'),
-                                   ('old', 'head', 'Code'), ('head', 'head', None)):
-            ctx, _ = self.context()
-            ctx.variables.update(mr_repo='/repo', review_commit=code,
-                                 ux_review_decision='approved', ux_review_commit=ux)
-            # Stop at the next existing safety check when both approvals are current.
-            run = AsyncMock(side_effect=['head', 'wrong-branch'])
-            with patch('orchestrator.workflows.merge_request._run', run):
-                result = await feature_workflow().get_step('create-mr').execute(ctx)
-            self.assertFalse(result.success)
-            self.assertIn(expected or 'changed branches', result.error)
-            self.assertEqual(run.await_count, 1 if expected else 2)
-
-    async def test_default_review_and_other_workflows_keep_existing_contract(self):
-        step = ReviewStep('review', role='reviewer', review_template='{source}')
-        result, _, _ = await self.review('APPROVED with notes', step)
-        self.assertEqual(result.output, {'review_commit': 'head', 'review_decision': 'approved',
-                                         'review_text': 'APPROVED with notes'})
+    async def test_default_review_and_other_workflows_keep_existing_decision_contract(self):
+        ctx, _ = self.context('APPROVED with notes')
+        with patch('orchestrator.workflows.steps.task_snapshot', AsyncMock(return_value='head')):
+            result = await ReviewStep('review', role='reviewer', review_template='{source}').execute(ctx)
+        self.assertEqual(result.output['review_decision'], 'approved')
         self.assertFalse(CreateMergeRequestStep('create').require_ux_approval)
         for workflow in (bugfix_workflow(), review_workflow()):
             self.assertNotIn('senior-ux-designer', workflow.required_roles)

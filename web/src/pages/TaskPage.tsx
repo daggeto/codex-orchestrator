@@ -31,6 +31,9 @@ function TaskContent({ taskId }: { taskId: string }) {
 
   if (!data) return <ResourceState error={!!error}>{error || 'Loading task…'}</ResourceState>;
   const { task, agents, workflow, steps, pending_input } = data;
+  const variables = workflow?.state?.final_variables ?? workflow?.state?.variables;
+  const report = variables && typeof variables === 'object' && 'summary' in variables
+    && typeof variables.summary === 'string' ? variables.summary : '';
   const closed = ['completed','cancelled','failed'].includes(task.status);
   const busy = ['queued','waiting_input'].includes(task.status) || task.phase === 'Agent running' || task.phase === 'Starting agents';
   const participant = agents.find(a => a.agent_id === selected) || agents[0];
@@ -43,6 +46,7 @@ function TaskContent({ taskId }: { taskId: string }) {
   }
   return <section className="task-page"><TaskContext task={task} />
     {error && <p className="error" role="alert">{error} · Showing saved task state.</p>}
+    {report && <details open className="execution-details"><summary>Implementation report and follow-up work</summary><MessageContent text={report} /></details>}
     <ParticipantStrip agents={agents} taskId={task.task_id} selected={participant?.agent_id} onSelect={setSelected} />
     {[...retained, ...pending_input.filter(input => !retained.some(old => old.request_id === input.request_id))].filter(input => !dismissed.includes(input.request_id)).map(input => <PendingInput key={input.request_id} input={input} inactive={!pending_input.some(active => active.request_id === input.request_id)} onDismiss={() => setDismissed(previous => [...previous, input.request_id])} onResolved={() => { setDismissed(previous => [...previous, input.request_id]); refresh(); }} />)}
     <section className="conversation-panel" aria-label="Task conversation">{participant ? <AgentHistory key={`${task.task_id}:${participant.agent_id}`} agentId={participant.agent_id} taskId={task.task_id} label={participant.role} /> : <ResourceState>{closed ? 'No recorded agent conversation.' : 'Waiting for an agent to join…'}</ResourceState>}

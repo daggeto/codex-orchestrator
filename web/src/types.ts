@@ -68,6 +68,6 @@ export interface InputRequest {
   request_id: string; kind: string; prompt: string; options: unknown[];
 }
 export interface TaskView {
-  task: TaskRecord; agents: OwnedAgent[]; workflow: { workflow_name: string } | null;
+  task: TaskRecord; agents: OwnedAgent[]; workflow: { workflow_name: string; state?: JsonObject } | null;
   steps: StepExecution[]; pending_input: InputRequest[];
 }

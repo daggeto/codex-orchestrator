@@ -108,7 +108,10 @@ class ClaudeSession:
                         return
 
             await self._proc.wait()
-            yield StreamEvent(method="turn/completed", params={"threadId": self.thread_id})
+            yield StreamEvent(method="error", params={
+                "threadId": self.thread_id,
+                "message": f"Claude exited without a completion result (exit {self._proc.returncode})",
+            })
         finally:
             self._turn_active = False
             if self._proc:
@@ -279,6 +282,7 @@ class ClaudeAgent(Agent):
         full_text_parts: list[str] = []
         events: list[StreamEvent] = []
         error: str | None = None
+        completed = False
 
         async for event in self.stream_message(thread_id, message, model):
             events.append(event)
@@ -288,6 +292,10 @@ class ClaudeAgent(Agent):
                 error = event.params.get("message", "Unknown error")
             if event.is_turn_completed and event.params.get("is_error"):
                 error = "Turn completed with error"
+            completed = completed or event.is_turn_completed
+
+        if not completed and not error:
+            error = "Turn ended without completion; implementation is not ready for review"
 
         return TurnResult(
             thread_id=thread_id,
@@ -304,8 +312,16 @@ class ClaudeAgent(Agent):
         if not session:
             raise ValueError(f"No session for thread {thread_id}")
 
-        async for event in session.send(message):
-            yield event
+        try:
+            async with asyncio.timeout(self.role.max_turn_seconds):
+                async for event in session.send(message):
+                    yield event
+        except TimeoutError:
+            await session.interrupt()
+            yield StreamEvent(method="error", params={
+                "threadId": thread_id,
+                "message": f"Turn timed out after {self.role.max_turn_seconds}s; resume implementation before review",
+            })
 
     async def interrupt(self, thread_id: str) -> None:
         session = self._sessions.get(thread_id)
