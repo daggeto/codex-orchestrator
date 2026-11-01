@@ -29,7 +29,7 @@ export function RepositorySidebar() {
           if (!open && !selected) return null;
           const key = `workspace:${workspace.workspace_id}`;
           const workspaceOpen = expanded[key] !== false;
-          const label = workspaceLabel(workspace, data.tasks);
+          const label = workspaceLabel(workspace);
           return <section className="workspace-group" key={workspace.workspace_id} aria-label={label}>
             <div className="repository-group-heading workspace-group-heading">
               <button aria-expanded={workspaceOpen} aria-label={`Toggle ${label}`} onClick={() => toggle(key)}>{workspaceOpen ? '▾' : '▸'}</button>
