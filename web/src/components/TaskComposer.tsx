@@ -41,7 +41,10 @@ export function TaskComposer({ workspace }: { workspace: WorkspaceRecord }) {
         {workspace.kind === 'main' && <label>Workspace<select value={isolation} onChange={event => setIsolation(event.target.value)}><option value="auto">Isolate when needed</option><option value="always">New worktree</option><option value="never">Use Main</option></select></label>}
       </div>}
       onSubmit={async prompt => {
-        const settings = kind === 'workflow' ? { workflow, variables: selectedWorkflow?.publication_policy === 'required' ? {} : { create_mr: publish } } : { role: role || undefined, model: model || undefined, effort: effort || undefined, recipe: recipe || undefined };
+        const settings = kind === 'workflow' ? { workflow, variables: {
+          create_mr: selectedWorkflow?.publication_policy === 'required' ||
+            (selectedWorkflow?.publication_policy === 'optional' && publish),
+        } } : { role: role || undefined, model: model || undefined, effort: effort || undefined, recipe: recipe || undefined };
         const payload = { workspace_id: workspace.workspace_id, prompt, kind, isolation, settings };
         const next = JSON.stringify(payload);
         if (fingerprint.current && fingerprint.current !== next) key.current = crypto.randomUUID();
