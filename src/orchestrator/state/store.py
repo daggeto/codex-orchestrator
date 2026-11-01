@@ -229,7 +229,12 @@ class StateStore(OwnershipStore):
         cur = await self._db.execute(
             """UPDATE workflow_runs SET status='accepted', state_json=?, config_json=?,
                completed_at=NULL, updated_at=? WHERE run_id=? AND updated_at=?
-               AND status IN ('failed', 'interrupted', 'cancelled', 'paused')""",
+               AND status IN ('failed', 'interrupted', 'cancelled', 'paused')
+               AND EXISTS (
+                 SELECT 1 FROM tasks t JOIN workspaces w ON w.workspace_id=t.workspace_id
+                 WHERE t.task_id=workflow_runs.task_id AND t.archived_at IS NULL AND w.status='active'
+                 AND NOT EXISTS (SELECT 1 FROM workspace_leases l WHERE l.workspace_id=w.workspace_id)
+               )""",
             (json.dumps(rec.state), json.dumps(rec.config), _now(), rec.run_id, rec.updated_at),
         )
         await self._db.commit()
