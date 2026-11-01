@@ -38,6 +38,9 @@ COMMANDS = (
             "The API port defaults to 8420. The task home registers server projects persistently, "
             "accepts durable tasks asynchronously, and starts a task-owned team. "
             "Browser disconnects leave accepted work running; service shutdown interrupts it. "
+            "Workspace details can merge a captured worktree commit into the checkout holding local main. "
+            "Merge operations persist across reloads, reserve both checkouts against tasks/deletion, "
+            "and restore active status after verified completion; uncertain recovery remains blocked. No remote publication occurs. "
             "Codex backends require lsof and reserve ports across processes using shared per-user locks.",
             ("make start",
              'make start ARGS="--cwd /path/to/repo --roles-dir ./roles --spawn-team architect"')),
@@ -45,9 +48,15 @@ COMMANDS = (
             "Requires a quoted DESCRIPTION inside ARGS. Connects to the service started by make start; "
             "starts task-owned workflow agents, waits for the result, and prints the run ID. "
             "Uses the service's project directory unless --cwd is supplied. --workflow selects a workflow "
-            "(feature by default); --api-url selects another service port. Repeat --var/-v KEY=VALUE for inputs. "
+            "(small-change by default); --api-url selects another service port. Repeat --var/-v KEY=VALUE for inputs. "
+            "small-change uses implementer and reviewer at medium effort, one combined review, and at most one revision. "
+            "Scope escalation or unresolved review stops with a saved report for an explicit follow-up task; it never publishes. "
             "Existing worktrees are reused without switching branches; Main tasks create one when isolation is needed. "
             "All workflow roles share the resolved checkout and a workspace lease. "
+            "Continuing a stopped workflow retains task-owned agents and the workspace lease, and updates the task when execution ends. "
+            "Continuation atomically queues its unarchived task, preventing archive until execution ends. "
+            "Legacy workflow runs without an owning task must restart as workspace tasks. "
+            "Checkouts reserved for a local-main merge or merge recovery reject task execution. "
             "Feature includes UX planning before technical planning. Revisions return directly to code review; "
             "material decisions can request specialist consultation, and substantial UI work can receive a final advisory UX report. "
             "Source inspection leaves visual/usability validation outstanding. "
@@ -57,7 +66,7 @@ COMMANDS = (
             "This command does not start or stop an orchestrator service.",
             ("""make task ARGS='"Add search to the transactions page"'""",
              """make task ARGS='"Investigate slow imports" --workflow research --api-url http://127.0.0.1:8421'""",
-             """make task ARGS='"Add OAuth login" -v create_mr=true -v mr_base=main'""")),
+             """make task ARGS='"Add OAuth login" --workflow feature -v create_mr=true -v mr_base=main'""")),
     Command("roles", "List available role definitions and models.", "orch", ("roles",),
             "Reads role definitions from the configured roles directory and project roles directory.",
             ("make roles",)),
@@ -67,7 +76,7 @@ COMMANDS = (
     Command("team", "Spawn a team using the supplied role names.", "orch", ("team",),
             "Pass space-separated roles, or omit them to use configured defaults. This CLI invocation stops "
             "its orchestrator on completion; use start --spawn-team for a long-running team. "
-            "Feature workflows discover required roles automatically, including read-only senior-ux-designer.",
+            "Workflows discover their teams automatically: ui-small uses UX designer, implementer, reviewer and QA; backend-feature uses architect, implementer, reviewer and QA.",
             ('make team ARGS="senior-ux-designer architect implementer reviewer"',)),
     Command("send", "Send a message to an agent by role.", "orch", ("send",),
             "Requires ROLE MESSAGE. Starts a saved non-task agent for the role on demand inside a leased task in a Git checkout; unavailable workspaces reject execution. Interrupted turns can continue from their task page using the saved session. Task-owned agents use task messaging. Quote the message inside ARGS to preserve it as one argument. "
@@ -90,18 +99,22 @@ COMMANDS = (
             "Requires AGENT_ID MESSAGE. Starts the selected saved non-task agent on demand inside a leased task in a Git checkout. Records task participation and retains continuation settings after interruption. Use --thread/-t to resume a thread and --cwd to set its working directory.",
             ("""make agent-send ARGS='design-agent "Continue the design" --thread THREAD_ID --cwd /path/to/repo'""",)),
     Command("workflow-list", "List workflows and their step counts.", "orch", ("workflow", "list"),
-            "Built-ins are feature, bugfix, review, research, and pr-completion.",
+            "Built-ins are small-change, feature, bugfix, review, research, and pr-completion.",
             ("make workflow-list",)),
     Command("workflow-run", "Run a named workflow with variables and a target directory.", "orch", ("workflow", "run"),
             "Requires NAME. Repeat --var/-v KEY=VALUE for workflow inputs. --cwd sets the target repository; "
             "--roles-dir selects role definitions independently. Required roles are started within the owning task. "
+            "small-change implements directly, combines correctness and usability review, permits one revision, "
+            "and generates its summary without another model call. It never publishes. Scope escalation or "
+            "unresolved findings stop at a saved failed checkpoint; inspect the report and submit a narrower task "
+            "or explicitly select feature. Continuing that checkpoint does not authorize additional implementation. "
             "pr-completion starts implementer and reviewer, publishes committed changes, "
             "and monitors/repairs CI. feature runs UX planning, technical planning, then implementation and code review. "
             "Revisions return directly to code review; only material decisions trigger a scoped UX or architecture consultation. "
             "Substantial UI work can receive one final advisory UX report: violations remain unresolved follow-up work "
             "without another revision cycle. Completion compiles saved reports without another architect assignment. "
             "Source inspection does not establish visual/usability validation. Optional feature publication "
-            "requires code approval for the current clean commit, not UX approval. Incomplete agent turns and dirty handoffs cannot enter review. feature, bugfix, and pr-completion "
+            "requires code approval for the current clean commit, not UX approval. Incomplete agent turns and dirty handoffs cannot enter review. small-change, feature, bugfix, and pr-completion "
             "reuse a selected worktree or create one from Main, shared by implementation, review, QA, and publication. "
             "Review uses the selected publication target even when the task branch differs. "
             "Existing PR/MR source and target branches are resolved before isolation and preserved when publishing from the task checkout. "
@@ -144,8 +157,8 @@ COMMANDS = (
     Command("dev", "Start repository navigation, task conversations, and the monitor.", "npm", ("run", "dev"),
             "Runs Vite in web/ with compact task navigation, a reversible task Archive, and task-scoped participant history. "
             "Worktree removal remains a separate confirmed operation. Start make start in another terminal for the API on port 8420. "
-            "The development server proxies /api and /health to that API. Task home defaults feature "
-            "submissions to local commits (create_mr=false); publication is opt-in for feature and "
+            "The development server proxies /api and /health to that API. Task home defaults to small-change "
+            "with local commits and no publication. ui-small adds brief UX assessment and review; backend-feature omits UX stages and discloses UI edits. Implementation workflows finish with applicable QA checks and at most one validation repair. Publication is opt-in for feature/backend-feature and "
             "required for pr-completion. The monitor remains read-only.",
             ("make dev", 'make dev ARGS="--port 5174"')),
     Command("preview", "Serve the production web build locally.", "npm", ("run", "preview"),

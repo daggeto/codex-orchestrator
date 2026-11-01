@@ -225,15 +225,40 @@ class StateStore(OwnershipStore):
     # ── Agents ──────────────────────────────────────────────────────────
 
     async def claim_workflow_continuation(self, rec: WorkflowRunRecord) -> bool:
-        """Compare-and-set prevents concurrent requests from resuming twice."""
-        cur = await self._db.execute(
-            """UPDATE workflow_runs SET status='accepted', state_json=?, config_json=?,
-               completed_at=NULL, updated_at=? WHERE run_id=? AND updated_at=?
-               AND status IN ('failed', 'interrupted', 'cancelled', 'paused')""",
-            (json.dumps(rec.state), json.dumps(rec.config), _now(), rec.run_id, rec.updated_at),
-        )
-        await self._db.commit()
-        return cur.rowcount == 1
+        """Claim the run and queue its task atomically against archive requests."""
+        # A dedicated connection keeps unrelated shared-connection commits from
+        # exposing only half of this reservation.
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute('BEGIN IMMEDIATE')
+            try:
+                timestamp = _now()
+                cur = await db.execute(
+                    """UPDATE workflow_runs SET status='accepted', state_json=?, config_json=?,
+                       completed_at=NULL, updated_at=? WHERE run_id=? AND updated_at=?
+                       AND status IN ('failed', 'interrupted', 'cancelled', 'paused')
+                       AND EXISTS (
+                         SELECT 1 FROM tasks t JOIN workspaces w ON w.workspace_id=t.workspace_id
+                         WHERE t.task_id=workflow_runs.task_id AND t.archived_at IS NULL AND w.status='active'
+                         AND NOT EXISTS (SELECT 1 FROM workspace_leases l WHERE l.workspace_id=w.workspace_id)
+                       )""",
+                    (json.dumps(rec.state), json.dumps(rec.config), timestamp, rec.run_id, rec.updated_at),
+                )
+                if cur.rowcount != 1:
+                    await db.rollback()
+                    return False
+                task = await db.execute(
+                    """UPDATE tasks SET status='queued', phase='Continuation accepted',
+                       completed_at=NULL, updated_at=?
+                       WHERE task_id=(SELECT task_id FROM workflow_runs WHERE run_id=?)
+                       AND archived_at IS NULL""", (timestamp, rec.run_id))
+                if task.rowcount != 1:
+                    await db.rollback()
+                    return False
+                await db.commit()
+                return True
+            except BaseException:
+                await db.rollback()
+                raise
 
     async def save_agent(self, rec: AgentRecord):
         await self._db.execute(

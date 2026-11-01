@@ -99,6 +99,8 @@ async def get_run(request):
         reason = "Only stopped runs can continue"
     elif workflow is None:
         reason = "Workflow definition unavailable"
+    elif not await request.app['orch'].store.one('SELECT task_id FROM workflow_runs WHERE run_id=? AND task_id IS NOT NULL', (record.run_id,)):
+        reason = "This legacy workflow has no owning task; start a new workspace task"
     else:
         from orchestrator.workflows.engine import continuation_checkpoint
         try:
@@ -122,6 +124,11 @@ async def continue_run(request):
 
 
 async def accept_continuation(request):
+    async with request.app['orch'].tasks.accept_lock:
+        return await _accept_continuation(request)
+
+
+async def _accept_continuation(request):
     orch = request.app["orch"]
     try:
         body = await request.json()
@@ -141,6 +148,22 @@ async def accept_continuation(request):
             raise ValueError("Workflow definition unavailable")
         from orchestrator.workflows.engine import continuation_checkpoint
         checkpoint = continuation_checkpoint(workflow, record)
+        task = await orch.store.one('SELECT * FROM tasks WHERE task_id=(SELECT task_id FROM workflow_runs WHERE run_id=?)', (record.run_id,))
+        if not task:
+            return web.json_response({'error': 'This legacy workflow has no owning task; start a new workspace task'}, status=409)
+        if task:
+            from orchestrator.processes import owner_alive
+            if task['task_id'] in orch.tasks.running:
+                return web.json_response({'error': 'Task execution is still stopping; retry shortly'}, status=409)
+            if task['owner_pid'] and task['owner_pid'] != orch.tasks.owner_pid and owner_alive(task['owner_pid'], task['owner_started']):
+                return web.json_response({'error': 'Task belongs to another live service'}, status=409)
+            workspace = await orch.store.workspace_record(task['workspace_id'])
+            if workspace and workspace['status'] in {'merging', 'merge_recovery_required'}:
+                return web.json_response({'error': 'Workspace is reserved for merging or merge recovery; continue after it is released'}, status=409)
+            if not workspace or workspace['status'] != 'active' or task['archived_at']:
+                return web.json_response({'error': 'Task workspace or archived task is unavailable for continuation'}, status=409)
+            if await orch.store.one('SELECT 1 FROM workspace_leases WHERE workspace_id=?', (workspace['workspace_id'],)):
+                return web.json_response({'error': 'Workspace is already executing another task'}, status=409)
         iteration_limit = record.config.get("iteration_limit", workflow.max_iterations)
         additional_steps = body.get("additional_steps", 0)
         if type(additional_steps) is not int or additional_steps not in (0, 20):
@@ -153,7 +176,8 @@ async def accept_continuation(request):
             raise ValueError("The current step budget has not been reached")
         record.config["iteration_limit"] = iteration_limit + additional_steps
         variables = checkpoint["variables"]
-        normalize_directory(variables.get("cwd"))
+        if normalize_directory(variables.get("cwd")) != normalize_directory(workspace['path']):
+            raise ValueError('Saved workflow directory does not match its owning task workspace')
         if variables.get("task_worktree"):
             from orchestrator.workflows.merge_request import _run
             root = normalize_directory(variables["task_worktree"])
@@ -172,11 +196,14 @@ async def accept_continuation(request):
         if not await orch.store.claim_workflow_continuation(record):
             latest = await orch.store.get_workflow_run(record.run_id)
             if not latest or not any(a["request_id"] == token for a in latest.state.get("continuations", [])):
+                workspace = await orch.store.workspace_record(task['workspace_id'])
+                if workspace and workspace['status'] in {'merging', 'merge_recovery_required'}:
+                    return web.json_response({'error': 'Workspace is reserved for merging or merge recovery; continue after it is released'}, status=409)
                 return web.json_response({"error": "Run changed; refresh before continuing"}, status=409)
         else:
             record.status = "accepted"
             record.completed_at = None
-            own_task(request.app, execute(request.app, workflow, record, continuing=True))
+            orch.tasks.schedule(task['task_id'], orch.tasks.execute(task['task_id'], continuation=record))
         return web.json_response({"run_id": record.run_id}, status=202)
     except (ValueError, OSError, RuntimeError, KeyError) as exc:
         return web.json_response({"error": str(exc)}, status=400)

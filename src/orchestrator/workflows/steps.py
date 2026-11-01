@@ -60,6 +60,7 @@ class AssignStep(Step):
         output_key: str = "response",
         next_step: str | None = None,
         stable_snapshot: bool = False,
+        thread_key: str | None = None,
         **kwargs,
     ):
         super().__init__(step_id, **kwargs)
@@ -70,6 +71,8 @@ class AssignStep(Step):
         self.output_key = output_key
         self.next_step = next_step
         self.stable_snapshot = stable_snapshot
+        if thread_key is not None:
+            self.thread_key = thread_key
 
     async def execute(self, ctx: WorkflowContext) -> StepResult:
         agent = ctx.get_agent_for_role(self.role)
@@ -92,7 +95,7 @@ class AssignStep(Step):
             before = await task_snapshot(ctx) if self.stable_snapshot else None
         except (OSError, RuntimeError, ValueError) as exc:
             return StepResult(success=False, error=str(exc))
-        thread = await ctx.acquire_thread(agent, self.step_id, cwd=cwd, model=self.model)
+        thread = await ctx.acquire_thread(agent, getattr(self, 'thread_key', None) or self.step_id, cwd=cwd, model=self.model)
 
         await ctx.persist_step_thread(agent, thread)
         result = await agent.send_message(thread, message, model=self.model)
@@ -143,6 +146,7 @@ class ReviewStep(Step):
         output_namespace: str = "review",
         strict_decision: bool = False,
         advisory: bool = False,
+        thread_key: str | None = None,
         **kwargs,
     ):
         super().__init__(step_id, **kwargs)
@@ -156,6 +160,8 @@ class ReviewStep(Step):
         self.output_namespace = output_namespace
         self.strict_decision = strict_decision
         self.advisory = advisory
+        if thread_key is not None:
+            self.thread_key = thread_key
 
     async def execute(self, ctx: WorkflowContext) -> StepResult:
         agent = ctx.get_agent_for_role(self.role)
@@ -165,7 +171,7 @@ class ReviewStep(Step):
         source = ctx.variables.get(self.source_key, "")
         message = self.review_template.format(**{**ctx.variables, "source": source})
 
-        thread = await ctx.acquire_thread(agent, self.step_id, cwd=ctx.variables.get("cwd"))
+        thread = await ctx.acquire_thread(agent, getattr(self, 'thread_key', None) or self.step_id, cwd=ctx.variables.get("cwd"))
 
         reviewed = {}
         if ctx.variables.get("task_worktree"):

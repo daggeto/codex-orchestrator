@@ -10,7 +10,7 @@ import type { Role, WorkflowDefinition, WorkspaceRecord } from '../types';
 export function TaskComposer({ workspace }: { workspace: WorkspaceRecord }) {
   const navigate = useNavigate();
   const [kind, setKind] = useState('workflow');
-  const [workflow, setWorkflow] = useState('feature');
+  const [workflow, setWorkflow] = useState('small-change');
   const [role, setRole] = useState('');
   const [model, setModel] = useState('');
   const [effort, setEffort] = useState('');
@@ -30,6 +30,8 @@ export function TaskComposer({ workspace }: { workspace: WorkspaceRecord }) {
         <label>Execution<select value={kind} onChange={event => setKind(event.target.value)}><option value="workflow">Workflow</option><option value="agent">Agent conversation</option></select></label>
         {kind === 'workflow' ? <><label>Workflow<select value={workflow} onChange={event => setWorkflow(event.target.value)}>
           {workflows.data?.workflows.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+          <p>{selectedWorkflow?.description}</p>
+          <p>Team: {selectedWorkflow?.required_roles.join(', ')}</p>
           {selectedWorkflow?.publication_policy === 'optional' && <label><input type="checkbox" checked={publish} onChange={event => setPublish(event.target.checked)} />Create draft PR/MR</label>}
           {selectedWorkflow?.publication_policy === 'required' && <p>This workflow publishes the approved commits.</p>}</> : <>
           <label>Role<select value={role} onChange={event => { setRole(event.target.value); setRecipe(''); }}><option value="">Default Codex</option>{roles.data?.roles.map(item => <option key={item.name}>{item.name}</option>)}</select></label>
@@ -40,7 +42,10 @@ export function TaskComposer({ workspace }: { workspace: WorkspaceRecord }) {
         {workspace.kind === 'main' && <label>Workspace<select value={isolation} onChange={event => setIsolation(event.target.value)}><option value="auto">Isolate when needed</option><option value="always">New worktree</option><option value="never">Use Main</option></select></label>}
       </div>}
       onSubmit={async prompt => {
-        const settings = kind === 'workflow' ? { workflow, variables: selectedWorkflow?.publication_policy === 'required' ? {} : { create_mr: publish } } : { role: role || undefined, model: model || undefined, effort: effort || undefined, recipe: recipe || undefined };
+        const settings = kind === 'workflow' ? { workflow, variables: {
+          create_mr: selectedWorkflow?.publication_policy === 'required' ||
+            (selectedWorkflow?.publication_policy === 'optional' && publish),
+        } } : { role: role || undefined, model: model || undefined, effort: effort || undefined, recipe: recipe || undefined };
         const payload = { workspace_id: workspace.workspace_id, prompt, kind, isolation, settings };
         const next = JSON.stringify(payload);
         if (fingerprint.current && fingerprint.current !== next) key.current = crypto.randomUUID();

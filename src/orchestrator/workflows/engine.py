@@ -119,6 +119,7 @@ class Workflow:
     max_iterations: int = 20  # initial step budget; extensions require approval
 
     publication_policy: str = "none"
+    role_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def required_roles(self) -> list[str]:
@@ -160,7 +161,10 @@ class Workflow:
             if isinstance(value, (list, tuple)):
                 return [describe(v) for v in value]
             return value
-        return hashlib.sha256(json.dumps(describe(self.steps), sort_keys=True).encode()).hexdigest()
+        definition = describe(self.steps)
+        if self.role_overrides:
+            definition = {"steps": definition, "role_overrides": self.role_overrides}
+        return hashlib.sha256(json.dumps(definition, sort_keys=True).encode()).hexdigest()
 
 
 def continuation_checkpoint(workflow, record):

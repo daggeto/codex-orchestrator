@@ -98,6 +98,8 @@ class ArchiveService:
                 raise LookupError('Workspace not found')
             if workspace['kind'] != 'worktree':
                 raise Conflict('Main folders cannot be deleted')
+            if workspace['status'] in {'merging', 'merge_recovery_required'}:
+                raise Conflict('Workspace is reserved for merging or merge recovery')
             if workspace['status'] == 'archived':
                 raise Conflict('Workspace is already archived')
             if workspace['status'] == 'archiving':
@@ -107,7 +109,7 @@ class ArchiveService:
             if workspace_id in self.running:
                 raise Conflict('Deletion is already running')
             aid = uuid.uuid4().hex
-            claimed = await self.store.write("UPDATE workspaces SET status='archiving',updated_at=? WHERE workspace_id=? AND updated_at=?", (now(), workspace_id, workspace['updated_at']))
+            claimed = await self.store.write("UPDATE workspaces SET status='archiving',updated_at=? WHERE workspace_id=? AND updated_at=? AND status NOT IN ('merging','merge_recovery_required')", (now(), workspace_id, workspace['updated_at']))
             if not claimed:
                 raise Conflict('Workspace changed while deletion was being requested; retry')
             self.running[workspace_id] = aid

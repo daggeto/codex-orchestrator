@@ -13,13 +13,13 @@ Working directory: {cwd}
 
 Requirements:
 - Maintain all existing behavior
-- Run tests before AND after changes
+- Follow repository validation policy; in workflows defer checks to final QA validation
 - Make one logical change per commit
 - Do not change public interfaces unless explicitly requested
 
 Report:
 - Files changed with description
-- Test results before and after
+- Checks actually run and pending validation
 - Commit hash(es)
 - Any risks or breaking changes"""
 
@@ -34,6 +34,6 @@ output_expectations = [
 ]
 
 verification = [
-    "Tests pass after refactor",
+    "Validation status is reported accurately",
     "Changes committed"
 ]

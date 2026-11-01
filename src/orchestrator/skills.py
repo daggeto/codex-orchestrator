@@ -101,14 +101,14 @@ BUILTIN_SKILLS = [
         prompt_template=(
             "Implement the following plan:\n\n{plan}\n\n"
             "Working directory: {cwd}\n\n"
-            "Execute each step. After each step, report:\n"
+            "Implement without per-step check loops. In workflows defer automated checks to final QA. Report:\n"
             "- Files changed\n"
             "- Tests run and results\n"
             "- Any issues encountered"
         ),
         input_schema={"plan": "Implementation plan", "cwd": "Working directory"},
         output_expectations=["file changes", "test results", "commit hashes"],
-        verification=["Files actually changed", "Tests pass"],
+        verification=["Files actually changed", "Validation status reported"],
     ),
     SkillConfig(
         name="investigate-bug",

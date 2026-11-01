@@ -65,6 +65,8 @@ class FeatureSummaryStep(Step):
                 sections.append(label + ":\n" + v[key])
         if not v.get("ux_report_text"):
             sections.append("Final UX report was not required for this task.")
+        if v.get("validation_summary"):
+            sections.append("Final automated checks:\n" + v["validation_summary"])
         sections.append("Validation: source approval does not establish automated or browser acceptance. "
                         "Checks actually run and outstanding validation are recorded in the implementation and review reports. "
                         "UX findings above remain follow-up work; they were not automatically fixed.")

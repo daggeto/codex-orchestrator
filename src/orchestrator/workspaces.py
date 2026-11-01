@@ -32,7 +32,7 @@ class WorkspaceService:
         except Exception as exc:
             raise Conflict('Workspace is already executing another task') from exc
         if not claimed:
-            raise Conflict('Workspace is being archived or unavailable')
+            raise Conflict('Workspace is merging, awaiting merge recovery, being archived, or unavailable')
 
     async def backends_stopped(self, lease):
         workspace = await self.store.workspace_record(lease['workspace_id'])
@@ -60,12 +60,18 @@ class WorkspaceService:
     async def register(self, path):
         root = await _run(str(Path(path).expanduser().resolve()), 'git', 'rev-parse', '--show-toplevel')
         common = await _run(root, 'git', 'rev-parse', '--path-format=absolute', '--git-common-dir')
-        output = await _run(root, 'git', 'worktree', 'list', '--porcelain')
-        entries = []
-        for block in output.split('\n\n'):
-            fields = dict(line.split(' ', 1) if ' ' in line else (line, '') for line in block.splitlines())
-            if fields.get('worktree'):
-                entries.append(fields)
+        output = await _run(root, 'git', 'worktree', 'list', '--porcelain', '-z')
+        entries, fields = [], {}
+        for field in output.split('\0'):
+            if not field:
+                if fields.get('worktree'):
+                    entries.append(fields)
+                fields = {}
+            else:
+                key, _, value = field.partition(' ')
+                fields[key] = value
+        if fields.get('worktree'):
+            entries.append(fields)
         main = str(Path(entries[0]['worktree']).resolve())
         record = await self.store.one('SELECT * FROM repositories WHERE common_dir=?', (common,))
         rid = record['repository_id'] if record else uuid.uuid4().hex
@@ -131,7 +137,13 @@ class WorkspaceService:
             lease = await self.store.one('SELECT * FROM workspace_leases WHERE task_id=?', (task['task_id'],))
             if lease or (task['owner_pid'] and owner_alive(task['owner_pid'], task['owner_started'])):
                 continue
-            await self.store.task_status(task['task_id'], 'interrupted', 'Owner stopped; continue explicitly')
+            run = await self.store.one('SELECT * FROM workflow_runs WHERE task_id=? ORDER BY updated_at DESC LIMIT 1', (task['task_id'],))
+            if run and run['status'] in {'completed', 'failed', 'cancelled', 'interrupted', 'paused'}:
+                status = 'interrupted' if run['status'] == 'paused' else run['status']
+                phase = run['state'].get('error') or run['state'].get('phase') or status
+                await self.store.task_status(task['task_id'], status, phase)
+            else:
+                await self.store.task_status(task['task_id'], 'interrupted', 'Owner stopped; continue explicitly')
             await self.store.write("UPDATE input_requests SET status='expired',updated_at=? WHERE task_id=? AND status='pending'", (now(), task['task_id']))
             await self.store.write("UPDATE step_executions SET status='interrupted',updated_at=? WHERE task_id=? AND status='active'", (now(), task['task_id']))
         for archive in await self.store.rows("SELECT * FROM archives WHERE stage NOT IN ('archived','failed','interrupted')"):
@@ -150,7 +162,7 @@ class WorkspaceService:
             task = await self.store.task(task_id)
             workspace = await self.store.workspace_record(task['workspace_id'])
             if workspace['status'] != 'active':
-                raise RuntimeError('Workspace is unavailable or being archived')
+                raise RuntimeError('Workspace is merging, awaiting merge recovery, being archived, or unavailable')
             if not Path(workspace['path']).is_dir():
                 raise RuntimeError('Workspace directory is unavailable')
             if workspace['kind'] == 'main' and isolate:

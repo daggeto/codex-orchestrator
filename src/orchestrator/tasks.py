@@ -103,14 +103,20 @@ class TaskService:
             if not workspace:
                 raise LookupError('Workspace not found')
             if workspace['status'] != 'active':
-                raise Conflict('Workspace is being archived or unavailable')
+                raise Conflict('Workspace is merging, awaiting merge recovery, being archived, or unavailable')
             if kind == 'workflow':
-                workflow = self.orch.workflows.get(settings.get('workflow', 'feature'))
+                workflow = self.orch.workflows.get(settings.get('workflow', 'small-change'))
                 if not workflow:
                     raise ValueError('Unknown workflow')
                 settings['workflow'] = workflow.name
                 settings['roles'] = {name: self.role({'role': name}) for name in workflow.required_roles}
+                for name, overrides in workflow.role_overrides.items():
+                    role = settings['roles'][name]
+                    role.update({key: value for key, value in overrides.items() if key != 'config_overrides'})
+                    role['config_overrides'].update(overrides.get('config_overrides', {}))
                 variables = settings.setdefault('variables', {})
+                if workflow.name in {'small-change', 'ui-small'} and str(variables.get('create_mr', False)).lower() not in {'false', '0', 'no'}:
+                    raise ValueError('This local workflow never publishes; select feature or backend-feature for PR/MR publication')
                 if workflow.publication_policy == 'optional':
                     variables.setdefault('create_mr', False)
                 if workflow.publication_policy == 'required' and str(variables.get('create_mr', True)).lower() in {'false','0','no'}:
@@ -122,8 +128,10 @@ class TaskService:
             settings['isolate'] = isolate
             # Time-prefixed identities give task history a stable pagination cursor.
             tid = now() + '-' + uuid.uuid4().hex[:12]
-            await self.store.write('INSERT INTO tasks (task_id,workspace_id,title,prompt,kind,settings_json,idempotency_key,fingerprint,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-                                   (tid, workspace_id, prompt.splitlines()[0][:100], prompt, kind, json.dumps(settings), idempotency_key, fingerprint, now(), now()))
+            claimed = await self.store.write("INSERT INTO tasks (task_id,workspace_id,title,prompt,kind,settings_json,idempotency_key,fingerprint,created_at,updated_at) SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM workspaces WHERE workspace_id=? AND status='active')",
+                                   (tid, workspace_id, prompt.splitlines()[0][:100], prompt, kind, json.dumps(settings), idempotency_key, fingerprint, now(), now(), workspace_id))
+            if not claimed:
+                raise Conflict('Workspace is reserved for merging, recovery, or archiving')
             await self.store.write('UPDATE tasks SET owner_pid=?,owner_started=? WHERE task_id=?',
                                    (self.owner_pid, self.owner_started, tid))
             self.schedule(tid, self.execute(tid))
@@ -151,15 +159,17 @@ class TaskService:
         async with self.accept_lock:
             workspace = await self.store.one('SELECT * FROM workspaces WHERE path=?', (root,))
             if not workspace or workspace['status'] != 'active':
-                raise Conflict('Workspace is being archived or unavailable')
+                raise Conflict('Workspace is merging, awaiting merge recovery, being archived, or unavailable')
             tid = now() + '-' + uuid.uuid4().hex[:12]
-            await self.store.write(
-                'INSERT INTO tasks (task_id,workspace_id,title,prompt,kind,settings_json,fingerprint,created_at,updated_at,owner_pid,owner_started) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+            claimed = await self.store.write(
+                "INSERT INTO tasks (task_id,workspace_id,title,prompt,kind,settings_json,fingerprint,created_at,updated_at,owner_pid,owner_started) SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM workspaces WHERE workspace_id=? AND status='active')",
                 (tid, workspace['workspace_id'], message.splitlines()[0][:100], message, 'agent',
                  json.dumps({'legacy_agent_id': agent.agent_id, 'legacy_thread_id': thread_id,
                              'legacy_supervised': supervised, 'legacy_cwd': cwd or root,
                              'isolate': False, 'effective_role': asdict(agent.role)}),
-                 '', now(), now(), self.owner_pid, self.owner_started))
+                 '', now(), now(), self.owner_pid, self.owner_started, workspace['workspace_id']))
+            if not claimed:
+                raise Conflict('Workspace is reserved for merging, recovery, or archiving')
             await self.store.participate(tid, agent.agent_id)
             job = self.schedule(tid, self._execute_legacy(tid, workspace, agent, operation, cwd or root))
         return await asyncio.shield(job)
@@ -201,7 +211,7 @@ class TaskService:
                     if started:
                         agent.task_id = None
 
-    async def execute(self, task_id, message=None):
+    async def execute(self, task_id, message=None, continuation=None):
         workspace = None
         owned = False
         leased = False
@@ -209,7 +219,7 @@ class TaskService:
         acquired = False
         try:
             task = await self.store.task(task_id)
-            if task_id in self.cancelling or task['status'] in TERMINAL:
+            if task['archived_at'] or task_id in self.cancelling or (task['status'] in TERMINAL and continuation is None):
                 return
             if task['owner_pid'] and task['owner_pid'] != self.owner_pid and owner_alive(task['owner_pid'], task['owner_started']):
                 return
@@ -218,7 +228,8 @@ class TaskService:
             if not claimed:
                 return
             owned = True
-            await self.store.task_status(task_id, 'queued', 'Preparing workspace', expected=('queued','active','interrupted'))
+            await self.store.task_status(task_id, 'queued', 'Preparing workspace',
+                                         expected=(task['status'],) if continuation else ('queued','active','interrupted'))
             settings = task['settings']
             if settings.get('legacy_agent_id'):
                 agent = await self.orch.registry.materialize(settings['legacy_agent_id'])
@@ -236,7 +247,7 @@ class TaskService:
                 await self._execute_legacy(task_id, workspace, agent, operation, cwd)
                 return
             await self.store.write('UPDATE tasks SET last_turn_json=NULL WHERE task_id=?', (task_id,))
-            if task['kind'] == 'workflow' and str(settings.get('variables', {}).get('create_mr', True)).lower() not in {'false','0','no'}:
+            if continuation is None and task['kind'] == 'workflow' and str(settings.get('variables', {}).get('create_mr', True)).lower() not in {'false','0','no'}:
                 workflow = self.orch.workflows[settings['workflow']]
                 if workflow.publication_policy in {'required', 'optional'}:
                     source = await self.store.workspace_record(task['workspace_id'])
@@ -244,25 +255,32 @@ class TaskService:
                     if not variables.get('publication_source'):
                         variables['publication_source'] = await resolve_publication_identity(source['path'], variables)
                         await self.store.write('UPDATE tasks SET settings_json=? WHERE task_id=?', (json.dumps(settings), task_id))
-            workspace = await self.orch.workspaces.ensure_task_workspace(task_id, task['settings']['isolate'])
+            workspace = (await self.store.workspace_record(task['workspace_id']) if continuation else
+                         await self.orch.workspaces.ensure_task_workspace(task_id, task['settings']['isolate']))
             lock = self.orch.workspaces.lock(workspace['workspace_id'])
             await lock.acquire()
             acquired = True
             latest = await self.store.workspace_record(workspace['workspace_id'])
             if latest['status'] != 'active':
-                raise Conflict('Workspace is being archived')
+                raise Conflict('Workspace is merging, awaiting merge recovery, or being archived')
             await self.orch.workspaces.claim_lease(workspace['workspace_id'], task_id, self.owner_pid, self.owner_started)
             leased = True
             await self.store.task_status(task_id, 'active', 'Starting agents', expected=('queued',))
             if task['kind'] == 'workflow':
                 settings = task['settings']
-                team = await self.orch.spawn_team(list(settings['roles']), task_id=task_id, configurations=settings['roles'])
+                roles = settings.get('roles') or {name: self.role({'role': name}) for name in self.orch.workflows[settings['workflow']].required_roles}
+                team = await self.orch.spawn_team(list(roles), task_id=task_id, configurations=roles)
                 variables = {**settings.get('variables', {}), 'task_description': task['prompt'],
                              'cwd': workspace['path'], 'workspace_resolved': True, 'task_id': task_id, 'workspace_kind': workspace['kind']}
-                run = WorkflowRunRecord(run_id=task.get("idempotency_key") or uuid.uuid4().hex, workflow_name=settings['workflow'], status='accepted', config={'variables': variables}, state={'team': team})
-                await self.store.reserve_workflow_run(run)
+                run = continuation or WorkflowRunRecord(run_id=task.get("idempotency_key") or uuid.uuid4().hex, workflow_name=settings['workflow'], status='accepted', config={'variables': variables}, state={'team': team})
+                if continuation:
+                    run.state['team'] = team
+                    run.state['checkpoint']['variables']['task_id'] = task_id
+                    await self.store.save_workflow_run(run)
+                else:
+                    await self.store.reserve_workflow_run(run)
                 await self.store.write('UPDATE workflow_runs SET task_id=? WHERE run_id=?', (task_id, run.run_id))
-                result = await self.orch.engine.run(self.orch.workflows[settings['workflow']], variables, run.run_id, accepted=True)
+                result = await self.orch.engine.run(self.orch.workflows[settings['workflow']], variables, run.run_id, accepted=True, continuing=continuation is not None)
                 await self.store.task_status(task_id, 'completed' if result.success else 'failed', 'Completed' if result.success else result.error or 'Workflow failed', expected=('active','waiting_input'))
             else:
                 agents = await self.store.rows('SELECT * FROM agents WHERE task_id=? ORDER BY created_at', (task_id,))
@@ -290,6 +308,14 @@ class TaskService:
                 await self.store.task_status(task_id, 'failed', str(exc), expected=('queued','active','waiting_input'))
         finally:
             try:
+                if continuation and owned:
+                    latest_run = await self.store.get_workflow_run(continuation.run_id)
+                    if latest_run and latest_run.status in {'accepted', 'starting', 'running'}:
+                        latest_task = await self.store.task(task_id)
+                        latest_run.status = latest_task['status']
+                        latest_run.state.update(phase=latest_task['status'], error=latest_task['phase'])
+                        latest_run.completed_at = now()
+                        await self.store.save_workflow_run(latest_run)
                 for record in (await self.store.rows('SELECT agent_id FROM agents WHERE task_id=?', (task_id,)) if owned else []):
                     if self.orch.registry.get_agent(record['agent_id']):
                         await self.orch.registry.stop_agent(record['agent_id'])
@@ -305,6 +331,8 @@ class TaskService:
             if not task:
                 raise LookupError('Task not found')
             workspace = await self.store.workspace_record(task['workspace_id'])
+            if workspace['status'] in {'merging', 'merge_recovery_required'}:
+                raise Conflict('Workspace is reserved for merging or merge recovery; continue after it is released')
             if task['kind'] != 'agent' or task['status'] in TERMINAL or workspace['status'] != 'active':
                 raise Conflict('Task cannot receive messages')
             if task['owner_pid'] and task['owner_pid'] != self.owner_pid and owner_alive(task['owner_pid'], task['owner_started']):
@@ -335,7 +363,7 @@ class TaskService:
                 raise Conflict('Finish or cancel the active turn before completing the session')
             workspace = await self.store.workspace_record(task['workspace_id'])
             if workspace['status'] != 'active':
-                raise Conflict('Workspace is unavailable')
+                raise Conflict('Workspace is merging, awaiting merge recovery, or unavailable')
             await self.store.task_status(task_id, 'completed', 'Manually completed')
 
     async def cancel(self, task_id):

@@ -43,6 +43,8 @@ Respect repository validation restrictions; source review does not establish
 automated or browser acceptance. Final advisory UX findings are follow-up work
 and must not start another revision cycle.
 
+Respect repository validation restrictions. In implementation workflows, perform source review only; final QA owns tests, typecheck and lint. Source approval does not establish automated or browser acceptance.
+
 Be specific in feedback. Reference file paths and line numbers."""
 
 [role.features]

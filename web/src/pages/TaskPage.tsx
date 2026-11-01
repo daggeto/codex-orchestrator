@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
-import { useParams } from 'react-router';
+import { useNavigate, useParams } from 'react-router';
 import { post } from '../api';
 import { useNavigation } from '../navigation';
 import { useResource } from '../useResource';
 import type { InputRequest, TaskView } from '../types';
+import { ContinueRun, RestartRun } from '../components/WorkflowRecovery';
 import { WorkflowTimeline } from '../components/WorkflowTimeline';
 import { AgentHistory } from '../components/AgentConversation';
 import { Chat } from '../components/Chat';
@@ -19,6 +20,7 @@ export function TaskPage() {
 function TaskContent({ taskId }: { taskId: string }) {
   const { data, error, refresh } = useResource<TaskView>(`/api/tasks/${encodeURIComponent(taskId)}`);
   const navigation = useNavigation();
+  const navigate = useNavigate();
   const [failure, setFailure] = useState('');
   const [pending, setPending] = useState('');
   const lock = useRef(false);
@@ -47,6 +49,11 @@ function TaskContent({ taskId }: { taskId: string }) {
   return <section className="task-page"><TaskContext task={task} />
     {error && <p className="error" role="alert">{error} · Showing saved task state.</p>}
     {report && <details open className="execution-details"><summary>Implementation report and follow-up work</summary><MessageContent text={report} /></details>}
+    {workflow && ['interrupted', 'failed', 'cancelled', 'paused'].includes(workflow.status) && <section aria-label="Workflow recovery">
+      <ContinueRun key={`continue:${workflow.run_id}:${workflow.updated_at}`} run={workflow} disabled={!!error || !!pending} />
+      <RestartRun key={`restart:${workflow.run_id}`} run={workflow} disabled={!!error || !!pending}
+        select={(_runId, newTaskId) => navigate(newTaskId ? `/tasks/${encodeURIComponent(newTaskId)}` : '/monitor')} />
+    </section>}
     <ParticipantStrip agents={agents} taskId={task.task_id} selected={participant?.agent_id} onSelect={setSelected} />
     {[...retained, ...pending_input.filter(input => !retained.some(old => old.request_id === input.request_id))].filter(input => !dismissed.includes(input.request_id)).map(input => <PendingInput key={input.request_id} input={input} inactive={!pending_input.some(active => active.request_id === input.request_id)} onDismiss={() => setDismissed(previous => [...previous, input.request_id])} onResolved={() => { setDismissed(previous => [...previous, input.request_id]); refresh(); }} />)}
     <section className="conversation-panel" aria-label="Task conversation">{participant ? <AgentHistory key={`${task.task_id}:${participant.agent_id}`} agentId={participant.agent_id} taskId={task.task_id} label={participant.role} /> : <ResourceState>{closed ? 'No recorded agent conversation.' : 'Waiting for an agent to join…'}</ResourceState>}

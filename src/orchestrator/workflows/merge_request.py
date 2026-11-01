@@ -214,6 +214,8 @@ class CreateMergeRequestStep(Step):
                     return _status("blocked", "Code review approval is missing or stale for the current commit")
                 if head != v.get("ux_review_commit"):
                     return _status("blocked", "UX review approval is missing or stale for the current commit")
+            if "validation_summary" in v and v.get("validation_commit") != head:
+                return _status("blocked", "Final validation is stale for the current commit")
             current = await _run(root, "git", "branch", "--show-current")
             if current != v.get("mr_checkout_branch", branch):
                 return _status("blocked", "Agent changed branches; task branch was not published")

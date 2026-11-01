@@ -1,0 +1,8 @@
+[skill]
+name = "backend-feature"
+description = "Backend implementation with explicit disclosure of necessary UI changes"
+roles = ["implementer"]
+prompt_template = """Implement the backend request using existing contracts and the supplied architecture plan. Necessary UI changes are allowed: identify every affected UI file and explain why it changed. State that dedicated UX review was not performed. Follow repository validation rules and report actual check evidence separately from pending checks. Workflow final QA owns automated execution. The backend-feature workflow supplies architecture, independent code review and optional publication; this standalone recipe does not."""
+
+[skill.settings]
+effort = "medium"

@@ -82,8 +82,8 @@ make task ARGS='"Investigate slow imports" --workflow research'
 ```
 
 `make task` connects to the running service, uses its target project, and starts
-task-owned workflow agents. It defaults to the feature
-workflow with local edits and commits. Add `-v create_mr=true -v mr_base=main`
+task-owned workflow agents. It defaults to the small-change
+workflow with local edits and commits. Select `--workflow feature` and add `-v create_mr=true -v mr_base=main`
 to publish a draft PR/MR and verify CI. Other inputs use `-v KEY=VALUE`;
 `--cwd` overrides the target project for that task.
 
@@ -149,14 +149,43 @@ Edit `roles/*.toml` to change models, sandbox, token budgets, system prompts.
 
 ## Workflows
 
-Five built-in pipelines:
+Built-in pipelines:
 
+- **small-change** (task and web default): prepare checkout → implement → combined review → at most one revision and verification → recorded summary. No publication.
 - **feature**: prepare task branch → UX plan → technical plan → implementation ⇄ code review → optional final advisory UX report → completion report → optional draft PR/MR and CI/deployment verification
 - **bugfix**: architect investigates, implementer fixes, qa verifies
 - **review**: send code to reviewer
 - **research**: parallel investigation by multiple agents, then synthesis
 - **pr-completion**: review committed branch changes, push to an existing/new
   PR/MR, poll CI, repair failures, review and push again until green
+
+Use `small-change` for routine changes to existing behavior. Implementer and
+reviewer use medium reasoning effort and reuse their conversations for the single
+revision cycle. There is no separate UX assessment, architecture plan, or model
+summary. The full task diff is still reviewed after a revision.
+
+Before editing, the implementer must stop if the change needs a schema migration,
+new background service or recovery system, substantial public contract changes,
+or more than five implementation files. It reports the blocker, smallest safe
+alternative, and larger proposal with `SCOPE_ESCALATION`. The workflow routes
+that marker to a saved failed checkpoint without invoking review or expanding
+scope. Unresolved or unclear review after the one revision also stops there.
+Inspect the report and submit a narrower task or explicitly select `feature`.
+Continuing a stopped checkpoint does not grant another repair cycle.
+
+The `small-change` recipe offers the same scope guidance in an implementer agent
+conversation. It does not enforce the workflow's review or revision limit.
+Restart the orchestrator service to load the new workflow and recipe. Existing
+tasks retain their saved workflow and role configurations.
+
+This bounds model invocations, not dollars or tokens. Task-wide usage accounting,
+spending limits, and interruption during a turn remain separate work.
+
+Manual acceptance, when requested: submit a small UI change with the default
+workflow and confirm only implementer/reviewer participate; request a schema
+migration and confirm escalation stops before editing; inspect a rejected
+revision and confirm no second repair runs. Check that `feature` remains
+selectable for larger work and publication.
 
 Use `pr-completion` for finishing committed work or repairing an existing PR's
 CI. It automatically starts task-owned implementer and reviewer agents, polls through
@@ -264,8 +293,8 @@ curl -X POST http://127.0.0.1:8420/api/send/implementer \
 # Check worktree diffs
 curl http://127.0.0.1:8420/api/workspaces/{id}/diff
 
-# Merge approved work
-curl -X POST http://127.0.0.1:8420/api/workspaces/{id}/merge -d '{"strategy": "squash"}'
+# Inspect local-main merge eligibility and the latest persisted outcome
+curl http://127.0.0.1:8420/api/workspaces/{id}/merge
 
 # Stream all events
 curl -N http://127.0.0.1:8420/api/events
@@ -446,6 +475,9 @@ The legacy project and workflow endpoints remain adapters; new integrations use:
 - `POST /api/input-requests/{id}/resolve` with `response`
 - `GET /api/agents/{id}/events?after=0&limit=200`
 - `DELETE /api/workspaces/{id}` and `GET /api/workspaces/{id}/archive`
+- `GET /api/workspaces/{id}/merge` for local-main eligibility and latest operation
+- `POST /api/workspaces/{id}/merge` to accept an idempotent local merge
+- `GET /api/workspaces/{id}/merges/{operation_id}` for its persisted outcome
 
 Submission returns 202 with a task ID and status URL. Retrying the same key and
 payload returns the same task; changed payloads conflict. Missing resources return
@@ -555,3 +587,147 @@ publication still requires current code approval and a clean checkout. Interrupt
 an implementation at its turn limit and confirm review never starts on partial
 work. Change the checkout during review and confirm the review fails safely.
 Verify readable stage names and the saved completion report on the task page.
+
+
+### Merge a worktree into local main
+
+Workspace details offers **Merge to main** beside the displayed source branch,
+commit, and destination checkout path. The destination is the existing checkout
+holding `refs/heads/main`, even when that is a linked worktree rather than the
+primary folder. Commit or remove dirty tracked/untracked files in both checkouts
+first. Missing main, detached or changed branches, unfinished Git operations,
+submodules, active execution, archive operations, and unresolved merges block
+acceptance. Ignored files are protected against overwriting by Git.
+
+This action merges the captured source commit with a fast-forward or normal merge
+commit. It does not fetch, push, switch branches, squash, rebase, archive, or delete.
+The existing diff/log views still compare against the recorded base; they are not
+a preview against main. Both workspaces are temporarily reserved as `merging`.
+Verified completion restores `active`, so the worktree can accept tasks and merge
+new commits later. Outcomes are separate persisted records, not lifecycle statuses.
+
+The eligibility GET returns `eligible`, visible `blockers`, `source_workspace_id`,
+`source_branch`, `source_sha`, `destination_workspace_id`, `destination_path`,
+`destination_sha`, and `latest_operation`. POST requires exactly these six string
+fields (the five captured identities plus a caller-generated operation ID):
+
+```json
+{
+  "operation_id": "unique-client-operation-id",
+  "source_branch": "feature/example",
+  "source_sha": "full-source-commit-from-eligibility",
+  "destination_workspace_id": "destination-id-from-eligibility",
+  "destination_path": "/actual/main/checkout",
+  "destination_sha": "full-main-commit-from-eligibility"
+}
+```
+
+POST returns HTTP 202 with `operation` and `status_url`; acceptance is not success.
+Reuse the same ID and exact request after a lost response. Different input for an
+existing ID returns 409. Invalid requests return 400, missing resources 404, and
+stale or unsafe requests 409 with an explanation. Status GET returns HTTP 200 for
+an existing operation, including failed attempts. Inspect `operation.state`:
+`accepted`, `running`, `merged`, `already_integrated`, `failed`, or
+`recovery_required`. Success includes the destination path and `resulting_sha`;
+failures include an error, bounded diagnostics, and captured conflict paths.
+
+The browser saves the request per workspace before submitting and polls its saved
+operation after reload. A lost response offers **Check saved merge attempt** before
+retrying; it reuses that operation ID. A terminal failed attempt needs a new ID.
+Accepted work belongs to the application and continues after a browser disconnect.
+Service shutdown stops its managed Git process group and retains uncertain state.
+Migration 5 adds merge records and indexes without replacing task/archive history.
+
+A conflicting merge is aborted only when its MERGE_HEAD and original HEAD match
+this operation. Cleanup must be verified before releasing reservations. Timeouts,
+interruption, or uncertain checkout state retain `merge_recovery_required` on both
+workspaces. Startup and merge/status reads reconcile dead owners and verify the
+original HEAD, exact fast-forward result, or two-parent merge result before
+releasing them. A live or unverifiable orphan Git process group stays blocked.
+The child waits for its persisted process identity before executing Git, so a crash
+before recording that identity cannot start a merge.
+
+For recovery, inspect the reported destination with `git status`, `git log`, and
+`git reflog`. Stop any remaining merge process before editing Git state. Resolve or
+abort an unfinished merge manually after checking its ownership, then reload to
+reconcile. An unexpected HEAD or checkout identity remains blocked for operator
+inspection; do not clear reservations just to retry. No destructive reset is run.
+External Git tools do not honor orchestrator reservations, so avoid concurrent
+manual Git changes in either checkout during a merge.
+
+Manual acceptance (not performed during implementation):
+
+1. In a disposable repository, merge a clean branch that can fast-forward main.
+   Check the displayed destination/SHA, unchanged source branch/files, restored
+   `active` status, and ability to submit another task. Add another commit and merge
+   again; the new attempt must capture the new source SHA.
+2. Create independent, nonconflicting commits on main and a worktree. Merge and
+   inspect the resulting two-parent commit. Merge again and expect “Already
+   integrated into local main” with no extra commit.
+3. Create conflicting committed edits. Check visible conflict paths and diagnostics;
+   verify main returns to its original clean HEAD without MERGE_HEAD. Resolve on
+   the source branch, commit, and retry with a new attempt.
+4. Add tracked, staged, and untracked changes to each checkout in turn. Verify
+   specific blockers and preservation of files. Check that an ignored file which
+   would be overwritten makes Git fail safely. Exercise an unfinished merge or
+   rebase, detached source, missing main checkout, and changed source/destination
+   SHAs between eligibility and POST; all must block safely.
+5. Check out main in a linked worktree while the primary checkout holds another
+   branch. Verify the displayed and actual destination is that linked checkout.
+   Register a newly created source worktree and merge without restarting.
+6. Race merge requests, task starts/continuations, and archive requests against both
+   checkouts, including requests through two services sharing the same database.
+   Only one unresolved repository merge may exist; reserved checkouts reject
+   execution and deletion while unrelated workspaces remain usable. Repeat an ID
+   with identical input and then different input; expect the same operation and
+   a 409 respectively.
+7. Disconnect after POST and reload during execution. Verify the saved ID is queried
+   and no duplicate merge occurs. Stop/restart the service around acceptance,
+   execution, and completion. Check verified outcomes or explicit recovery blockers;
+   no hidden unfinished merge may be reported as success. After manually aborting
+   an interrupted owned merge, reload and check reconciliation releases reservations.
+8. Use the keyboard to reach and activate the button. Check visible focus, announced
+   progress/results/errors, destination wrapping at narrow widths, and disabled
+   merge/archive controls while busy. Switch workspaces during submission and
+   polling; no previous workspace result or error may appear in the new page.
+
+
+### Small UI and backend tasks
+
+Select `ui-small` for a component refactor, quick UX fix, or small section using
+existing patterns. Its team is senior-ux-designer, implementer, reviewer, and QA.
+A brief UX assessment guides implementation. UX and code feedback are collected
+before one combined revision; unresolved findings stop the task. Scope limits
+match small-change: no migrations, new services, substantial contract changes,
+or more than five implementation files. Publication is disabled.
+
+Select `backend-feature` for architecture planning, implementation, code review,
+and final QA without dedicated UX stages. Necessary UI changes are allowed but
+must be disclosed with affected files, rationale, and pending UX review.
+Publication is optional and defaults off in task submissions.
+
+```sh
+make task ARGS='"Improve the empty state on the dashboard" --workflow ui-small'
+make task ARGS='"Add server-side export filtering" --workflow backend-feature'
+```
+
+The matching implementer recipes are available in agent conversations. Recipes
+provide guidance; independent reviews and revision limits belong to workflows.
+
+All implementation workflows now defer tests, typecheck, and lint to final QA
+following source approvals. QA uses repository-defined commands and avoids
+combined-command duplication. Task and repository prohibitions take precedence;
+policy skips and unavailable commands are reported separately from passes.
+Missing dependencies or infrastructure block validation without auto-installing.
+One focused validation repair is allowed, followed by source review of the new
+commit and one final check run. Further failures stop. This allowance is separate
+from source revision limits and is persisted across continuation. Interrupted
+validation requires inspection and explicit follow-up rather than replaying
+commands. Provider CI and deployment checks remain separate gates.
+
+Manual acceptance: submit a quick UX fix and confirm the brief reaches the
+implementer and both reviews run before a revision. Submit a backend-only task,
+then one requiring UI edits, and inspect the disclosure. Exercise passing checks,
+policy skips, missing tools, a repair and a second failure. Confirm stale commit
+results cannot publish and continuation does not reset attempt limits. Browser
+acceptance remains a separate manual step.

@@ -20,7 +20,7 @@ async def errors(request, handler):
     try:
         return await handler(request)
     except Conflict as exc:
-        return web.json_response({'error': str(exc)}, status=409)
+        return web.json_response({'error': str(exc), 'details': getattr(exc, 'details', None)}, status=409)
     except LookupError as exc:
         return web.json_response({'error': str(exc)}, status=404)
     except (ValueError, TypeError, OSError, RuntimeError) as exc:
