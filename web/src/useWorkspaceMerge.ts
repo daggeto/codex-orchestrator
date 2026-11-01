@@ -105,9 +105,10 @@ export function useWorkspaceMerge(workspaceId: string) {
         }
       }
       if (!request) {
+        const committing = !!eligibility.data?.can_commit;
         const check = await get<MergeEligibility>(`${endpoint}/merge`);
         if (!active()) return;
-        if (!check.eligible || !check.source_branch || !check.source_sha || !check.destination_workspace_id || !check.destination_path || !check.destination_sha) {
+        if (!(committing ? check.can_commit : check.eligible) || !check.source_branch || !check.source_sha || !check.destination_workspace_id || !check.destination_path || !check.destination_sha) {
           throw new Error(check.blockers.join('; ') || 'Merge eligibility is unavailable');
         }
         // Do not silently merge newer commits than those displayed at click time.
@@ -116,8 +117,14 @@ export function useWorkspaceMerge(workspaceId: string) {
           .some(field => check[field as keyof MergeEligibility] !== displayed[field as keyof MergeEligibility])) {
           throw new Error('Source or local main changed. Wait for the displayed details to refresh, then retry.');
         }
+        if (committing && (!check.changes || !displayed.changes ||
+          Object.keys(check.changes).length !== Object.keys(displayed.changes).length ||
+          Object.entries(check.changes).some(([id, tree]) => displayed.changes?.[id] !== tree))) {
+          throw new Error('Working changes changed. Refresh the displayed files before committing.');
+        }
         request = { operation_id: crypto.randomUUID(), source_branch: check.source_branch, source_sha: check.source_sha,
-          destination_workspace_id: check.destination_workspace_id, destination_path: check.destination_path, destination_sha: check.destination_sha };
+          destination_workspace_id: check.destination_workspace_id, destination_path: check.destination_path, destination_sha: check.destination_sha,
+          ...(committing ? { commit_changes: true, changes: check.changes } : {}) };
       }
       if (!active()) return;
       // Persist before sending. Failure to persist prevents an unrecoverable submission.

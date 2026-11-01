@@ -76,14 +76,20 @@ export type MergeState = 'accepted' | 'running' | 'merged' | 'already_integrated
 export interface MergeRequest {
   operation_id: string; source_branch: string; source_sha: string;
   destination_workspace_id: string; destination_path: string; destination_sha: string;
+  commit_changes?: boolean; changes?: Record<string, string>;
 }
-export interface MergeOperation extends MergeRequest {
+export interface MergeOperation extends Omit<MergeRequest, 'changes' | 'commit_changes'> {
+  commit_changes?: boolean | 0 | 1;
+  changes?: Record<string, string | { tree: string; path: string; original_sha: string }>;
   source_workspace_id: string; created_at: string; state: MergeState; resulting_sha: string | null;
   error_code: string | null; error_message: string | null; diagnostics: string | null;
   conflict_paths: string[];
+  phase?: 'committing' | 'merge'; commits?: { path: string; sha: string; message: string }[];
 }
 export interface MergeEligibility {
   eligible: boolean; blockers: string[]; source_workspace_id: string;
+  dirty_checkouts?: { path: string; status: string }[];
+  can_commit?: boolean; changes?: Record<string, string>;
   source_branch: string | null; source_sha: string | null;
   destination_workspace_id: string | null; destination_path: string | null; destination_sha: string | null;
   latest_operation: MergeOperation | null;

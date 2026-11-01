@@ -5,6 +5,40 @@ import { Button } from './ui/Button';
 
 type RunIdentity = Pick<WorkflowRun, 'run_id' | 'status' | 'updated_at'>;
 
+function object(value: unknown): JsonObject {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {};
+}
+
+export function ValidationRecovery({ state }: { state?: JsonObject }) {
+  const checkpoint = object(state?.checkpoint);
+  const variables = object(state?.final_variables ?? checkpoint.variables ?? state?.variables);
+  const stop = object(variables.validation_stop);
+  let checks = stop.checks;
+  // Saved runs from before structured recovery still have useful QA evidence.
+  if (!Array.isArray(checks) && typeof variables.validation_report === 'string') {
+    try { checks = object(JSON.parse(variables.validation_report)).checks; } catch { /* Show the saved error below. */ }
+  }
+  const issues = Array.isArray(checks) ? checks.map(object).filter(check => ['failed', 'blocked'].includes(String(check.status))) : [];
+  const error = typeof state?.error === 'string' ? state.error : '';
+  if (!Object.keys(stop).length && !error.includes('validate')) return null;
+  const actions = Array.isArray(stop.actions) ? stop.actions.filter((action): action is string => typeof action === 'string') : [];
+  return <section className="execution-details" aria-label="Validation recovery">
+    <h2>Validation needs attention</h2>
+    <p>{typeof stop.reason === 'string' ? stop.reason : error}</p>
+    {typeof stop.repairs_used === 'number' && typeof stop.repair_limit === 'number' && <p>Repair rounds used: {stop.repairs_used} of {stop.repair_limit}.</p>}
+    {issues.length > 0 && <ul>{issues.map((check, index) => <li key={index}>
+      <strong>{check.status === 'blocked' ? 'Environment blocker' : 'Check failed'}</strong>
+      {typeof check.command === 'string' && check.command && <>: <code>{check.command}</code></>}
+      {typeof check.reason === 'string' && <p>{check.reason}</p>}
+      {typeof check.action === 'string' && <p>Next step: {check.action}</p>}
+    </li>)}</ul>}
+    <h3>How to continue</h3>
+    {actions.length ? <ol>{actions.map((action, index) => <li key={index}>{action}</li>)}</ol> :
+      <p>Resolve the reported environment blockers, then choose Continue. Repairable test failures will be sent to the implementer.</p>}
+    <p>Continue authorizes fresh QA and up to three repair rounds. If the same failures persist, the workflow stops again for your review.</p>
+  </section>;
+}
+
 export function ContinueRun({ run, disabled }: { run: RunIdentity; disabled: boolean }) {
   const [open, setOpen] = useState(run.status === 'paused');
   const [checkpoint, setCheckpoint] = useState<{
@@ -49,7 +83,7 @@ export function ContinueRun({ run, disabled }: { run: RunIdentity; disabled: boo
   return <details className="restart-run" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>Continue workflow</summary>
     <p>Retries the unfinished step using saved outputs, workspace, and conversation when available. Completed workflow steps are skipped. The unfinished step may repeat actions it already started.</p>
-    {checkpoint?.step === 'validate' && <p>Continuing final validation runs automated checks again. Earlier results are retained, and the one-repair limit still applies.</p>}
+    {checkpoint?.step === 'validate' && <p>Continuing final validation runs fresh automated checks and authorizes up to three repair rounds. Repeated failures stop for your review. Earlier results are retained; resolve environment blockers before continuing.</p>}
     <p>Restore your allowance before continuing after a usage limit. Publication can proceed if it was enabled for this run.</p>
     {!checkpoint && !error && <p role="status">Loading checkpoint…</p>}
     {checkpoint?.step && <p>Continue from: <code>{checkpoint.step}</code></p>}

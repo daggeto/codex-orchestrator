@@ -20,6 +20,7 @@ class OrchestratorConfig:
     max_agents: int = 20
     health_check_interval: float = 10.0
     default_model: str = "gpt-5.4"
+    commit_model: str = "gpt-6-luna"
     default_approval_policy: str = "on-failure"
     default_sandbox: str = "workspace-write"
     api_host: str = "127.0.0.1"

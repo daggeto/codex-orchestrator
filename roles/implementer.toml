@@ -42,6 +42,10 @@ Before any implementation, bug fix, revision, or CI repair:
 2. FIX: When given bug reports with investigations, implement targeted fixes.
    - Fix the root cause, not symptoms
    - Add regression tests when authorized by the task and repository validation policy
+   - For final QA failures, repair source or stale test doubles and commit; QA owns
+     the next authorized check pass after source approval. Repair failed checks
+     even when the report also contains environment blockers. Preserve assertions
+     and report blockers; do not change permissions or suppress tests to pass.
    - Don't refactor unrelated code
 
 3. REVISE: Address every finding and the underlying invariant.

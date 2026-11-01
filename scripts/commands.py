@@ -39,11 +39,21 @@ COMMANDS = (
             "accepts durable tasks asynchronously, and starts a task-owned team. "
             "Browser disconnects leave accepted work running; service shutdown interrupts it. "
             "Workspace details can merge a captured worktree commit into the checkout holding local main. "
+            "With uncommitted changes, Commit and merge generates messages using the configured commit_model "
+            "(gpt-6-luna by default), commits captured tracked/untracked changes in both checkouts, then merges locally. "
             "Merge operations persist across reloads, reserve both checkouts against tasks/deletion, "
             "and restore active status after verified completion; uncertain recovery remains blocked. No remote publication occurs. "
             "Codex backends require lsof and reserve ports across processes using shared per-user locks.",
             ("make start",
              'make start ARGS="--cwd /path/to/repo --roles-dir ./roles --spawn-team architect"')),
+    Command("stop", "Stop this checkout's API and web services.", "python", ("scripts/stop_services.py",),
+            "Finds listeners on API port 8420, Vite dev port 5173, and preview port 4173. "
+            "Verifies each process command and working directory belong to this checkout before sending Ctrl+C (SIGINT). "
+            "Works after a service terminal closes; stopping the API interrupts active tasks and shuts down its agents. "
+            "Waits up to 30 seconds for processes to exit, without force killing. Already stopped services are a no-op. "
+            "Requires lsof and ps. Use --api-port, --web-port, or --preview-port for custom ports, "
+            "and --timeout for a different shutdown wait in seconds. Services using --no-api cannot be discovered by port.",
+            ("make stop", 'make stop ARGS="--api-port 8421 --web-port 5174"')),
     Command("task", "Submit a task to the running service without prompts.", "orch", ("task",),
             "Requires a quoted DESCRIPTION inside ARGS. Connects to the service started by make start; "
             "starts task-owned workflow agents, waits for the result, and prints the run ID. "
@@ -55,7 +65,7 @@ COMMANDS = (
             "All workflow roles share the resolved checkout and a workspace lease. "
             "Continuing a stopped workflow retains task-owned agents and the workspace lease, and updates the task when execution ends. "
             "Saved feature runs retain their original routing when its exact definition is supported. "
-            "Continuing final validation explicitly permits one new QA pass, preserving earlier evidence and the one-repair limit. "
+            "Continuing final validation authorizes fresh QA and up to three repair rounds with source review; repeated failures stop early. QA may request scoped execution approval and retry a sandbox-restricted command once per pass without consuming a repair round, subject to task/repository restrictions and approval decisions. Attempt- and commit-bound evidence is retained. Task pages show unresolved environment blockers, stopped repairs, and recovery actions. "
             "Continuation atomically queues its unarchived task, preventing archive until execution ends. "
             "Legacy workflow runs without an owning task must restart as workspace tasks. "
             "Checkouts reserved for a local-main merge or merge recovery reject task execution. "
@@ -160,7 +170,7 @@ COMMANDS = (
             "Runs Vite in web/ with compact task navigation, a reversible task Archive, and task-scoped participant history. "
             "Worktree removal remains a separate confirmed operation. Start make start in another terminal for the API on port 8420. "
             "The development server proxies /api and /health to that API. Task home defaults to small-change "
-            "with local commits and no publication. ui-small adds brief UX assessment and review; backend-feature omits UX stages and discloses UI edits. Implementation workflows finish with applicable QA checks and at most one validation repair. Publication is opt-in for feature/backend-feature and "
+            "with local commits and no publication. ui-small adds brief UX assessment and review; backend-feature omits UX stages and discloses UI edits. Implementation workflows finish with applicable QA checks and up to three validation repairs per accepted cycle. QA may request scoped execution approval and retry a sandbox-restricted command once per pass, subject to task/repository restrictions and approval decisions. Failed checks reach the implementer even alongside environment blockers; repeated failures or unresolved blockers stop with task-page recovery guidance. Publication is opt-in for feature/backend-feature and "
             "required for pr-completion. The monitor remains read-only.",
             ("make dev", 'make dev ARGS="--port 5174"')),
     Command("preview", "Serve the production web build locally.", "npm", ("run", "preview"),

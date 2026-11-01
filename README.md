@@ -74,6 +74,12 @@ for initial agents. Roles are loaded from the explicit or configured directory
 make start ARGS='--cwd /path/to/repo --roles-dir ./roles --spawn-team architect --spawn-team implementer --spawn-team reviewer'
 ```
 
+Run `make stop` from another terminal to stop this checkout's API, Vite dev server,
+and preview server, including services left running after their terminal closed.
+This interrupts active tasks and shuts down the API's agents. It checks process
+ownership and waits for shutdown without force killing. For custom ports, use
+`make stop ARGS='--api-port 8421 --web-port 5174'`. See `make stop help` for options.
+
 Keep the service terminal open and submit a task from another terminal:
 
 ```bash
@@ -594,8 +600,15 @@ Verify readable stage names and the saved completion report on the task page.
 Workspace details offers **Merge to main** beside the displayed source branch,
 commit, and destination checkout path. The destination is the existing checkout
 holding `refs/heads/main`, even when that is a linked worktree rather than the
-primary folder. Commit or remove dirty tracked/untracked files in both checkouts
-first. Missing main, detached or changed branches, unfinished Git operations,
+primary folder. When tracked or untracked changes exist, the same action becomes
+**Commit and merge**. It commits all displayed non-ignored changes in each affected
+checkout, including local main, then merges. A short-lived read-only agent generates
+one commit subject per checkout; the service stages the captured content and creates
+the commits. `commit_model` in the orchestrator config selects the model, defaulting
+to `gpt-6-luna`. Changes are captured as Git trees using a temporary index, and
+rechecked before acceptance and after message generation. New changes require a
+fresh attempt. Once both checkouts are clean the button is **Merge to main**.
+Missing main, detached or changed branches, unfinished Git operations,
 submodules, active execution, archive operations, and unresolved merges block
 acceptance. Ignored files are protected against overwriting by Git.
 
@@ -608,7 +621,8 @@ new commits later. Outcomes are separate persisted records, not lifecycle status
 
 The eligibility GET returns `eligible`, visible `blockers`, `source_workspace_id`,
 `source_branch`, `source_sha`, `destination_workspace_id`, `destination_path`,
-`destination_sha`, and `latest_operation`. POST requires exactly these six string
+`destination_sha`, and `latest_operation`, plus `can_commit`, `dirty_checkouts`, and
+`changes` (workspace IDs mapped to captured Git tree SHAs). POST requires these six string
 fields (the five captured identities plus a caller-generated operation ID):
 
 ```json
@@ -621,6 +635,15 @@ fields (the five captured identities plus a caller-generated operation ID):
   "destination_sha": "full-main-commit-from-eligibility"
 }
 ```
+
+For **Commit and merge**, also send `"commit_changes": true` and `"changes"`
+copied from eligibility. Both the captured HEADs and change trees must still match.
+Operation `phase` is `committing` or `merge`; `commits` lists created commit SHAs,
+messages, and checkout paths. A failed merge retains these commits. An interrupted
+commit phase never resumes automatically: reconciliation verifies the captured
+trees and recognized commits, retains the work, and asks for a fresh attempt.
+Unexpected checkout states remain reserved for recovery. Migration 7 adds these
+fields while preserving older merge records.
 
 POST returns HTTP 202 with `operation` and `status_url`; acceptance is not success.
 Reuse the same ID and exact request after a lost response. Different input for an
@@ -656,6 +679,15 @@ External Git tools do not honor orchestrator reservations, so avoid concurrent
 manual Git changes in either checkout during a merge.
 
 Manual acceptance (not performed during implementation):
+
+0. Make separate tracked and untracked changes in the source and local main.
+   Confirm one **Commit and merge** action and both file lists. Click once and
+   confirm one generated commit per dirty checkout, followed by the local merge.
+   Reload during generation and confirm the same attempt continues. Change a file
+   after capture and confirm the action stops rather than committing new content.
+   With both checkouts clean, confirm only **Merge to main** is offered. Interrupt
+   message generation or a commit and confirm changes/created commits are retained
+   and the persisted attempt explains retry or recovery.
 
 1. In a disposable repository, merge a clean branch that can fast-forward main.
    Check the displayed destination/SHA, unchanged source branch/files, restored
@@ -718,16 +750,29 @@ All implementation workflows now defer tests, typecheck, and lint to final QA
 following source approvals. QA uses repository-defined commands and avoids
 combined-command duplication. Task and repository prohibitions take precedence;
 policy skips and unavailable commands are reported separately from passes.
-Missing dependencies or infrastructure block validation without auto-installing.
-One focused validation repair is allowed, followed by source review of the new
-commit and one final check run. Further failures stop. This allowance is separate
-from source revision limits and is persisted across continuation. Interrupted
-validation requires inspection and explicit follow-up rather than replaying
-commands. Provider CI and deployment checks remain separate gates.
+QA sends source and test failures to the implementer, including stale test doubles.
+When a command also hits environment restrictions, QA reports the failures and
+blockers separately so the implementer can still repair the failures. Each repair
+is committed and source-reviewed before a fresh QA pass. A cycle allows up to
+three repairs and stops earlier when the same failures persist across three QA
+passes or a repair produces no new commit. For sandbox permission errors such as
+local test-server socket binding, QA requests approval through its execution tool
+and retries only the affected command once in the same checkout, after stopping
+the earlier invocation. This recovery belongs to the current QA pass and does not
+consume a source repair round. Task/repository restrictions and approval denials
+still apply. QA records both invocations and sends any source/test failures to the
+implementer. Missing dependencies, unavailable or denied approval, or a retry that
+remains restricted block validation without auto-installing or changing sandbox
+configuration or persistent permissions.
+The task page shows why validation stopped, affected commands, repair counts,
+and recovery actions. Resolve blockers or inspect persistent failures, then choose
+Continue to authorize fresh QA and another bounded repair cycle. Previous reports
+are retained. Provider CI and deployment checks remain separate gates.
 
 Manual acceptance: submit a quick UX fix and confirm the brief reaches the
 implementer and both reviews run before a revision. Submit a backend-only task,
 then one requiring UI edits, and inspect the disclosure. Exercise passing checks,
-policy skips, missing tools, a repair and a second failure. Confirm stale commit
-results cannot publish and continuation does not reset attempt limits. Browser
+policy skips, missing tools, mixed failures and blockers, successful repairs, and
+repeated failures. Confirm the task page explains each stop and how to continue,
+stale commit results cannot publish, and only explicit Continue renews the repair budget. Browser
 acceptance remains a separate manual step.

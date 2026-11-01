@@ -36,17 +36,29 @@ function WorkspaceDetails({ workspaceId }: { workspaceId: string }) {
       <p>Destination: local <code>main</code>{' '}
         {merge.eligibility.data?.destination_sha && <code>{merge.eligibility.data.destination_sha}</code>}
         <br /><code>{merge.eligibility.data?.destination_path || 'No verified main checkout'}</code></p>
-      <Button disabled={merge.submitting || (!merge.uncertain && (merge.busy || !merge.eligibility.data?.eligible)) || busy}
-        onClick={() => void merge.merge()}>{merge.submitting || ['accepted', 'running'].includes(merge.operation?.state || '') ? 'Merging…' : merge.uncertain ? 'Check saved merge attempt' : 'Merge to main'}</Button>
+      <Button disabled={merge.submitting || (!merge.uncertain && (merge.busy || !(merge.eligibility.data?.eligible || merge.eligibility.data?.can_commit))) || busy}
+        onClick={() => void merge.merge()}>{merge.submitting || ['accepted', 'running'].includes(merge.operation?.state || '')
+          ? merge.operation?.phase === 'committing' ? 'Committing changes…' : 'Merging…'
+          : merge.uncertain ? 'Check saved merge attempt' : merge.eligibility.data?.can_commit ? 'Commit and merge' : 'Merge to main'}</Button>
+      {merge.eligibility.data && merge.eligibility.data.can_commit === undefined && <p className="muted">Restart the orchestrator service to load Commit and merge. Eligibility updates automatically.</p>}
       {merge.eligibility.data?.blockers.map(blocker => <p className="muted" key={blocker}>{blocker}</p>)}
+      {!!merge.eligibility.data?.dirty_checkouts?.length && <div>
+        <p>Commit and merge commits all listed tracked and untracked changes in each checkout below, using an AI-generated message for each commit, then merges into local main. Ignored files are excluded.</p>
+        {merge.eligibility.data.dirty_checkouts.map(checkout => <div key={checkout.path}>
+          <p>Changes in {checkout.path === merge.eligibility.data?.destination_path ? 'destination main' : 'source worktree'}: <code>{checkout.path}</code></p>
+          <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{checkout.status}</pre>
+          <p><code>M</code> = modified, <code>A</code> = added, <code>D</code> = deleted, <code>??</code> = untracked. The first column shows staged changes; the second shows unstaged changes.</p>
+        </div>)}
+      </div>}
       {merge.error && <ResourceState error>{merge.error}</ResourceState>}
       {merge.uncertain && <ResourceState>Checking the saved merge attempt. Reconcile it before retrying or archiving.</ResourceState>}
       {merge.operation && <ResourceState error={['failed', 'recovery_required'].includes(merge.operation.state)}>
-        {['accepted', 'running'].includes(merge.operation.state) ? 'Merging…' :
+        {['accepted', 'running'].includes(merge.operation.state) ? merge.operation.phase === 'committing' ? 'Generating commit messages and committing changes…' : 'Merging…' :
           merge.operation.state === 'merged' ? `Merged into local main at ${merge.operation.destination_path}. Commit: ${merge.operation.resulting_sha}.` :
           merge.operation.state === 'already_integrated' ? `Already integrated into local main at ${merge.operation.destination_path}. Commit: ${merge.operation.resulting_sha}.` :
           merge.operation.error_message || 'Merge failed.'}
         <p>Attempt source: <code>{merge.operation.source_branch}</code> at <code>{merge.operation.source_sha}</code></p>
+        {merge.operation.commits?.map(commit => <p key={commit.sha}>Committed <code>{commit.sha}</code>: {commit.message}<br /><code>{commit.path}</code></p>)}
         {!!merge.operation.conflict_paths.length && <p>Conflicts: {merge.operation.conflict_paths.join(', ')}</p>}
         {merge.operation.diagnostics && <details><summary>Git diagnostics</summary><pre>{merge.operation.diagnostics}</pre></details>}
       </ResourceState>}
