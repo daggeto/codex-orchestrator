@@ -166,7 +166,7 @@ class WorkspaceService:
             if not Path(workspace['path']).is_dir():
                 raise RuntimeError('Workspace directory is unavailable')
             if workspace['kind'] == 'main' and isolate:
-                wt = await self.orch.workspace.create_worktree(workspace['path'], hashlib.sha256(task_id.encode()).hexdigest()[:16], hashlib.sha256(task_id.encode()).hexdigest()[:16])
+                wt = await self.orch.workspace.create_worktree(workspace['path'], hashlib.sha256(task_id.encode()).hexdigest()[:16], hashlib.sha256(task_id.encode()).hexdigest()[:16], task_title=task['title'])
                 workspace = await self.store.one('SELECT * FROM workspaces WHERE path=?', (wt.worktree_path,))
                 await self.store.write('UPDATE tasks SET workspace_id=?,updated_at=? WHERE task_id=?', (workspace['workspace_id'], now(), task_id))
             return workspace

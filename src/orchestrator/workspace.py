@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from orchestrator.worktree_names import task_worktree_name
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,6 +57,7 @@ class WorkspaceManager:
         work_item_id: str | None = None,
         base_branch: str | None = None,
         branch_prefix: str = "orch",
+        task_title: str | None = None,
     ) -> Worktree:
         """
         Create a git worktree for an agent to work in.
@@ -65,11 +68,15 @@ class WorkspaceManager:
             work_item_id: Optional work item ID for naming
             base_branch: Branch to base the worktree on (default: current HEAD)
             branch_prefix: Prefix for the new branch name
+            task_title: Task text used for readable branch and directory names
         """
         wt_id = uuid.uuid4().hex[:12]
         suffix = work_item_id[:8] if work_item_id else wt_id[:8]
         branch = f"{branch_prefix}/{agent_id[:8]}/{suffix}"
-        wt_path = self._worktrees_dir / wt_id
+        name = task_worktree_name(task_title) if task_title is not None else None
+        if name:
+            branch = f"{branch_prefix}/{name}"
+        wt_path = self._worktrees_dir / (name or wt_id)
 
         # Get base branch if not specified
         if not base_branch:

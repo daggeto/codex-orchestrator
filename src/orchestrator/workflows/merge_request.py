@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import quote, urlparse
 
 from orchestrator.processes import stop_process_group
+from orchestrator.worktree_names import task_worktree_name
 from orchestrator.workflows.steps import AssignStep, Step, StepResult
 
 if TYPE_CHECKING:
@@ -87,9 +88,10 @@ async def prepare_worktree(ctx, root: str, base: str) -> dict:
         ctx.variables.update(identity)
         return identity
     # Keep worktrees outside the source checkout, including dirty local projects.
+    name = task_worktree_name(str(ctx.variables.get("task_description") or "task"))
     parent = tempfile.mkdtemp(prefix="orch-worktree-")
-    checkout = str(Path(parent) / "repo")
-    branch = f"orch/task-{ctx.run_id}"
+    checkout = str(Path(parent) / name)
+    branch = f"orch/{name}"
     try:
         await _run(root, "git", "worktree", "add", "-b", branch, checkout, base)
     except BaseException:
