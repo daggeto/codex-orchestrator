@@ -5,6 +5,16 @@ import type { MergeEligibility, MergeOperation, MergeRequest } from './types';
 
 const key = (id: string) => `workspace-merge:${id}`;
 const terminal = (operation: MergeOperation) => ['merged', 'already_integrated', 'failed'].includes(operation.state);
+function reconcile(local: MergeOperation | null | undefined, observed: MergeOperation | null | undefined) {
+  if (!local) return observed;
+  if (!observed) return local;
+  if (local.operation_id === observed.operation_id) {
+    // Completed attempts are immutable; delayed responses cannot reopen them.
+    if (terminal(local)) return local;
+    return observed.state === 'accepted' ? local : observed;
+  }
+  return terminal(local) && observed.created_at > local.created_at ? observed : local;
+}
 function saved(id: string): MergeRequest | null {
   try {
     const value = JSON.parse(localStorage.getItem(key(id)) || 'null') as MergeRequest | null;
@@ -23,7 +33,8 @@ export function useWorkspaceMerge(workspaceId: string) {
     mounted.current = true;
     setAction({ id: workspaceId, pending: saved(workspaceId), busy: false, error: '' });
     const sync = (event: StorageEvent) => {
-      if (event.key === key(workspaceId)) setAction(previous => ({ ...previous, pending: saved(workspaceId) }));
+      // Removal in another tab is not an outcome. Keep polling until reconciled.
+      if (event.key === key(workspaceId)) setAction(previous => ({ ...previous, pending: saved(workspaceId) || previous.pending }));
     };
     window.addEventListener('storage', sync);
     return () => { mounted.current = false; window.removeEventListener('storage', sync); };
@@ -34,20 +45,24 @@ export function useWorkspaceMerge(workspaceId: string) {
   const attempt = useResource<{ operation: MergeOperation }>(state.pending
     ? `${endpoint}/merges/${encodeURIComponent(state.pending.operation_id)}` : null);
   const [accepted, setAccepted] = useState<{ id: string; operation: MergeOperation } | null>(null);
-  const ownOperation = attempt.data?.operation || (accepted?.id === workspaceId &&
-    (!state.pending || accepted.operation.operation_id === state.pending.operation_id) ? accepted.operation : null);
+  const ownOperation = reconcile(accepted?.id === workspaceId &&
+    (!state.pending || accepted.operation.operation_id === state.pending.operation_id) ? accepted.operation : null,
+    attempt.data?.operation);
   const latest = eligibility.data?.latest_operation;
   // A newer externally accepted operation supersedes a completed local attempt.
-  const operation = latest && (!ownOperation || terminal(ownOperation) && latest.created_at > ownOperation.created_at)
-    ? latest : ownOperation || latest;
+  const operation = reconcile(ownOperation, latest);
   useEffect(() => {
-    if (ownOperation && terminal(ownOperation) && state.pending?.operation_id === ownOperation.operation_id) {
+    if (operation && terminal(operation) && state.pending?.operation_id === operation.operation_id) {
+      // Preserve the result before stopping pending-operation polling.
+      setAccepted({ id: workspaceId, operation });
+      setAction(previous => previous.pending?.operation_id === operation.operation_id
+        ? { ...previous, pending: null } : previous);
       try {
         const stored = saved(workspaceId);
-        if (stored?.operation_id === ownOperation.operation_id) localStorage.removeItem(key(workspaceId));
+        if (stored?.operation_id === operation.operation_id) localStorage.removeItem(key(workspaceId));
       } catch { /* Keep polling; an unavailable storage does not change the outcome. */ }
     }
-  }, [ownOperation, state.pending, workspaceId]);
+  }, [operation, state.pending, workspaceId]);
   const unresolved = operation && !terminal(operation);
   const uncertain = !!state.pending && !ownOperation;
   const busy = state.busy || !!unresolved || uncertain;
@@ -64,9 +79,8 @@ export function useWorkspaceMerge(workspaceId: string) {
           const found = await get<{ operation: MergeOperation }>(`${endpoint}/merges/${encodeURIComponent(request.operation_id)}`);
           if (!active()) return;
           setAccepted({ id, operation: found.operation });
-          if (!terminal(found.operation)) return;
-          // A terminal attempt is immutable. New commits/retries get a new ID.
-          request = null;
+          // Checking a saved attempt never authorizes another merge.
+          return;
         } catch (reason) {
           if (!(reason instanceof ApiError) || reason.status !== 404) throw reason;
           // The original POST may never have reached the service. Reuse exactly its ID and snapshot.
