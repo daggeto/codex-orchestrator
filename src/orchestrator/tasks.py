@@ -115,8 +115,8 @@ class TaskService:
                     role.update({key: value for key, value in overrides.items() if key != 'config_overrides'})
                     role['config_overrides'].update(overrides.get('config_overrides', {}))
                 variables = settings.setdefault('variables', {})
-                if workflow.name == 'small-change' and str(variables.get('create_mr', False)).lower() not in {'false', '0', 'no'}:
-                    raise ValueError('small-change never publishes; select feature for PR/MR publication')
+                if workflow.name in {'small-change', 'ui-small'} and str(variables.get('create_mr', False)).lower() not in {'false', '0', 'no'}:
+                    raise ValueError('This local workflow never publishes; select feature or backend-feature for PR/MR publication')
                 if workflow.publication_policy == 'optional':
                     variables.setdefault('create_mr', False)
                 if workflow.publication_policy == 'required' and str(variables.get('create_mr', True)).lower() in {'false','0','no'}:

@@ -8,6 +8,7 @@ from orchestrator.workflows.pr_completion import (
     CompletionReviewStep, MonitorCompletionStep, PrepareCompletionStep,
     PublishCompletionStep, RepairCompletionStep,
 )
+from orchestrator.workflows.validation import FinalValidationStep, DEFER_CHECKS
 from orchestrator.workflows.steps import (
     AssignStep,
     GateStep,
@@ -15,13 +16,14 @@ from orchestrator.workflows.steps import (
     ParallelStep,
     ReviewStep,
     SequenceStep,
+    StepResult,
 )
 from orchestrator.workflows.small_change import (
     SMALL_CHANGE_INSTRUCTIONS, SmallChangeAssignment, SmallChangeCheckpoint, SmallChangeSummary,
 )
 
 
-def small_change_workflow() -> Workflow:
+def _small_change_workflow() -> Workflow:
     """Implement, review, and permit exactly one revision before a user checkpoint."""
     review = (
         "Review the complete task diff with git diff {task_baseline}..HEAD in {cwd}.\n"
@@ -66,7 +68,7 @@ def small_change_workflow() -> Workflow:
     )
 
 
-def feature_workflow() -> Workflow:
+def _feature_workflow() -> Workflow:
     """Assess UX, plan, implement, review UX and code, revise, then optionally publish."""
     return Workflow(
         name="feature",
@@ -235,7 +237,7 @@ def feature_workflow() -> Workflow:
     )
 
 
-def bugfix_workflow() -> Workflow:
+def _bugfix_workflow() -> Workflow:
     """
     Bug investigation and fix workflow:
     1. Investigator analyzes the bug
@@ -379,8 +381,101 @@ def pr_completion_workflow() -> Workflow:
     )
 
 
+class ReviewBatchGate(GateStep):
+    async def execute(self, ctx):
+        approved = all(ctx.variables.get(key) == 'approved' for key in self.decision_keys)
+        if approved:
+            return StepResult(success=True, next_step=self.on_true)
+        count = ctx.variables.get('source_revision_count', 0)
+        if self.bounded and count >= 1:
+            return StepResult(success=False, error='Single source revision exhausted; inspect remaining review findings')
+        ctx.variables['source_revision_count'] = count + 1
+        await ctx.persist()
+        return StepResult(success=True, next_step=self.on_false)
+
+
+def _final_checks(workflow):
+    reviews = [s for s in workflow.steps if isinstance(s, ReviewStep)]
+    for step in workflow.steps:
+        if isinstance(step, AssignStep):
+            step.message_template += DEFER_CHECKS
+            if step.step_id == 'done':
+                step.message_template += '\nFinal validation evidence: {validation_summary}'
+        if isinstance(step, ReviewStep):
+            step.strict_decision = True
+            step.review_template += DEFER_CHECKS + '\nEnd with exactly one standalone final line: APPROVED or CHANGES_REQUESTED. Do not use these markers elsewhere.'
+    final = 'done' if workflow.name != 'bugfix' else '__end__'
+    for step in reviews:
+        if step.on_approve == final:
+            step.on_approve = 'validate'
+    index = next((i for i, s in enumerate(workflow.steps) if s.step_id == 'done'), len(workflow.steps))
+    workflow.steps.insert(index, FinalValidationStep(step_id='validate', name='Final Automated Checks', reviews=reviews))
+    workflow.max_iterations = max(workflow.max_iterations, 20)
+    workflow.description += ' → final checks (one repair maximum)'
+    return workflow
+
+
+def small_change_workflow():
+    return _final_checks(_small_change_workflow())
+
+
+def feature_workflow():
+    return _final_checks(_feature_workflow())
+
+
+def bugfix_workflow():
+    return _final_checks(_bugfix_workflow())
+
+
+def ui_small_workflow():
+    workflow = _feature_workflow()
+    workflow.name = 'ui-small'
+    workflow.description = 'Small UI change: brief UX assessment → implement → UX and code review → final checks; local only'
+    workflow.publication_policy = 'none'
+    workflow.steps = [s for s in workflow.steps if s.step_id not in {'plan', 'done', 'create-mr', 'verify-mr', 're-review-gate'}]
+    workflow.steps[0] = PrepareWorktreeStep(step_id='prepare-worktree')
+    workflow.initial_variables.update(plan='Use the brief UX assessment and existing patterns.', mr_status='disabled', mr_url='', mr_branch='', mr_base='')
+    for i, step in enumerate(workflow.steps):
+        if step.step_id == 'ux-assess':
+            step.message_template += '\nKeep this brief: existing pattern, proposed change, and a few acceptance criteria. No broad redesign.'
+        if step.step_id == 'implement':
+            workflow.steps[i] = SmallChangeAssignment(step_id='implement', role='implementer', output_key='implementation',
+                message_template='Request: {task_description}\nUX brief: {ux_assessment}\n' + SMALL_CHANGE_INSTRUCTIONS)
+        if isinstance(step, ReviewStep):
+            step.on_approve = None
+            step.on_reject = None
+    gate = ReviewBatchGate(step_id='review-gate', condition_key='review_decision', on_true='validate', on_false='revise')
+    gate.decision_keys = ['review_decision', 'ux_review_decision']
+    gate.bounded = True
+    revision = next(s for s in workflow.steps if s.step_id == 'revise')
+    workflow.steps.remove(revision)
+    workflow.steps += [gate, revision, GateStep(step_id='repeat-reviews', condition_key='review_decision', on_true='ux-review', on_false='ux-review'),
+                       SmallChangeCheckpoint(step_id='checkpoint'), SmallChangeSummary(step_id='done')]
+    workflow.role_overrides = {r: {'config_overrides': {'model_reasoning_effort': '\"medium\"'}}
+                               for r in ['senior-ux-designer', 'implementer', 'reviewer', 'qa']}
+    return _final_checks(workflow)
+
+
+def backend_feature_workflow():
+    workflow = _feature_workflow()
+    workflow.name = 'backend-feature'
+    workflow.description = 'Backend feature: plan → implement → code review → final checks → optional publication; disclose UI changes'
+    workflow.steps = [s for s in workflow.steps if s.step_id not in {'ux-assess', 'ux-review'}]
+    workflow.initial_variables['ux_assessment'] = 'Backend task: no dedicated UX assessment or review. Necessary UI changes are allowed; identify UI files, rationale, and pending UX review in deliverables.'
+    for step in workflow.steps:
+        if isinstance(step, AssignStep):
+            step.message_template += '\nIdentify all UI changes and their rationale. Explicitly state that dedicated UX review was not performed.'
+        if step.step_id == 're-review-gate':
+            step.on_true = step.on_false = 'review'
+        if isinstance(step, CreateMergeRequestStep):
+            step.require_ux_approval = False
+    return _final_checks(workflow)
+
+
 BUILTIN_WORKFLOWS: dict[str, Workflow] = {
     "small-change": small_change_workflow(),
+    "ui-small": ui_small_workflow(),
+    "backend-feature": backend_feature_workflow(),
     "feature": feature_workflow(),
     "bugfix": bugfix_workflow(),
     "review": review_workflow(),

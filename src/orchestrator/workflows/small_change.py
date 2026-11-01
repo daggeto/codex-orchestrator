@@ -58,5 +58,5 @@ class SmallChangeSummary(Step):
         report = report.removesuffix("SMALL_CHANGE_READY").rstrip()
         return StepResult(success=True, output={
             "summary": report + "\n\nSource review approved. Publication disabled. "
-            "Review approval does not establish automated or browser validation."
+            "Browser acceptance remains pending.\nFinal validation: " + ctx.variables.get("validation_summary", "Not performed")
         }, next_step="__end__")

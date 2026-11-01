@@ -666,3 +666,44 @@ Manual acceptance (not performed during implementation):
    progress/results/errors, destination wrapping at narrow widths, and disabled
    merge/archive controls while busy. Switch workspaces during submission and
    polling; no previous workspace result or error may appear in the new page.
+
+
+### Small UI and backend tasks
+
+Select `ui-small` for a component refactor, quick UX fix, or small section using
+existing patterns. Its team is senior-ux-designer, implementer, reviewer, and QA.
+A brief UX assessment guides implementation. UX and code feedback are collected
+before one combined revision; unresolved findings stop the task. Scope limits
+match small-change: no migrations, new services, substantial contract changes,
+or more than five implementation files. Publication is disabled.
+
+Select `backend-feature` for architecture planning, implementation, code review,
+and final QA without dedicated UX stages. Necessary UI changes are allowed but
+must be disclosed with affected files, rationale, and pending UX review.
+Publication is optional and defaults off in task submissions.
+
+```sh
+make task ARGS='"Improve the empty state on the dashboard" --workflow ui-small'
+make task ARGS='"Add server-side export filtering" --workflow backend-feature'
+```
+
+The matching implementer recipes are available in agent conversations. Recipes
+provide guidance; independent reviews and revision limits belong to workflows.
+
+All implementation workflows now defer tests, typecheck, and lint to final QA
+following source approvals. QA uses repository-defined commands and avoids
+combined-command duplication. Task and repository prohibitions take precedence;
+policy skips and unavailable commands are reported separately from passes.
+Missing dependencies or infrastructure block validation without auto-installing.
+One focused validation repair is allowed, followed by source review of the new
+commit and one final check run. Further failures stop. This allowance is separate
+from source revision limits and is persisted across continuation. Interrupted
+validation requires inspection and explicit follow-up rather than replaying
+commands. Provider CI and deployment checks remain separate gates.
+
+Manual acceptance: submit a quick UX fix and confirm the brief reaches the
+implementer and both reviews run before a revision. Submit a backend-only task,
+then one requiring UI edits, and inspect the disclosure. Exercise passing checks,
+policy skips, missing tools, a repair and a second failure. Confirm stale commit
+results cannot publish and continuation does not reset attempt limits. Browser
+acceptance remains a separate manual step.

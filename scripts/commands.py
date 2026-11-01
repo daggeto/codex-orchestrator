@@ -76,7 +76,7 @@ COMMANDS = (
     Command("team", "Spawn a team using the supplied role names.", "orch", ("team",),
             "Pass space-separated roles, or omit them to use configured defaults. This CLI invocation stops "
             "its orchestrator on completion; use start --spawn-team for a long-running team. "
-            "Feature workflows discover required roles automatically, including read-only senior-ux-designer.",
+            "Workflows discover their teams automatically: ui-small uses UX designer, implementer, reviewer and QA; backend-feature uses architect, implementer, reviewer and QA.",
             ('make team ARGS="senior-ux-designer architect implementer reviewer"',)),
     Command("send", "Send a message to an agent by role.", "orch", ("send",),
             "Requires ROLE MESSAGE. Starts a saved non-task agent for the role on demand inside a leased task in a Git checkout; unavailable workspaces reject execution. Interrupted turns can continue from their task page using the saved session. Task-owned agents use task messaging. Quote the message inside ARGS to preserve it as one argument. "
@@ -156,7 +156,7 @@ COMMANDS = (
             "Runs Vite in web/ with compact task navigation, a reversible task Archive, and task-scoped participant history. "
             "Worktree removal remains a separate confirmed operation. Start make start in another terminal for the API on port 8420. "
             "The development server proxies /api and /health to that API. Task home defaults to small-change "
-            "with local commits and no publication; publication is opt-in for feature and "
+            "with local commits and no publication. ui-small adds brief UX assessment and review; backend-feature omits UX stages and discloses UI edits. Implementation workflows finish with applicable QA checks and at most one validation repair. Publication is opt-in for feature/backend-feature and "
             "required for pr-completion. The monitor remains read-only.",
             ("make dev", 'make dev ARGS="--port 5174"')),
     Command("preview", "Serve the production web build locally.", "npm", ("run", "preview"),

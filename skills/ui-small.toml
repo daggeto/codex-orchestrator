@@ -1,0 +1,8 @@
+[skill]
+name = "ui-small"
+description = "Small UI changes using existing patterns; use the workflow for independent UX review"
+roles = ["implementer"]
+prompt_template = """Make the smallest UI change using existing components and contracts. Before editing, stop for migrations, new services, substantial public contract changes, or more than five implementation files. Report SCOPE_ESCALATION on a standalone line when blocked. Use a brief UX assessment and acceptance criteria where supplied. Report UI changes, commit and pending browser acceptance. Do not publish. Dedicated UX and code review and bounded revisions are provided by the ui-small workflow, not this recipe."""
+
+[skill.settings]
+effort = "medium"

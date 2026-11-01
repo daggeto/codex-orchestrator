@@ -111,7 +111,7 @@ def task(ctx, description, workflow, api_url, cwd, var):
 
     if not description.strip():
         raise click.BadParameter("Task description cannot be empty", param_hint="description")
-    variables = {"create_mr": "false"} if workflow == "feature" else {}
+    variables = {"create_mr": "false"} if workflow in {"feature", "backend-feature"} else {}
     for value in var:
         key, separator, content = value.partition("=")
         key = key.strip()
