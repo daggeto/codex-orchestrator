@@ -211,7 +211,7 @@ class TaskService:
                     if started:
                         agent.task_id = None
 
-    async def execute(self, task_id, message=None):
+    async def execute(self, task_id, message=None, continuation=None):
         workspace = None
         owned = False
         leased = False
@@ -219,7 +219,7 @@ class TaskService:
         acquired = False
         try:
             task = await self.store.task(task_id)
-            if task_id in self.cancelling or task['status'] in TERMINAL:
+            if task_id in self.cancelling or (task['status'] in TERMINAL and continuation is None):
                 return
             if task['owner_pid'] and task['owner_pid'] != self.owner_pid and owner_alive(task['owner_pid'], task['owner_started']):
                 return
@@ -228,7 +228,8 @@ class TaskService:
             if not claimed:
                 return
             owned = True
-            await self.store.task_status(task_id, 'queued', 'Preparing workspace', expected=('queued','active','interrupted'))
+            await self.store.task_status(task_id, 'queued', 'Preparing workspace',
+                                         expected=(task['status'],) if continuation else ('queued','active','interrupted'))
             settings = task['settings']
             if settings.get('legacy_agent_id'):
                 agent = await self.orch.registry.materialize(settings['legacy_agent_id'])
@@ -246,7 +247,7 @@ class TaskService:
                 await self._execute_legacy(task_id, workspace, agent, operation, cwd)
                 return
             await self.store.write('UPDATE tasks SET last_turn_json=NULL WHERE task_id=?', (task_id,))
-            if task['kind'] == 'workflow' and str(settings.get('variables', {}).get('create_mr', True)).lower() not in {'false','0','no'}:
+            if continuation is None and task['kind'] == 'workflow' and str(settings.get('variables', {}).get('create_mr', True)).lower() not in {'false','0','no'}:
                 workflow = self.orch.workflows[settings['workflow']]
                 if workflow.publication_policy in {'required', 'optional'}:
                     source = await self.store.workspace_record(task['workspace_id'])
@@ -254,7 +255,8 @@ class TaskService:
                     if not variables.get('publication_source'):
                         variables['publication_source'] = await resolve_publication_identity(source['path'], variables)
                         await self.store.write('UPDATE tasks SET settings_json=? WHERE task_id=?', (json.dumps(settings), task_id))
-            workspace = await self.orch.workspaces.ensure_task_workspace(task_id, task['settings']['isolate'])
+            workspace = (await self.store.workspace_record(task['workspace_id']) if continuation else
+                         await self.orch.workspaces.ensure_task_workspace(task_id, task['settings']['isolate']))
             lock = self.orch.workspaces.lock(workspace['workspace_id'])
             await lock.acquire()
             acquired = True
@@ -266,13 +268,19 @@ class TaskService:
             await self.store.task_status(task_id, 'active', 'Starting agents', expected=('queued',))
             if task['kind'] == 'workflow':
                 settings = task['settings']
-                team = await self.orch.spawn_team(list(settings['roles']), task_id=task_id, configurations=settings['roles'])
+                roles = settings.get('roles') or {name: self.role({'role': name}) for name in self.orch.workflows[settings['workflow']].required_roles}
+                team = await self.orch.spawn_team(list(roles), task_id=task_id, configurations=roles)
                 variables = {**settings.get('variables', {}), 'task_description': task['prompt'],
                              'cwd': workspace['path'], 'workspace_resolved': True, 'task_id': task_id, 'workspace_kind': workspace['kind']}
-                run = WorkflowRunRecord(run_id=task.get("idempotency_key") or uuid.uuid4().hex, workflow_name=settings['workflow'], status='accepted', config={'variables': variables}, state={'team': team})
-                await self.store.reserve_workflow_run(run)
+                run = continuation or WorkflowRunRecord(run_id=task.get("idempotency_key") or uuid.uuid4().hex, workflow_name=settings['workflow'], status='accepted', config={'variables': variables}, state={'team': team})
+                if continuation:
+                    run.state['team'] = team
+                    run.state['checkpoint']['variables']['task_id'] = task_id
+                    await self.store.save_workflow_run(run)
+                else:
+                    await self.store.reserve_workflow_run(run)
                 await self.store.write('UPDATE workflow_runs SET task_id=? WHERE run_id=?', (task_id, run.run_id))
-                result = await self.orch.engine.run(self.orch.workflows[settings['workflow']], variables, run.run_id, accepted=True)
+                result = await self.orch.engine.run(self.orch.workflows[settings['workflow']], variables, run.run_id, accepted=True, continuing=continuation is not None)
                 await self.store.task_status(task_id, 'completed' if result.success else 'failed', 'Completed' if result.success else result.error or 'Workflow failed', expected=('active','waiting_input'))
             else:
                 agents = await self.store.rows('SELECT * FROM agents WHERE task_id=? ORDER BY created_at', (task_id,))
@@ -300,6 +308,14 @@ class TaskService:
                 await self.store.task_status(task_id, 'failed', str(exc), expected=('queued','active','waiting_input'))
         finally:
             try:
+                if continuation and owned:
+                    latest_run = await self.store.get_workflow_run(continuation.run_id)
+                    if latest_run and latest_run.status in {'accepted', 'starting', 'running'}:
+                        latest_task = await self.store.task(task_id)
+                        latest_run.status = latest_task['status']
+                        latest_run.state.update(phase=latest_task['status'], error=latest_task['phase'])
+                        latest_run.completed_at = now()
+                        await self.store.save_workflow_run(latest_run)
                 for record in (await self.store.rows('SELECT agent_id FROM agents WHERE task_id=?', (task_id,)) if owned else []):
                     if self.orch.registry.get_agent(record['agent_id']):
                         await self.orch.registry.stop_agent(record['agent_id'])

@@ -137,7 +137,13 @@ class WorkspaceService:
             lease = await self.store.one('SELECT * FROM workspace_leases WHERE task_id=?', (task['task_id'],))
             if lease or (task['owner_pid'] and owner_alive(task['owner_pid'], task['owner_started'])):
                 continue
-            await self.store.task_status(task['task_id'], 'interrupted', 'Owner stopped; continue explicitly')
+            run = await self.store.one('SELECT * FROM workflow_runs WHERE task_id=? ORDER BY updated_at DESC LIMIT 1', (task['task_id'],))
+            if run and run['status'] in {'completed', 'failed', 'cancelled', 'interrupted', 'paused'}:
+                status = 'interrupted' if run['status'] == 'paused' else run['status']
+                phase = run['state'].get('error') or run['state'].get('phase') or status
+                await self.store.task_status(task['task_id'], status, phase)
+            else:
+                await self.store.task_status(task['task_id'], 'interrupted', 'Owner stopped; continue explicitly')
             await self.store.write("UPDATE input_requests SET status='expired',updated_at=? WHERE task_id=? AND status='pending'", (now(), task['task_id']))
             await self.store.write("UPDATE step_executions SET status='interrupted',updated_at=? WHERE task_id=? AND status='active'", (now(), task['task_id']))
         for archive in await self.store.rows("SELECT * FROM archives WHERE stage NOT IN ('archived','failed','interrupted')"):

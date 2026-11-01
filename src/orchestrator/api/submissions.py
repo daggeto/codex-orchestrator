@@ -122,6 +122,11 @@ async def continue_run(request):
 
 
 async def accept_continuation(request):
+    async with request.app['orch'].tasks.accept_lock:
+        return await _accept_continuation(request)
+
+
+async def _accept_continuation(request):
     orch = request.app["orch"]
     try:
         body = await request.json()
@@ -141,6 +146,16 @@ async def accept_continuation(request):
             raise ValueError("Workflow definition unavailable")
         from orchestrator.workflows.engine import continuation_checkpoint
         checkpoint = continuation_checkpoint(workflow, record)
+        task = await orch.store.one('SELECT * FROM tasks WHERE task_id=(SELECT task_id FROM workflow_runs WHERE run_id=?)', (record.run_id,))
+        if task:
+            from orchestrator.processes import owner_alive
+            if task['task_id'] in orch.tasks.running:
+                return web.json_response({'error': 'Task execution is still stopping; retry shortly'}, status=409)
+            if task['owner_pid'] and task['owner_pid'] != orch.tasks.owner_pid and owner_alive(task['owner_pid'], task['owner_started']):
+                return web.json_response({'error': 'Task belongs to another live service'}, status=409)
+            workspace = await orch.store.workspace_record(task['workspace_id'])
+            if workspace['status'] != 'active' or task['archived_at']:
+                raise ValueError('Task workspace or archived task is unavailable for continuation')
         iteration_limit = record.config.get("iteration_limit", workflow.max_iterations)
         additional_steps = body.get("additional_steps", 0)
         if type(additional_steps) is not int or additional_steps not in (0, 20):
@@ -176,7 +191,10 @@ async def accept_continuation(request):
         else:
             record.status = "accepted"
             record.completed_at = None
-            own_task(request.app, execute(request.app, workflow, record, continuing=True))
+            if task:
+                orch.tasks.schedule(task['task_id'], orch.tasks.execute(task['task_id'], continuation=record))
+            else:
+                own_task(request.app, execute(request.app, workflow, record, continuing=True))
         return web.json_response({"run_id": record.run_id}, status=202)
     except (ValueError, OSError, RuntimeError, KeyError) as exc:
         return web.json_response({"error": str(exc)}, status=400)
