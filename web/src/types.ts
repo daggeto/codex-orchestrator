@@ -51,7 +51,7 @@ export interface WorkspaceRecord {
 }
 export interface TaskRecord {
   task_id: string; workspace_id: string; title: string; prompt: string; kind: 'agent' | 'workflow';
-  archived_at: string | null; status: string; phase: string; settings: Record<string, unknown>; created_at: string;
+  archived_at: string | null; status: string; phase: string; last_turn?: { ok: boolean } | null; settings: Record<string, unknown>; created_at: string;
 }
 export interface OwnedAgent {
   agent_id: string; role: string; backend: string; task_id: string | null; status: string; retired_at: string | null;

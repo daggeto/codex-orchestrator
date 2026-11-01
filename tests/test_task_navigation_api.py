@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from orchestrator.agents.base import TurnResult
 from orchestrator.api import tasks, workspaces
 from orchestrator.state.store import StateStore
 from orchestrator.tasks import TaskService
@@ -56,3 +57,12 @@ class TaskNavigationApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('t004', [t['task_id'] for t in preview['tasks']])
         response = await self.client.post('/api/tasks/t024/archive', json={'archived': False})
         self.assertIsNone((await response.json())['task']['archived_at'])
+
+    async def test_failed_turn_outcome_reaches_all_task_surfaces(self):
+        await self.store.task_status('t024', 'active', 'Turn completed with error')
+        await self.store.record_turn('t024', TurnResult('thread', 'Partial', [], error='Turn completed with error'))
+        for endpoint in ['/api/tasks/t024', '/api/tasks', '/api/navigation']:
+            payload = await (await self.client.get(endpoint)).json()
+            task = payload['task'] if 'task' in payload else next(t for t in payload['tasks'] if t['task_id'] == 't024')
+            self.assertEqual('active', task['status'])
+            self.assertIs(False, task['last_turn']['ok'])
