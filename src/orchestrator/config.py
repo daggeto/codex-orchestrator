@@ -23,6 +23,11 @@ class OrchestratorConfig:
     commit_model: str = "gpt-6-luna"
     default_approval_policy: str = "on-failure"
     default_sandbox: str = "workspace-write"
+    attachments_enabled: bool = False
+    attachment_files_per_message: int = 10
+    attachment_max_file_bytes: int = 20 * 1024 * 1024
+    attachment_max_task_bytes: int = 200 * 1024 * 1024
+    attachment_draft_hours: int = 24
     api_host: str = "127.0.0.1"
     api_port: int = 8420
     log_level: str = "INFO"

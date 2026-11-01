@@ -42,3 +42,23 @@ class ArchiveCaptureTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'LFS pointer'):
                 capture(root, base / 'archive.tar.gz', bundle, {})
             self.assertTrue(root.exists())
+
+
+class ExternalAttachmentArchiveTests(unittest.TestCase):
+    def test_managed_bytes_stay_outside_capture_but_metadata_survives(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            checkout = base / 'checkout'
+            checkout.mkdir()
+            (checkout / 'source.txt').write_text('source')
+            attachments = base / 'attachments'
+            attachments.mkdir()
+            (attachments / 'generated-key').write_bytes(b'private original')
+            bundle = base / 'history.bundle'
+            bundle.write_bytes(b'history')
+            target = base / 'archive.tar.gz'
+            capture(checkout, target, bundle, {'attachments': [{'filename': 'notes.txt', 'attachment_id': 'a'}]})
+            with tarfile.open(target) as archive:
+                self.assertFalse(any('generated-key' in name or name.startswith('attachments/') for name in archive.getnames()))
+                manifest = json.load(archive.extractfile('manifest.json'))
+                self.assertEqual('a', manifest['history']['attachments'][0]['attachment_id'])

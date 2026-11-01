@@ -97,6 +97,7 @@ class AgentRegistry:
 
         agent.task_id = task_id
         agent.store = self._store
+        agent.attachment_resolver = getattr(self, 'attachment_resolver', None)
         agent.input_handler = getattr(self, 'input_handler', None)
         agent.set_observer(self._observations)
         if self._observation_task is None or self._observation_task.done():
@@ -140,6 +141,8 @@ class AgentRegistry:
             await self._store.write('UPDATE agents SET owner_pid=?,owner_started=? WHERE agent_id=?',
                                     (os.getpid(), process_identity(os.getpid()), agent_id))
             await agent.start()
+            if task_id := getattr(agent, 'task_id', None):
+                await agent.prepare_input('Validate task attachment delivery before work starts')
             if isinstance(agent, CodexAgent):
                 await self._store.write('UPDATE agents SET port=? WHERE agent_id=?', (agent.port, agent_id))
             await self._store.update_agent_status(

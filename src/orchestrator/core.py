@@ -58,6 +58,9 @@ class Orchestrator:
         self.workspaces = WorkspaceService(self)
         self.workspace.persistence = self.workspaces
         self.tasks = TaskService(self)
+        from orchestrator.attachments import AttachmentService
+        self.attachments = AttachmentService(self)
+        self.registry.attachment_resolver = self.attachments.resolve_for_task
         self.registry.input_handler = self.tasks.request_input
         self.registry.task_service = self.tasks
         self.hitl.task_service = self.tasks
@@ -78,6 +81,7 @@ class Orchestrator:
 
         await self.workspaces.reconcile()
         await self.merges.reconcile()
+        await self.attachments.start()
 
         # Init audit log on the same DB connection
         from orchestrator.audit import AuditLog
@@ -105,6 +109,7 @@ class Orchestrator:
         self._shutdown_event.set()
         await self.tasks.shutdown()
         await self.registry.shutdown()
+        await self.attachments.stop()
         # Don't auto-cleanup worktrees — they have uncommitted work
         # User should explicitly merge or abandon via CLI/API
         await self.store.close()

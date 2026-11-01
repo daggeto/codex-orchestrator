@@ -737,7 +737,6 @@ Manual acceptance (not performed during implementation):
    merge/archive controls while busy. Switch workspaces during submission and
    polling; no previous workspace result or error may appear in the new page.
 
-
 ### Small UI and backend tasks
 
 Select `ui-small` for a component refactor, quick UX fix, or small section using
@@ -790,3 +789,31 @@ policy skips, missing tools, mixed failures and blockers, successful repairs, an
 repeated failures. Confirm the task page explains each stop and how to continue,
 stale commit results cannot publish, and only explicit Continue renews the repair budget. Browser
 acceptance remains a separate manual step.
+
+### Task attachments
+
+The web composer supports file selection and drag and drop for task creation,
+agent follow-ups, and workflow question responses. Attachment-only requests are
+allowed; questions still require answers and approvals still require a decision.
+Files belong to the task and are shared with every agent role, including reviewers.
+
+Uploads are gated until cleanup and agent-delivery source approval. After approval,
+set `attachments_enabled = true` in the service's `config.toml`, run `make install`
+to install Pillow, and restart the service. `GET /api/attachment-limits` reports
+availability and limits. Defaults are 10 files per message, 20 MiB per file,
+200 MiB per task, and 24 hours for abandoned upload drafts. Config fields are
+`attachment_files_per_message`, `attachment_max_file_bytes`,
+`attachment_max_task_bytes`, and `attachment_draft_hours`.
+
+Managed bytes live under `data_dir/attachments`, outside checkouts and archives.
+Completion and reversible task archiving retain them. Removing a worktree
+permanently purges attachments of **all** its tasks, including archived tasks,
+and unsubmitted workspace drafts. Failed deletion remains retryable even after
+the checkout is gone. History retains file metadata; restoring history cannot
+restore deleted files. Restart copies available files into independent ownership;
+unavailable files require reselection or explicit omission.
+
+PNG, JPEG and WebP still images are validated for preview and native image input.
+Other files are downloadable resources for agent tools. Files are not extracted,
+converted or executed automatically. Backend transcripts, user downloads, and
+agent-created copies or derived outputs are outside managed deletion guarantees.

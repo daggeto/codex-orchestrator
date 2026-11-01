@@ -1,7 +1,7 @@
 """Ordered, additive migrations. Historical records without evidence stay unowned."""
 from __future__ import annotations
 
-VERSION = 7
+VERSION = 9
 MIGRATIONS = {2: """
 CREATE TABLE repositories (
  repository_id TEXT PRIMARY KEY, name TEXT NOT NULL, main_path TEXT NOT NULL UNIQUE,
@@ -112,6 +112,44 @@ ALTER TABLE workspace_merges ADD COLUMN commit_changes INTEGER NOT NULL DEFAULT 
 ALTER TABLE workspace_merges ADD COLUMN changes_json TEXT NOT NULL DEFAULT '{}';
 ALTER TABLE workspace_merges ADD COLUMN commits_json TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE workspace_merges ADD COLUMN phase TEXT NOT NULL DEFAULT 'merge';
+""", 8: """
+CREATE TABLE attachment_drafts (
+ draft_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+ task_id TEXT REFERENCES tasks(task_id), state TEXT NOT NULL DEFAULT 'open',
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, expires_at TEXT NOT NULL
+);
+CREATE TABLE attachments (
+ attachment_id TEXT PRIMARY KEY, draft_id TEXT NOT NULL REFERENCES attachment_drafts(draft_id),
+ task_id TEXT REFERENCES tasks(task_id), filename TEXT NOT NULL, storage_key TEXT NOT NULL UNIQUE,
+ media_type TEXT NOT NULL DEFAULT 'application/octet-stream', byte_count INTEGER NOT NULL DEFAULT 0,
+ sha256 TEXT, width INTEGER, height INTEGER,
+ state TEXT NOT NULL CHECK(state IN ('uploading','ready','deleting','deleted','failed')),
+ error TEXT, writer_pid INTEGER, writer_started TEXT, created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL, deleted_at TEXT
+);
+CREATE TABLE task_messages (
+ message_id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(task_id),
+ origin TEXT NOT NULL CHECK(origin IN ('initial','followup','input_response')),
+ text TEXT NOT NULL, response_json TEXT, input_request_id TEXT UNIQUE REFERENCES input_requests(request_id),
+ idempotency_key TEXT, fingerprint TEXT NOT NULL, delivery_state TEXT NOT NULL DEFAULT 'accepted',
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ UNIQUE(task_id,idempotency_key)
+);
+CREATE TABLE message_attachments (
+ message_id TEXT NOT NULL REFERENCES task_messages(message_id),
+ attachment_id TEXT NOT NULL REFERENCES attachments(attachment_id), position INTEGER NOT NULL,
+ PRIMARY KEY(message_id,attachment_id), UNIQUE(message_id,position)
+);
+CREATE INDEX attachment_task ON attachments(task_id,created_at);
+CREATE INDEX attachment_draft ON attachments(draft_id,state);
+CREATE INDEX draft_expiry ON attachment_drafts(state,expires_at);
+CREATE INDEX messages_task ON task_messages(task_id,created_at);
+""", 9: """
+ALTER TABLE tasks ADD COLUMN submission_workspace_id TEXT REFERENCES workspaces(workspace_id);
+UPDATE tasks SET submission_workspace_id=(
+ SELECT workspace_id FROM workspaces
+ WHERE path=json_extract(tasks.settings_json,'$.variables.cwd')
+);
 """}
 
 

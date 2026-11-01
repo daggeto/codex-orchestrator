@@ -1,7 +1,7 @@
 import type { DurableEvent } from './types';
 export interface ConversationEntry {
   key: string; kind: 'user' | 'assistant' | 'error' | 'activity'; text: string;
-  events: DurableEvent[];
+  events: DurableEvent[]; attachmentIds?: string[];
 }
 const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' ? value as Record<string, unknown> : {};
 const readable = (value: unknown): string => {
@@ -42,7 +42,7 @@ export function reduceConversation(records: DurableEvent[]): ConversationEntry[]
       entries.push({ key: String(event.id), kind: 'error', text: readable(payload.message || payload.error || item.error || item.aggregatedOutput || item.content || payload.result || turn.error || 'Action failed. Expand details for the recorded result.'), events: [event] });
       lastDelta = undefined;
     } else if (event.kind === 'user') {
-      entries.push({ key: String(event.id), kind: 'user', text: String(payload.text || ''), events: [event] });
+      entries.push({ key: String(event.id), kind: 'user', text: String(payload.text || ''), attachmentIds: Array.isArray(payload.attachment_ids) ? payload.attachment_ids.filter((id): id is string => typeof id === 'string') : [], events: [event] });
       lastDelta = undefined;
     } else if (delta || finalMessage) {
       let entry = key ? messages.get(key) : delta && lastDelta?.scope === scope(event) ? lastDelta.entry : undefined;

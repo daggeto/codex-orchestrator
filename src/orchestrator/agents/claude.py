@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+from pathlib import Path
 import json
 import logging
 import shutil
@@ -69,7 +71,14 @@ class ClaudeSession:
         else:
             cmd.extend(["--session-id", self.thread_id])
 
-        cmd.extend(["--print", message])
+        if getattr(message, 'attachments', []):
+            cmd.extend(['--input-format', 'stream-json', '--print'])
+            # Read permissions for exact resources only. No additional workspace
+            # roots or write permissions are granted for attachments.
+            cmd.extend(['--settings', json.dumps({'permissions': {'allow': [
+                'Read(/' + ''.join(('\\' + char) if char in '\\*?[]!' else char for char in a['path']) + ')' for a in message.attachments]}})])
+        else:
+            cmd.extend(["--print", str(message)])
 
         return cmd
 
@@ -80,12 +89,33 @@ class ClaudeSession:
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
             start_new_session=True,
+            stdin=asyncio.subprocess.PIPE if getattr(message, "attachments", []) else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=self.cwd,
         )
         self._turn_active = True
-
+        async def write_input():
+            if not getattr(message, 'attachments', []):
+                return
+            blocks = [{'type': 'text', 'text': message.with_manifest()}]
+            for attachment in message.attachments:
+                if attachment['width']:
+                    blocks.append({'type': 'image', 'source': {'type': 'base64',
+                        'media_type': attachment['media_type'],
+                        'data': base64.b64encode(Path(attachment['path']).read_bytes()).decode('ascii')}})
+            payload = {'type': 'user', 'message': {'role': 'user', 'content': blocks},
+                       'parent_tool_use_id': None, 'session_id': self._resume_id or self.thread_id}
+            self._proc.stdin.write((json.dumps(payload) + '\n').encode())
+            await self._proc.stdin.drain()
+            self._proc.stdin.close()
+        writer = asyncio.create_task(write_input())
+        async def drain_errors():
+            tail = b''
+            while chunk := await self._proc.stderr.read(8192):
+                tail = (tail + chunk)[-8192:]
+            return tail
+        stderr = asyncio.create_task(drain_errors())
         try:
             async for line in self._proc.stdout:
                 decoded = line.decode().strip()
@@ -107,12 +137,20 @@ class ClaudeSession:
                     if event.is_turn_completed:
                         return
 
+            await writer
             await self._proc.wait()
-            yield StreamEvent(method="error", params={
-                "threadId": self.thread_id,
-                "message": f"Claude exited without a completion result (exit {self._proc.returncode})",
-            })
+            if self._proc.returncode:
+                # Do not persist stderr: backend errors may echo native image input.
+                yield StreamEvent(method='error', params={'message': f'Claude exited with status {self._proc.returncode}. Verify CLI stream-json support and model image capability.'})
+            else:
+                yield StreamEvent(method="error", params={
+                    "threadId": self.thread_id,
+                    "message": "Claude exited without a completion result; implementation is not ready for review",
+                })
         finally:
+            writer.cancel()
+            stderr.cancel()
+            await asyncio.gather(writer, stderr, return_exceptions=True)
             self._turn_active = False
             if self._proc:
                 await stop_process_group(self._proc)
@@ -303,6 +341,29 @@ class ClaudeAgent(Agent):
             events=events,
             error=error,
         )
+
+    async def validate_attachment_input(self, message):
+        if not message.attachments:
+            return
+        if not getattr(self, '_attachment_transport_checked', False):
+            proc = await asyncio.create_subprocess_exec(self._claude_bin, '--help',
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            try:
+                stdout, _ = await asyncio.wait_for(proc.communicate(), 10)
+            except BaseException:
+                proc.kill()
+                await proc.wait()
+                raise
+            if proc.returncode or b'--input-format' not in stdout or b'stream-json' not in stdout:
+                raise ValueError('Installed Claude CLI lacks stream-json image input. Upgrade Claude Code before using attachments.')
+            self._attachment_transport_checked = True
+        # Built-in Claude model families support images. Custom providers must
+        # advertise a known model rather than silently discarding native blocks.
+        if any(a['width'] and a['byte_count'] > 5 * 1024 * 1024 for a in message.attachments):
+            raise ValueError('Claude native images must be at most 5 MiB each. Choose a smaller image before starting work.')
+        model = self.role.model or ''
+        if any(a['width'] for a in message.attachments) and model and not any(name in model.lower() for name in ('claude', 'sonnet', 'opus', 'haiku')):
+            raise ValueError('This Claude model alias has no verified image capability. Select a Claude image-capable model or remove images.')
 
     @observed_stream
     async def stream_message(

@@ -65,7 +65,7 @@ function WorkspaceDetails({ workspaceId }: { workspaceId: string }) {
     </div>}
     {workspace.archive && <p>Archive: {workspace.archive.stage} {workspace.archive.path} {workspace.archive.error}</p>}
     {workspace.kind === 'worktree' && !['archived','archiving'].includes(workspace.status) && <Button variant="danger" disabled={busy || merge.busy || ['merging', 'merge_recovery_required'].includes(workspace.status)} onClick={async () => {
-      if (busy || !window.confirm(`Remove worktree ${workspace.path}? This cancels unfinished tasks in this workspace and removes its checkout. Task history is retained. Restoring a task does not recreate the checkout.`)) return;
+      if (busy || !window.confirm(`Remove worktree ${workspace.path}? This cancels unfinished tasks in this workspace and removes its checkout. Task history is retained. All attachments for tasks owned by this worktree are permanently deleted, including archived tasks. Restoring history does not restore these files or recreate the checkout.`)) return;
       setBusy(true); setFailure('');
       try {
         const response = await fetch(`/api/workspaces/${workspace.workspace_id}`, { method: 'DELETE' });

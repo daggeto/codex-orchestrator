@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 
@@ -10,6 +11,21 @@ def now():
 
 
 class OwnershipStore:
+    @asynccontextmanager
+    async def transaction(self):
+        """Isolated connection: shared-store writes cannot commit this transaction."""
+        import aiosqlite
+        async with aiosqlite.connect(self._db_path, timeout=30) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute('PRAGMA foreign_keys=ON')
+            await db.execute('BEGIN IMMEDIATE')
+            try:
+                yield db
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+
     async def rows(self, sql, params=()):
         async with self._db.execute(sql, params) as cursor:
             result = []

@@ -29,3 +29,8 @@ it('promotes Claude and nested Codex failures', () => {
   expect(reduceConversation(rows).map(e => e.kind)).toEqual(['error', 'error', 'error']);
   expect(reduceConversation(rows)[0].text).toBe('Permission denied');
 });
+
+it('retains ordered attachment references on attachment-only messages and replay', () => {
+  const record = event(1, 'user', null, { text: '', attachment_ids: ['image', 'file'] });
+  expect(reduceConversation([record, record])).toEqual([expect.objectContaining({ kind: 'user', text: '', attachmentIds: ['image', 'file'] })]);
+});

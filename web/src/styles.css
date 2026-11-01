@@ -271,3 +271,12 @@ small, time, .muted { color: var(--muted); }
   .participant button { overflow-wrap: anywhere; }
 }
 @media (prefers-reduced-motion: reduce) { .task-page *, .repository-sidebar * { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }
+
+.attachment-picker { padding: .75rem; border: 1px dashed var(--border, #667085); border-radius: .5rem; margin-block: .75rem; }
+.attachment-picker > small { display: block; margin-block: .5rem; }
+.attachment-list { list-style: none; padding: 0; display: grid; gap: .5rem; }
+.attachment-list li { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; padding: .5rem; border: 1px solid var(--border, #667085); border-radius: .4rem; min-width: 0; }
+.attachment-name { flex: 1 1 10rem; min-width: 0; overflow-wrap: anywhere; }
+.attachment-name small { display: block; }
+.attachment-preview { display: block; width: 5rem; height: 5rem; object-fit: contain; border-radius: .25rem; }
+.attachment-list .button { white-space: normal; overflow-wrap: anywhere; }

@@ -273,3 +273,61 @@ codex-orchestrator/
 ├── workflows/           # Custom workflow configs
 └── .venv/               # Python virtual environment
 ```
+
+## Working with task files
+
+After source approval, enable `attachments_enabled = true` in `config.toml` and
+restart the service. The source gate keeps uploads unavailable until cleanup and
+shared agent delivery have been reviewed. Install the updated Python dependencies
+with `make install` before enabling it.
+
+Use **Attach files** or drop files into the attachment area on the task composer,
+agent follow-up composer, or workflow response form. Both paths use the same upload
+pipeline. Each row shows its name, size and state. Sending waits until every selected
+file is ready. Failed uploads keep the text and successful selections. Retry the
+file or remove it; an oversized file needs a smaller replacement. A request can
+contain files without text, but workflow answers and approval decisions remain
+required. General workflow chat is not an attachment destination.
+
+Ready uploads recover after reload. Browser file selections do not: interrupted
+uploads may need **Recover uploaded files**, or removal and reselection from your
+device. If the request was accepted before its response was lost, recovery offers
+**Open accepted task** using the files' saved ownership. This opens the original
+task even when execution settings reset after reload; the files cannot be submitted
+again. If file recovery fails, sending and file edits stay blocked until
+**Retry file recovery** confirms their state. Otherwise, retry an uncertain
+submission without changing its contents. Workflow retries retain the original
+submission workspace even after execution moves into an isolated worktree.
+Completed selections expire if abandoned for 24 hours.
+
+Task files appear above the participant history, with references beside their
+originating messages. Every role resolves the same task context on each turn.
+Codex uses native `localImage` blocks and checks model image capability; Claude uses
+stream-json user content over stdin and requires a compatible CLI and image-capable
+model. [Claude's streaming input documentation](https://code.claude.com/docs/en/agent-sdk/streaming-vs-single-mode)
+describes the image block contract. Actual readability and image inspection with
+each configured backend remain a separate QA gate. Generic files are resources for
+tools, not a promise of document conversion.
+
+Defaults: 10 files per message, 20 MiB per file, 200 MiB per task. Previewable images
+must be still PNG, JPEG or WebP with at most 25 megapixels. Files are private under
+`data_dir/attachments`; configure `data_dir` outside all registered Git checkouts.
+No attachment is automatically copied into a checkout or archive.
+
+Completing or archiving a task retains its files. Continuing keeps the same task
+ownership. Restarting creates independent copies of available files; deleted files
+require reselection in a new task, or an explicit choice to omit them. After checkout
+removal, Restart uses the repository's active Main workspace with normal task
+isolation. The restart form shows the destination and retains the request.
+Removing a worktree cancels unfinished tasks, verifies and removes its checkout, then purges
+managed files for every task currently owned by that worktree and its unbound drafts.
+Deletion failure stays visible and retryable. Restoring a task restores history only.
+Agent-created copies, provider transcripts and downloaded files are not managed
+attachment content and are outside this deletion guarantee.
+
+QA after source approvals: use `make test-python`, `make test`, `make typecheck`, and
+`make build`. Browser acceptance is separate: picker/drop parity, keyboard operation,
+focus after removal, screen-reader status announcements, narrow layouts, long names,
+large images, upload recovery, deleted-file visibility, and cleanup failure/retry.
+Verify actual file reading and image inspection with every configured backend and
+role, including reviewers and continued workflows, before enabling uploads for use.

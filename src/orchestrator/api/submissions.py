@@ -7,6 +7,7 @@ import json
 import re
 from dataclasses import asdict
 from datetime import datetime, timezone
+from pathlib import Path
 
 from aiohttp import web
 
@@ -68,6 +69,20 @@ async def submit(request: web.Request) -> web.Response:
     return await asyncio.shield(own_task(request.app, accept(request)))
 
 
+async def restart_workspace(orch, task_id):
+    source = await orch.store.task(task_id)
+    workspace = await orch.store.workspace_record(source['workspace_id']) if source else None
+    if workspace and workspace['status'] == 'active' and Path(workspace['path']).is_dir():
+        return workspace
+    if workspace:
+        main = await orch.store.one(
+            "SELECT * FROM workspaces WHERE repository_id=? AND kind='main' AND status='active'",
+            (workspace['repository_id'],))
+        if main and Path(main['path']).is_dir():
+            return main
+    return None
+
+
 async def accept(request):
     orch = request.app['orch']
     from orchestrator.api.tasks import body
@@ -76,11 +91,64 @@ async def accept(request):
     rid = data.get('run_id')
     if not isinstance(variables, dict) or not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', rid):
         raise ValueError('Expected run_id and workflow variables')
+    previous = await orch.store.one('SELECT * FROM tasks WHERE idempotency_key=?', (rid,))
+    if previous:
+        # Acceptance recovery must precede directory existence and upload checks.
+        # The original checkout may have been removed since the response was lost.
+        supplied = variables.get('cwd')
+        if not isinstance(supplied, str):
+            raise ValueError('Expected a saved workflow directory')
+        # Directory lookup canonicalizes paths at acceptance, but the fingerprint
+        # retains the supplied spelling. Preserve it on retry as well, including
+        # trailing slashes and tilde paths used by existing submissions.
+        variables = dict(variables)
+        if data.get('copy_from_task_id'):
+            source = await orch.store.task(data['copy_from_task_id'])
+            source_workspace = await orch.store.workspace_record(source['workspace_id']) if source else None
+            if source_workspace and variables['cwd'] == source_workspace['path']:
+                variables['cwd'] = previous['settings'].get('variables', {}).get('cwd')
+        # Execution may have moved the task into an isolated checkout. Its
+        # original fingerprint belongs to the workspace used at acceptance.
+        submission_workspace_id = previous.get('submission_workspace_id')
+        if not submission_workspace_id:
+            # Older records may not have been backfilled when their saved cwd
+            # used a noncanonical spelling. Resolve only for workspace lookup,
+            # without requiring the original checkout to still exist.
+            saved_cwd = previous['settings'].get('variables', {}).get('cwd')
+            if isinstance(saved_cwd, str):
+                original = await orch.store.one('SELECT workspace_id FROM workspaces WHERE path=?',
+                    (normalize_directory(saved_cwd, validate=False),))
+                submission_workspace_id = original['workspace_id'] if original else None
+        if not submission_workspace_id:
+            raise ValueError('The original submission workspace is unavailable for this older task. Open the accepted task from task history.')
+        task = await orch.tasks.submit(submission_workspace_id, variables.get('task_description'),
+            settings={'workflow': request.match_info['name'], 'variables': variables}, idempotency_key=rid,
+            attachment_ids=data.get('attachment_ids'), draft_id=data.get('draft_id'),
+            copy_from_task_id=data.get('copy_from_task_id'), omit_unavailable=data.get('omit_unavailable_attachments') is True)
+        return web.json_response({'run_id': rid, 'task_id': task['task_id'], 'status_url': f'/api/workflows/runs/{rid}'}, status=202)
+    if data.get('copy_from_task_id'):
+        source = await orch.store.task(data['copy_from_task_id'])
+        source_workspace = await orch.store.workspace_record(source['workspace_id']) if source else None
+        destination = await restart_workspace(orch, data['copy_from_task_id'])
+        if not destination:
+            raise ValueError('No active restart workspace is available. Restore the repository Main workspace and retry.')
+        # Recover older saved requests that still name the removed checkout.
+        # Only the source checkout may be redirected; arbitrary paths still
+        # undergo normal directory and repository validation below.
+        if variables.get('cwd') == source_workspace['path']:
+            variables = {**variables, 'cwd': destination['path']}
     path = normalize_directory(variables.get('cwd'))
     await orch.workspaces.register(path)
     workspace = await orch.store.one('SELECT * FROM workspaces WHERE path=?', (path,))
+    if data.get('copy_from_task_id'):
+        source = await orch.store.task(data['copy_from_task_id'])
+        source_workspace = await orch.store.workspace_record(source['workspace_id']) if source else None
+        if not source_workspace or source_workspace['repository_id'] != workspace['repository_id']:
+            raise ValueError('Restart attachments must belong to this repository')
     task = await orch.tasks.submit(workspace['workspace_id'], variables.get('task_description'),
-        settings={'workflow': request.match_info['name'], 'variables': variables}, idempotency_key=rid)
+        settings={'workflow': request.match_info['name'], 'variables': variables}, idempotency_key=rid,
+        attachment_ids=data.get('attachment_ids'), draft_id=data.get('draft_id'),
+        copy_from_task_id=data.get('copy_from_task_id'), omit_unavailable=data.get('omit_unavailable_attachments') is True)
     return web.json_response({'run_id': rid, 'task_id': task['task_id'], 'status_url': f'/api/workflows/runs/{rid}'}, status=202)
 
 
@@ -111,7 +179,13 @@ async def get_run(request):
     checkpoint = record.state.get("checkpoint", {})
     requires_extension = (checkpoint.get("next_step") != "__end__"
                           and checkpoint.get("iteration", 0) >= iteration_limit)
-    return web.json_response({"run": asdict(record), "continuation": {
+    task = await request.app['orch'].store.one('SELECT task_id FROM workflow_runs WHERE run_id=?', (record.run_id,))
+    from orchestrator.api.attachments import public
+    attachment_rows = await request.app['orch'].store.rows('SELECT * FROM attachments WHERE task_id=? ORDER BY created_at', (task['task_id'],)) if task and task['task_id'] else []
+    destination = await restart_workspace(request.app['orch'], task['task_id']) if task and task['task_id'] else None
+    return web.json_response({"run": asdict(record), 'task_id': task['task_id'] if task else None,
+                             'restart_workspace': {'path': destination['path'], 'kind': destination['kind']} if destination else None,
+                             'attachments': [public(row) for row in attachment_rows], "continuation": {
         "available": reason is None, "reason": reason,
         "requires_extension": requires_extension,
         "iteration_limit": iteration_limit, "next_iteration_limit": iteration_limit + 20,

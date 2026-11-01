@@ -63,6 +63,7 @@ class CodexAgent(Agent):
         self._reconnect_task: asyncio.Task | None = None
 
         self._pending: dict[int | str, asyncio.Future[JSONRPCResponse]] = {}
+        self._active_turn_ids = {}
         self._event_queues: dict[str, asyncio.Queue[StreamEvent]] = {}
         self._global_events: asyncio.Queue[StreamEvent] = asyncio.Queue(maxsize=10000)
         self._id_counter = 0
@@ -304,9 +305,24 @@ class CodexAgent(Agent):
                     options=req.params.get('questions', []))
                 if not isinstance(answer, dict):
                     answer = {'answers': {q['id']: {'answers': [str(answer)]} for q in req.params.get('questions', [])}}
+                # toolRequestUserInput accepts answers only. Queue the current
+                # resource context through native turn/steer before unblocking it.
+                context = await self.prepare_input('Files supplied with the human response are available below.')
+                if context.attachments:
+                    thread_id = req.params.get('threadId')
+                    turn_id = req.params.get('turnId') or self._active_turn_ids.get(thread_id)
+                    if not thread_id or not turn_id:
+                        raise ValueError('Backend did not identify the waiting turn; retry with a current Codex app-server')
+                    await self._request('turn/steer', {'threadId': thread_id, 'expectedTurnId': turn_id,
+                                                     'input': self.attachment_input(context)})
                 await self._send_raw({'id': req.id, 'result': answer})
             except asyncio.CancelledError:
                 raise
+            except (ValueError, RuntimeError) as exc:
+                await self._send_raw({'id': req.id, 'error': {'code': -32000, 'message': str(exc)}})
+                queue = self._event_queues.get(req.params.get('threadId'))
+                if queue is not None:
+                    await queue.put(StreamEvent(method='error', params={'message': 'Attachment delivery failed: ' + str(exc)}))
             except TimeoutError:
                 await self._send_raw({'id': req.id, 'error': {'code': -32000, 'message': 'Input expired'}})
             return
@@ -521,6 +537,22 @@ class CodexAgent(Agent):
             error=error,
         )
 
+    @staticmethod
+    def attachment_input(message):
+        text = message.with_manifest() if hasattr(message, 'with_manifest') else str(message)
+        return [{'type': 'text', 'text': text}] + [
+            {'type': 'localImage', 'path': a['path']} for a in getattr(message, 'attachments', []) if a['width']]
+
+    async def validate_attachment_input(self, message):
+        if not any(a['width'] for a in message.attachments):
+            return
+        models = await self.list_models()
+        selected = next((m for m in models if m.get('model') == self.role.model or m.get('id') == self.role.model), None)
+        if selected is None and not self.role.model:
+            selected = next((m for m in models if m.get('isDefault')), None)
+        if not selected or 'image' not in selected.get('inputModalities', []):
+            raise ValueError(f'Codex model {self.role.model or "default"} does not advertise image input. Select an image-capable model or remove the images.')
+
     @observed_stream
     async def stream_message(
         self, thread_id: str, message: str, model: str | None = None
@@ -539,12 +571,13 @@ class CodexAgent(Agent):
 
         params: dict[str, Any] = {
             "threadId": thread_id,
-            "input": [{"type": "text", "text": message}],
+            "input": self.attachment_input(message),
         }
         if model:
             params["model"] = model
 
-        await self._request("turn/start", params, timeout=10)
+        started = await self._request("turn/start", params, timeout=10)
+        self._active_turn_ids[thread_id] = started.get("turn", {}).get("id")
 
         deadline = asyncio.get_event_loop().time() + self.role.max_turn_seconds
         while asyncio.get_event_loop().time() < deadline:
@@ -571,8 +604,22 @@ class CodexAgent(Agent):
     # ── Utility ─────────────────────────────────────────────────────────
 
     async def list_models(self) -> list[dict[str, Any]]:
-        result = await self._request("model/list", {})
-        return result.get("models", [])
+        models = []
+        params: dict[str, Any] = {"includeHidden": True}
+        seen_cursors = set()
+        while True:
+            result = await self._request("model/list", params)
+            page = result.get("data")
+            if not isinstance(page, list):
+                raise ValueError("Codex model discovery returned no model data. Update the Codex CLI and retry.")
+            models.extend(page)
+            cursor = result.get("nextCursor")
+            if cursor is None:
+                return models
+            if not isinstance(cursor, str) or cursor in seen_cursors:
+                raise ValueError("Codex model discovery returned an invalid pagination cursor. Restart Codex and retry.")
+            seen_cursors.add(cursor)
+            params = {"includeHidden": True, "cursor": cursor}
 
     async def read_config(self, cwd: str | None = None) -> dict:
         return await self._request("config/read", {"cwd": cwd, "includeLayers": False})

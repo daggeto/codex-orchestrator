@@ -137,3 +137,26 @@ class ParticipationMigrationTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual([{'task_id': 'task', 'thread_id': 'thread'}], await store.rows('SELECT * FROM task_threads'))
             finally:
                 await store.close()
+
+
+class AttachmentAdapterTests(unittest.TestCase):
+    def test_codex_native_image_input_and_file_manifest(self):
+        from orchestrator.agents.base import AgentInput, resource_safe_payload
+        from orchestrator.agents.codex import CodexAgent
+        resources = [dict(attachment_id='image', filename='diagram.png', path='/private/image',
+                          media_type='image/png', byte_count=20, width=2)]
+        blocks = CodexAgent.attachment_input(AgentInput('Review', 'message', resources))
+        self.assertEqual({'type': 'localImage', 'path': '/private/image'}, blocks[1])
+        self.assertIn('diagram.png', blocks[0]['text'])
+        self.assertEqual({'type': 'image', 'payload': '[omitted]'},
+                         resource_safe_payload({'type': 'image', 'source': {'data': 'secret'}}))
+
+    def test_claude_attachment_transport_uses_stdin_without_write_roots(self):
+        from orchestrator.agents.base import AgentInput
+        from orchestrator.agents.claude import ClaudeSession
+        session = ClaudeSession('thread', '/repo', RoleConfig(name='reader', backend='claude', sandbox='read-only'), 'claude')
+        cmd = session._build_cmd(AgentInput('Review', attachments=[{'path': '/private/resource'}]))
+        self.assertIn('--input-format', cmd)
+        self.assertIn('stream-json', cmd)
+        self.assertNotIn('--add-dir', cmd)
+        self.assertNotIn('Review', cmd)

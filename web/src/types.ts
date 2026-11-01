@@ -68,8 +68,9 @@ export interface InputRequest {
   request_id: string; kind: string; prompt: string; options: unknown[];
 }
 export interface TaskView {
-  task: TaskRecord; agents: OwnedAgent[]; workflow: Pick<WorkflowRun, 'run_id' | 'workflow_name' | 'status' | 'updated_at'> & { state?: JsonObject } | null;
+  task: TaskRecord; agents: OwnedAgent[]; workflow: (Pick<WorkflowRun, 'run_id' | 'workflow_name' | 'status' | 'updated_at'> & { state?: JsonObject }) | null;
   steps: StepExecution[]; pending_input: InputRequest[];
+  attachments: Attachment[]; messages: TaskMessage[];
 }
 
 export type MergeState = 'accepted' | 'running' | 'merged' | 'already_integrated' | 'failed' | 'recovery_required';
@@ -93,4 +94,21 @@ export interface MergeEligibility {
   source_branch: string | null; source_sha: string | null;
   destination_workspace_id: string | null; destination_path: string | null; destination_sha: string | null;
   latest_operation: MergeOperation | null;
+}
+
+export interface Attachment {
+  attachment_id: string; draft_id: string; task_id: string | null; filename: string;
+  media_type: string; byte_count: number; width: number | null; height: number | null;
+  state: 'uploading' | 'ready' | 'deleting' | 'deleted' | 'failed'; error: string | null;
+}
+export interface AttachmentLimits {
+  enabled: boolean; files_per_message: number; max_file_bytes: number; max_task_bytes: number; draft_hours: number;
+}
+export interface AttachmentDraft {
+  draft_id: string; state: string; expires_at: string; files: Attachment[]; limits: AttachmentLimits;
+}
+export interface AttachmentSubmission { draft_id?: string; attachment_ids: string[] }
+export interface TaskMessage {
+  message_id: string; origin: 'initial' | 'followup' | 'input_response'; text: string;
+  attachment_ids: string[]; delivery_state: string;
 }

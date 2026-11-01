@@ -76,7 +76,9 @@ class TaskService:
             config['config_overrides']['model_reasoning_effort'] = settings['effort']
         return config
 
-    async def submit(self, workspace_id, prompt, kind='workflow', settings=None, isolation='auto', idempotency_key=None):
+    async def submit(self, workspace_id, prompt, kind='workflow', settings=None, isolation='auto', idempotency_key=None, attachment_ids=None, draft_id=None, copy_from_task_id=None, omit_unavailable=False):
+        from orchestrator.attachments import AttachmentService, identities
+        attachment_ids = identities([] if attachment_ids is None else attachment_ids)
         settings = dict(settings or {})
         if any(key.startswith('legacy_') for key in settings):
             raise ValueError('Legacy sessions use saved-agent commands')
@@ -84,12 +86,15 @@ class TaskService:
             raise ValueError('variables must be an object')
         if kind not in {'workflow','agent'} or isolation not in {'auto','always','never'}:
             raise ValueError('Invalid task kind or isolation policy')
-        if not isinstance(prompt, str) or not prompt.strip():
+        if not isinstance(prompt, str) or not (prompt.strip() or attachment_ids or copy_from_task_id):
             raise ValueError('A prompt is required')
         if idempotency_key is not None and (not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 128):
             raise ValueError('Invalid idempotency key')
         prompt = prompt.strip()
-        fingerprint = hashlib.sha256(json.dumps([workspace_id, prompt, kind, settings, isolation], sort_keys=True).encode()).hexdigest()
+        fingerprint_parts = [workspace_id, prompt, kind, settings, isolation]
+        if attachment_ids or copy_from_task_id:
+            fingerprint_parts += [attachment_ids, copy_from_task_id, omit_unavailable]
+        fingerprint = hashlib.sha256(json.dumps(fingerprint_parts, sort_keys=True).encode()).hexdigest()
         async with self.accept_lock:
             if idempotency_key:
                 previous = await self.store.one('SELECT * FROM tasks WHERE idempotency_key=?', (idempotency_key,))
@@ -128,12 +133,35 @@ class TaskService:
             settings['isolate'] = isolate
             # Time-prefixed identities give task history a stable pagination cursor.
             tid = now() + '-' + uuid.uuid4().hex[:12]
-            claimed = await self.store.write("INSERT INTO tasks (task_id,workspace_id,title,prompt,kind,settings_json,idempotency_key,fingerprint,created_at,updated_at) SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM workspaces WHERE workspace_id=? AND status='active')",
-                                   (tid, workspace_id, prompt.splitlines()[0][:100], prompt, kind, json.dumps(settings), idempotency_key, fingerprint, now(), now(), workspace_id))
-            if not claimed:
-                raise Conflict('Workspace is reserved for merging, recovery, or archiving')
-            await self.store.write('UPDATE tasks SET owner_pid=?,owner_started=? WHERE task_id=?',
-                                   (self.owner_pid, self.owner_started, tid))
+            copy_groups = []
+            if copy_from_task_id:
+                if attachment_ids:
+                    raise ValueError('Restart copies cannot be combined with new selections')
+                copy_groups = await self.orch.attachments.copy_for_restart(
+                    copy_from_task_id, workspace_id, omit_unavailable)
+                if copy_groups:
+                    draft_id, attachment_ids = copy_groups.pop(0)
+            if not prompt and not attachment_ids:
+                raise ValueError('A prompt or available attachment is required')
+            mid = uuid.uuid4().hex
+            async with self.store.transaction() as db:
+                if idempotency_key:
+                    previous = await (await db.execute('SELECT task_id,fingerprint FROM tasks WHERE idempotency_key=?', (idempotency_key,))).fetchone()
+                    if previous:
+                        if previous['fingerprint'] != fingerprint:
+                            raise Conflict('Idempotency key belongs to a different submission')
+                        return await self.store.task(previous['task_id'])
+                await AttachmentService.active(db, workspace_id)
+                await db.execute("INSERT INTO tasks (task_id,workspace_id,submission_workspace_id,title,prompt,kind,settings_json,idempotency_key,fingerprint,created_at,updated_at,owner_pid,owner_started) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                 (tid, workspace_id, workspace_id, (prompt.splitlines() or ['Attached files'])[0][:100], prompt, kind,
+                                  json.dumps(settings), idempotency_key, fingerprint, now(), now(), self.owner_pid, self.owner_started))
+                await self._insert_message(db, mid, tid, 'initial', prompt, idempotency_key, fingerprint)
+                if attachment_ids:
+                    await self.orch.attachments.bind(db, tid, mid, workspace_id, draft_id, attachment_ids)
+                for copied_draft, copied_ids in copy_groups:
+                    copied_mid = uuid.uuid4().hex
+                    await self._insert_message(db, copied_mid, tid, 'initial', 'Additional files copied from the previous task.', None, fingerprint)
+                    await self.orch.attachments.bind(db, tid, copied_mid, workspace_id, copied_draft, copied_ids)
             self.schedule(tid, self.execute(tid))
             return await self.store.task(tid)
 
@@ -296,7 +324,7 @@ class TaskService:
                 else:
                     thread = await agent.start_thread(cwd=workspace['path'])
                 await self.store.task_status(task_id, 'active', 'Agent running', expected=('queued','active'))
-                result = await agent.send_message(thread.thread_id, message if message is not None else task['prompt'])
+                result = await agent.send_message(thread.thread_id, message if message is not None else await self.initial_input(task_id, task['prompt']))
                 await self.store.record_turn(task_id, result)
                 await self.store.task_status(task_id, 'active', 'Ready for your next message' if result.ok else result.error or 'Turn failed; you can retry', expected=('active','waiting_input'))
         except asyncio.CancelledError:
@@ -325,25 +353,59 @@ class TaskService:
                 if acquired:
                     lock.release()
 
-    async def send_message(self, task_id, message):
+    async def _insert_message(self, db, mid, tid, origin, text, key, fingerprint, request_id=None, response=None):
+        await db.execute('INSERT INTO task_messages (message_id,task_id,origin,text,response_json,input_request_id,idempotency_key,fingerprint,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                         (mid, tid, origin, text, json.dumps(response) if response is not None else None,
+                          request_id, key, fingerprint, now(), now()))
+
+    async def initial_input(self, task_id, text):
+        from orchestrator.agents.base import AgentInput
+        message = await self.store.one("SELECT message_id FROM task_messages WHERE task_id=? AND origin='initial'", (task_id,))
+        return AgentInput(text, message['message_id']) if message else text
+
+    async def send_message(self, task_id, message, attachment_ids=None, draft_id=None, idempotency_key=None):
+        from orchestrator.attachments import AttachmentService, identities
+        from orchestrator.agents.base import AgentInput
+        ids = identities([] if attachment_ids is None else attachment_ids)
+        if not isinstance(message, str) or not (message.strip() or ids):
+            raise ValueError('A message or attachment is required')
+        if idempotency_key is not None and (not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 128):
+            raise ValueError('Invalid message idempotency key')
+        fingerprint = hashlib.sha256(json.dumps([message.strip(), ids]).encode()).hexdigest()
         async with self.accept_lock:
+            if idempotency_key:
+                old = await self.store.one('SELECT * FROM task_messages WHERE task_id=? AND idempotency_key=?', (task_id, idempotency_key))
+                if old:
+                    if old['fingerprint'] != fingerprint or old['origin'] != 'followup':
+                        raise Conflict('Message identity belongs to different content')
+                    return old['message_id']
             task = await self.store.task(task_id)
             if not task:
                 raise LookupError('Task not found')
             workspace = await self.store.workspace_record(task['workspace_id'])
-            if workspace['status'] in {'merging', 'merge_recovery_required'}:
-                raise Conflict('Workspace is reserved for merging or merge recovery; continue after it is released')
-            if task['kind'] != 'agent' or task['status'] in TERMINAL or workspace['status'] != 'active':
+            if task['kind'] != 'agent' or task['status'] in TERMINAL or workspace['status'] != 'active' or task['archived_at']:
                 raise Conflict('Task cannot receive messages')
             if task['owner_pid'] and task['owner_pid'] != self.owner_pid and owner_alive(task['owner_pid'], task['owner_started']):
                 raise Conflict('Task belongs to another live service')
             if task_id in self.running:
                 raise Conflict('A turn is already running')
-            if not isinstance(message, str) or not message.strip():
-                raise ValueError('A message is required')
-            if not await self.store.task_status(task_id, 'queued', 'Waiting for workspace', expected=('active', 'interrupted')):
-                raise Conflict('Task changed while accepting the message')
-            self.schedule(task_id, self.execute(task_id, message.strip()))
+            mid = uuid.uuid4().hex
+            async with self.store.transaction() as db:
+                if idempotency_key:
+                    previous = await (await db.execute('SELECT message_id,fingerprint FROM task_messages WHERE task_id=? AND idempotency_key=?', (task_id, idempotency_key))).fetchone()
+                    if previous:
+                        if previous['fingerprint'] != fingerprint:
+                            raise Conflict('Message identity belongs to different content')
+                        return previous['message_id']
+                await AttachmentService.active(db, workspace['workspace_id'], task_id)
+                claimed = await db.execute("UPDATE tasks SET status='queued',phase='Waiting for workspace',updated_at=? WHERE task_id=? AND status IN ('active','interrupted')", (now(), task_id))
+                if not claimed.rowcount:
+                    raise Conflict('Task changed while accepting the message')
+                await self._insert_message(db, mid, task_id, 'followup', message.strip(), idempotency_key, fingerprint)
+                if ids:
+                    await self.orch.attachments.bind(db, task_id, mid, workspace['workspace_id'], draft_id, ids)
+            self.schedule(task_id, self.execute(task_id, AgentInput(message.strip(), mid)))
+            return mid
 
     async def set_archived(self, task_id, archived):
         if not await self.store.task(task_id):
@@ -411,13 +473,60 @@ class TaskService:
             if task_id:
                 await self.store.task_status(task_id, 'active', 'Continuing after input', expected=('waiting_input',))
 
-    async def resolve_input(self, request_id, response):
-        future = self.input_waiters.get(request_id)
-        if not future or future.done():
-            raise Conflict('Input request is no longer active')
-        if not await self.store.resolve_input(request_id, response):
-            raise Conflict('Input request was already answered')
-        future.set_result(response)
+    async def resolve_input(self, request_id, response, attachment_ids=None, draft_id=None):
+        from orchestrator.attachments import AttachmentService, identities
+        ids = identities([] if attachment_ids is None else attachment_ids)
+        fingerprint = hashlib.sha256(json.dumps([response, ids], sort_keys=True).encode()).hexdigest()
+        async with self.accept_lock:
+            previous = await self.store.one('SELECT * FROM task_messages WHERE input_request_id=?', (request_id,))
+            if previous:
+                if previous['fingerprint'] != fingerprint:
+                    raise Conflict('Input request was already answered with different content')
+                return
+            request = await self.store.one('SELECT * FROM input_requests WHERE request_id=?', (request_id,))
+            future = self.input_waiters.get(request_id)
+            if not request or not future or future.done():
+                raise Conflict('Input request is no longer active')
+            if request['kind'] == 'backend_input':
+                answers = response.get('answers', {}) if isinstance(response, dict) else {}
+                if not isinstance(answers, dict):
+                    raise ValueError('answers must be an object')
+                for question in request['options']:
+                    answer = answers.get(question['id'], {})
+                    value = answer.get('answers', []) if isinstance(answer, dict) else []
+                    if not isinstance(value, list) or not value or not all(isinstance(a, str) and a.strip() for a in value):
+                        raise ValueError('Every question requires an answer')
+            elif request['kind'] == 'approval':
+                if response not in ('approved', 'rejected'):
+                    raise ValueError('An approval decision is required')
+            elif not isinstance(response, str) or not response.strip():
+                raise ValueError('A response is required')
+            task = await self.store.task(request['task_id'])
+            if not task:
+                if ids:
+                    raise Conflict('Attachments require a task-owned input request')
+                if not await self.store.resolve_input(request_id, response):
+                    raise Conflict('Input request was already answered')
+                future.set_result(response)
+                return
+            mid = uuid.uuid4().hex
+            async with self.store.transaction() as db:
+                previous = await (await db.execute('SELECT fingerprint FROM task_messages WHERE input_request_id=?', (request_id,))).fetchone()
+                if previous:
+                    if previous['fingerprint'] != fingerprint:
+                        raise Conflict('Input request was already answered with different content')
+                    return
+                await self._insert_message(db, mid, task['task_id'], 'input_response',
+                    response if isinstance(response, str) else json.dumps(response), None, fingerprint, request_id, response)
+                await AttachmentService.active(db, task['workspace_id'], task['task_id'])
+                if ids:
+                    await self.orch.attachments.bind(db, task['task_id'], mid, task['workspace_id'], draft_id, ids)
+                changed = await db.execute("UPDATE input_requests SET status='resolved',response_json=?,updated_at=? WHERE request_id=? AND status='pending'", (json.dumps(response), now(), request_id))
+                if not changed.rowcount:
+                    raise Conflict('Input request was already answered')
+            # Preserve the backend answer schema. Resources are delivered by its
+            # continuation mechanism, not by adding unsupported answer fields.
+            future.set_result(response)
 
     async def shutdown(self):
         jobs = list(self.running.values())

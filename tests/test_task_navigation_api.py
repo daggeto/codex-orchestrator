@@ -14,7 +14,9 @@ from orchestrator.tasks import TaskService
 class TaskNavigationApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.store = StateStore(Path(self.temp.name) / 'state.db')
+        self.addAsyncCleanup(self.store.close)
         await self.store.init()
         await self.store.write("INSERT INTO repositories VALUES ('repo','Repo','/repo','/repo/.git',1,'now','now')")
         await self.store.write("INSERT INTO workspaces VALUES ('main','repo','main','/repo','main','sha','active','now','now')")
@@ -27,12 +29,8 @@ class TaskNavigationApiTests(unittest.IsolatedAsyncioTestCase):
         tasks.register(app)
         workspaces.register(app)
         self.client = TestClient(TestServer(app))
+        self.addAsyncCleanup(self.client.close)
         await self.client.start_server()
-
-    async def asyncTearDown(self):
-        await self.client.close()
-        await self.store.close()
-        self.temp.cleanup()
 
     async def test_history_and_complete_open_listing(self):
         result = await (await self.client.get('/api/workspaces/main/tasks?before=')).json()
@@ -66,3 +64,48 @@ class TaskNavigationApiTests(unittest.IsolatedAsyncioTestCase):
             task = payload['task'] if 'task' in payload else next(t for t in payload['tasks'] if t['task_id'] == 't024')
             self.assertEqual('active', task['status'])
             self.assertIs(False, task['last_turn']['ok'])
+
+
+class AttachmentHTTPTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        from orchestrator.config import OrchestratorConfig
+        from orchestrator.core import Orchestrator
+        from orchestrator.api.server import create_app
+        from aiohttp.test_utils import TestClient, TestServer
+        from unittest.mock import AsyncMock
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.orch = Orchestrator(OrchestratorConfig(data_dir=Path(self.temp.name) / 'data', attachments_enabled=True))
+        self.addAsyncCleanup(self.orch.store.close)
+        await self.orch.store.init()
+        self.addAsyncCleanup(self.orch.tasks.shutdown)
+        await self.orch.store.write("INSERT INTO repositories VALUES ('repo','Repo','/repo','/repo/.git',1,'now','now')")
+        await self.orch.store.write("INSERT INTO workspaces VALUES ('main','repo','main','/repo','main','sha','active','now','now')")
+        self.orch.tasks.execute = AsyncMock()
+        self.client = TestClient(TestServer(create_app(self.orch)))
+        self.addAsyncCleanup(self.client.close)
+        await self.client.start_server()
+
+    async def test_stream_acceptance_download_and_tombstone_contract(self):
+        response = await self.client.post('/api/attachment-drafts', json={'workspace_id': 'main'})
+        self.assertEqual(201, response.status)
+        draft = await response.json()
+        response = await self.client.put(f"/api/attachment-drafts/{draft['draft_id']}/files/upload", data=b'context', headers={'X-Filename': 'notes.txt'})
+        self.assertEqual(201, response.status)
+        self.assertNotIn('storage_key', await response.json())
+        payload = {'workspace_id': 'main', 'prompt': '', 'kind': 'agent', 'isolation': 'never',
+                   'draft_id': draft['draft_id'], 'attachment_ids': ['upload'], 'idempotency_key': 'stable'}
+        first = await (await self.client.post('/api/tasks', json=payload)).json()
+        second = await (await self.client.post('/api/tasks', json=payload)).json()
+        self.assertEqual(first, second)
+        url = f"/api/tasks/{first['task_id']}/attachments/upload/content"
+        response = await self.client.get(url)
+        self.assertEqual(b'context', await response.read())
+        self.assertEqual('nosniff', response.headers['X-Content-Type-Options'])
+        self.assertEqual('no-store', response.headers['Cache-Control'])
+        await self.orch.attachments.purge_workspace('main')
+        self.assertEqual(410, (await self.client.get(url)).status)
+
+    async def test_untrusted_origin_cannot_stream_uploads(self):
+        response = await self.client.post('/api/attachment-drafts', json={'workspace_id': 'main'}, headers={'Origin': 'https://untrusted.example'})
+        self.assertEqual(403, response.status)
