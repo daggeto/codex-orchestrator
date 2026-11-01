@@ -608,6 +608,15 @@ the commits. `commit_model` in the orchestrator config selects the model, defaul
 to `gpt-6-luna`. Changes are captured as Git trees using a temporary index, and
 rechecked before acceptance and after message generation. New changes require a
 fresh attempt. Once both checkouts are clean the button is **Merge to main**.
+If Git reports conflicts, a short-lived `conflict-resolver` agent gets one attempt
+to resolve them, using `gpt-6-luna` with low reasoning effort by default. The role
+can be configured in `roles/conflict-resolver.toml`; a built-in default is used
+when the target project has no such role. There is no automatic model or effort
+escalation. The agent edits only conflict paths and reports whether all conflicts
+are resolved. The service stops the agent, verifies checkout identities, index
+ownership, edit scope and remaining conflict markers, then stages the resolution
+and creates the merge commit. It does not run tests during resolution. Resolver
+summaries and blockers appear in the saved operation's Git diagnostics.
 Missing main, detached or changed branches, unfinished Git operations,
 submodules, active execution, archive operations, and unresolved merges block
 acceptance. Ignored files are protected against overwriting by Git.
@@ -661,8 +670,10 @@ Accepted work belongs to the application and continues after a browser disconnec
 Service shutdown stops its managed Git process group and retains uncertain state.
 Migration 5 adds merge records and indexes without replacing task/archive history.
 
-A conflicting merge is aborted only when its MERGE_HEAD and original HEAD match
-this operation. Cleanup must be verified before releasing reservations. Timeouts,
+A conflict the agent cannot resolve is aborted only when its MERGE_HEAD and
+original HEAD match this operation and its edits stayed within the assigned
+paths. Unexpected edits are retained for inspection. Cleanup must be verified
+before releasing reservations. Timeouts,
 interruption, or uncertain checkout state retain `merge_recovery_required` on both
 workspaces. Startup and merge/status reads reconcile dead owners and verify the
 original HEAD, exact fast-forward result, or two-parent merge result before
@@ -696,9 +707,12 @@ Manual acceptance (not performed during implementation):
 2. Create independent, nonconflicting commits on main and a worktree. Merge and
    inspect the resulting two-parent commit. Merge again and expect “Already
    integrated into local main” with no extra commit.
-3. Create conflicting committed edits. Check visible conflict paths and diagnostics;
-   verify main returns to its original clean HEAD without MERGE_HEAD. Resolve on
-   the source branch, commit, and retry with a new attempt.
+3. Create compatible conflicting committed edits. Confirm one `conflict-resolver`
+   agent runs at low effort, its diagnostics explain the resolution, both changes
+   survive, and main has a clean two-parent merge commit. Repeat with an ambiguous
+   conflict the agent reports as unresolved: verify main returns to its original
+   clean HEAD without MERGE_HEAD. Interrupt resolution or introduce an unassigned
+   edit and verify recovery reservations remain until operator inspection.
 4. Add tracked, staged, and untracked changes to each checkout in turn. Verify
    specific blockers and preservation of files. Check that an ignored file which
    would be overwritten makes Git fail safely. Exercise an unfinished merge or

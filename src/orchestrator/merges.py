@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from contextlib import AsyncExitStack
 import hashlib
 import json
@@ -423,6 +424,103 @@ class MergeService:
             if status.strip() and (not change or head != original or await self.change_tree(workspace['path']) != change['tree']):
                 raise Conflict('Working changes differ from the interrupted commit snapshot')
 
+    async def resolve_conflicts(self, operation, conflicts):
+        """One bounded agent attempt; the service retains ownership of Git state."""
+        path = operation['destination_path']
+        merge_head = Path(await self.value(path, 'rev-parse', '--path-format=absolute', '--git-path', 'MERGE_HEAD'))
+
+        async def verify_owner():
+            source = await self.store.workspace_record(operation['source_workspace_id'])
+            repository = await self.store.one('SELECT * FROM repositories WHERE repository_id=?', (operation['repository_id'],))
+            if (not merge_head.exists() or merge_head.read_text().strip() != operation['source_sha'] or
+                    await self.destination(operation) != operation['destination_sha'] or
+                    await self.checkout(source, repository, operation['source_branch']) != operation['source_sha']):
+                raise Conflict('Checkout or merge ownership changed during conflict resolution')
+            await self.clean(source['path'])
+
+        await verify_owner()
+        # Include untracked content in the comparison without staging the real index.
+        before_tree = await self.change_tree(path)
+
+        async def index_fingerprint():
+            digest = hashlib.sha256()
+            code, _, err = await self.git(path, 'ls-files', '--stage', '-z', stdout_consumer=digest.update)
+            if code:
+                raise Conflict('Cannot inspect merge index: ' + err[-1000:])
+            return digest.hexdigest()
+
+        before_index = await index_fingerprint()
+        role = deepcopy(self.orch.roles.get('conflict-resolver')) or RoleConfig(
+            name='conflict-resolver', model='gpt-6-luna', approval_policy='never',
+            max_threads=1, max_turn_seconds=180, max_tokens_per_turn=8000,
+            config_overrides={'model_reasoning_effort': '"low"'},
+            system_prompt='Resolve assigned Git merge conflicts with minimal edits, preserving both branches intent.')
+        agent = await self.orch.registry.create_agent(role)
+        try:
+            async with asyncio.timeout(210):
+                await self.orch.registry.start_agent(agent.agent_id)
+                thread = await agent.start_thread(cwd=path)
+                result = await agent.send_message(thread.thread_id,
+                    'Resolve this service-owned merge in the supplied checkout. Edit only these conflict paths: ' +
+                    json.dumps(conflicts) + '\nDestination HEAD: ' + operation['destination_sha'] +
+                    '\nSource MERGE_HEAD: ' + operation['source_sha'] +
+                    '\nInspect the unmerged index stages to understand base, ours and theirs. '
+                    'Preserve compatible changes from both sides. If intent is ambiguous, leave it unresolved. '
+                    'Do not stage or run any Git mutation, including commit, abort, reset, stash, checkout, '
+                    'switch, worktree creation, fetch or push. Do not edit other paths or Git metadata. '
+                    'Do not run tests, install tools, delegate, or increase model/effort. '
+                    'Report the resolution and any blockers. End with exactly one standalone RESOLVED '
+                    'only if every assigned conflict is resolved, otherwise UNRESOLVED. '
+                    'The service will stage and commit.')
+        finally:
+            # A stopped agent must precede all inspection, cleanup and reservation release.
+            await self.orch.registry.stop_agent(agent.agent_id)
+        await verify_owner()
+        if await index_fingerprint() != before_index:
+            raise Conflict('Conflict resolver changed the Git index; inspect retained merge state')
+        after_tree = await self.change_tree(path)
+        changed = await self.git_paths(path, 'diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--name-only', '-z', before_tree, after_tree)
+        if set(changed) - set(conflicts):
+            raise Conflict('Conflict resolver edited unassigned paths; changes retained for recovery')
+        report = result.full_text.strip()[-8000:]
+        if not result.ok:
+            return False, 'Conflict resolver did not complete: ' + (result.error or report)
+        decisions = re.findall(r'^(RESOLVED|UNRESOLVED)\s*$', result.full_text, re.MULTILINE)
+        if decisions != ['RESOLVED']:
+            return False, 'Conflict resolver did not confirm every conflict was resolved.\n' + report
+        for name in conflicts:
+            target = Path(path) / name
+            # Unsupported symlinks and binary conflicts require manual resolution.
+            if target.is_symlink() or (target.exists() and not target.is_file()):
+                return False, 'Conflict resolver requires manual handling for ' + name
+            if target.exists():
+                content = target.read_bytes()
+                if b'\0' in content or re.search(rb'^(?:<{7} |={7}$|>{7} |\|{7} )', content, re.MULTILINE):
+                    return False, 'Conflict resolver left unresolved content in ' + name + '\n' + report
+        # A successful turn without edits is not evidence of conflict resolution.
+        if before_tree == after_tree:
+            return False, 'Conflict resolver made no resolution edits.\n' + report
+        await verify_owner()
+        code, out, err = await self.git(path, '--literal-pathspecs', 'add', '--all', '--', *conflicts,
+                                        operation_id=operation['operation_id'], timeout=30)
+        if code:
+            raise Conflict('Cannot stage resolved merge: ' + (err or out)[-1000:])
+        if await self.value(path, 'write-tree') != after_tree or await self.change_tree(path) != after_tree:
+            raise Conflict('Resolution changed before committing; inspect retained merge state')
+        await verify_owner()
+        code, out, err = await self.git(path, 'commit', '--no-verify', '--no-gpg-sign', '--no-edit',
+                                        operation_id=operation['operation_id'], timeout=30)
+        if code:
+            raise Conflict('Cannot complete resolved merge: ' + (err or out)[-1000:])
+        return True, 'Conflict resolver:\n' + report
+
+    async def git_paths(self, path, *args):
+        # Preserve whitespace/newlines in filenames and reject truncated output.
+        code, out, err = await self.git(path, *args)
+        if code or len(out.encode()) >= 65536:
+            raise Conflict('Cannot safely enumerate merge paths: ' + err[-1000:])
+        return [name for name in out.split('\0') if name]
+
     async def execute(self, operation_id):
         if operation_id in self.running:
             return
@@ -462,8 +560,16 @@ class MergeService:
                                                 operation_id=operation_id, timeout=120)
                 diagnostics = (out + '\n' + err)[-16000:]
                 if code:
-                    _, names, _ = await self.git(path, 'diff', '--name-only', '--diff-filter=U', '-z')
-                    conflicts = [name for name in names.split('\0') if name][:200]
+                    conflicts = await self.git_paths(path, 'diff', '--name-only', '--diff-filter=U', '-z')
+                    if conflicts:
+                        resolved, report = await self.resolve_conflicts(operation, conflicts)
+                        diagnostics = (diagnostics + '\n' + report)[-16000:]
+                        if resolved:
+                            state, head = await self.verified_result(operation)
+                            if state != 'merged':
+                                raise Conflict('Cannot verify agent-resolved merge')
+                            await self.store.finish_merge(operation_id, state, head, diagnostics=diagnostics)
+                            return
                     merge_head = Path(await self.value(path, 'rev-parse', '--path-format=absolute', '--git-path', 'MERGE_HEAD'))
                     # Abort only a merge matching the captured commit and original HEAD.
                     if merge_head.exists():
@@ -477,7 +583,7 @@ class MergeService:
                     if state != 'failed':
                         raise Conflict('Git reported failure after changing destination HEAD')
                     await self.store.finish_merge(operation_id, 'failed', head, 'merge_conflict' if conflicts else 'git_failed',
-                                                  'Merge conflicted and was aborted; resolve the branch and retry.' if conflicts else 'Git merge failed; destination is clean. Inspect diagnostics before retrying.',
+                                                  'Conflict resolver could not complete the merge; it was aborted. Inspect diagnostics, resolve the branch and retry.' if conflicts else 'Git merge failed; destination is clean. Inspect diagnostics before retrying.',
                                                   diagnostics, conflicts)
                 else:
                     state, head = await self.verified_result(operation)
@@ -514,6 +620,10 @@ class MergeService:
                 await self.store.finish_merge(operation['operation_id'], 'failed', error_code='interrupted', error_message='Service stopped before merge execution; retry with a new operation ID')
                 continue
             try:
+                # A resolver orphan can outlive the service and a manual abort.
+                # Do not release reservations while any agent can still edit here.
+                for wid in (operation['source_workspace_id'], operation['destination_workspace_id']):
+                    await self.idle(await self.store.workspace_record(wid))
                 if operation.get('commit_changes') and operation['phase'] == 'committing':
                     await self.verify_interrupted_commits(operation)
                     await self.store.finish_merge(operation['operation_id'], 'failed', error_code='commit_interrupted',

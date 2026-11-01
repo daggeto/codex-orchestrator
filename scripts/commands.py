@@ -41,6 +41,9 @@ COMMANDS = (
             "Workspace details can merge a captured worktree commit into the checkout holding local main. "
             "With uncommitted changes, Commit and merge generates messages using the configured commit_model "
             "(gpt-6-luna by default), commits captured tracked/untracked changes in both checkouts, then merges locally. "
+            "Conflicts get one bounded conflict-resolver agent attempt (gpt-6-luna, low effort by default); "
+            "the service verifies the edits and creates the merge commit. Unresolved conflicts are aborted safely; "
+            "interrupted or unexpected edits retain recovery reservations. No automatic model escalation occurs. "
             "Merge operations persist across reloads, reserve both checkouts against tasks/deletion, "
             "and restore active status after verified completion; uncertain recovery remains blocked. No remote publication occurs. "
             "Codex backends require lsof and reserve ports across processes using shared per-user locks.",
