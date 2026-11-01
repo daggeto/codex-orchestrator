@@ -32,7 +32,7 @@ class MergeService:
         self.owner_pid = os.getpid()
         self.owner_started = process_identity(self.owner_pid)
 
-    async def git(self, path, *args, operation_id=None, timeout=15):
+    async def git(self, path, *args, operation_id=None, timeout=15, stdout_consumer=None):
         env = {**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GIT_EDITOR': 'true', 'GIT_MERGE_AUTOEDIT': 'no'}
         command = ['git', '-c', 'core.hooksPath=/dev/null', '-c', 'merge.autoStash=false',
                    '-c', 'commit.gpgSign=false', '-c', 'rerere.enabled=false',
@@ -52,6 +52,8 @@ class MergeService:
         buffers = [b'', b'']
         async def read(stream, index):
             while chunk := await stream.read(8192):
+                if index == 0 and stdout_consumer is not None:
+                    stdout_consumer(chunk)
                 buffers[index] = (buffers[index] + chunk)[-65536:]
             return buffers[index].decode(errors='replace')
         readers = [asyncio.create_task(read(proc.stdout, 0)), asyncio.create_task(read(proc.stderr, 1))]
@@ -106,8 +108,22 @@ class MergeService:
             target = await self.value(path, 'rev-parse', '--path-format=absolute', '--git-path', name)
             if Path(target).exists():
                 raise Conflict(f'Unfinished Git operation ({name}) at {path}')
-        entries = await self.value(path, 'ls-files', '--stage')
-        if any(line.startswith('160000 ') for line in entries.splitlines()):
+        prefix = b''
+        submodule = False
+        def inspect_entries(chunk):
+            nonlocal prefix, submodule
+            # Keep only the mode prefix, even when a filename spans chunks.
+            # NUL boundaries also handle filenames containing literal newlines.
+            parts = chunk.split(b'\0')
+            for index, part in enumerate(parts):
+                prefix = (prefix + part[:7])[:7]
+                if index < len(parts) - 1:
+                    submodule |= prefix == b'160000 '
+                    prefix = b''
+        code, out, err = await self.git(path, 'ls-files', '--stage', '-z', stdout_consumer=inspect_entries)
+        if code:
+            raise Conflict(f'Git check failed at {path}: {err.strip()[:1000] or out.strip()[:1000]}')
+        if submodule:
             raise Conflict(f'Submodule merges require manual handling at {path}')
 
     async def idle(self, workspace):
