@@ -54,6 +54,7 @@ COMMANDS = (
             "Existing worktrees are reused without switching branches; Main tasks create one when isolation is needed. "
             "All workflow roles share the resolved checkout and a workspace lease. "
             "Continuing a stopped workflow retains task-owned agents and the workspace lease, and updates the task when execution ends. "
+            "Continuation atomically queues its unarchived task, preventing archive until execution ends. "
             "Legacy workflow runs without an owning task must restart as workspace tasks. "
             "Checkouts reserved for a local-main merge or merge recovery reject task execution. "
             "Feature automatically includes senior-ux-designer for source assessment before planning and "

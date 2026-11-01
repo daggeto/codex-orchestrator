@@ -12,7 +12,7 @@ from orchestrator.api.submissions import accept_continuation, get_run
 from orchestrator.events.bus import EventBus
 from orchestrator.roles.loader import RoleConfig
 from orchestrator.state.store import AgentRecord, StateStore, WorkflowRunRecord
-from orchestrator.tasks import TaskService
+from orchestrator.tasks import Conflict, TaskService
 from orchestrator.workspaces import WorkspaceService
 from orchestrator.workflows.engine import Workflow, WorkflowEngine
 from orchestrator.workflows.steps import Step, StepResult
@@ -132,6 +132,33 @@ class WorkflowContinuationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(202, (await accept_continuation(self.request)).status)
         await self.finish_job()
         self.orch.spawn_team.assert_awaited_once()
+
+    async def test_accepted_continuation_blocks_archive_before_execution_starts(self):
+        with patch.object(self.orch.tasks, 'schedule') as schedule:
+            self.assertEqual(202, (await accept_continuation(self.request)).status)
+        execution = schedule.call_args.args[1]
+        self.addCleanup(execution.close)
+        self.orch.spawn_team.assert_not_awaited()
+        self.assertEqual('accepted', (await self.store.get_workflow_run('run')).status)
+        self.assertEqual('queued', (await self.store.task('task'))['status'])
+        with self.assertRaises(Conflict):
+            await self.orch.tasks.set_archived('task', True)
+        await execution
+        self.resumed.assert_awaited_once()
+        self.assertIsNone((await self.store.task('task'))['archived_at'])
+
+    async def test_archive_winning_before_continuation_claim_leaves_run_stopped(self):
+        before = await self.store.get_workflow_run('run')
+        claim = self.store.claim_workflow_continuation
+        async def archive_before_claim(record):
+            await self.orch.tasks.set_archived('task', True)
+            return await claim(record)
+        with patch.object(self.store, 'claim_workflow_continuation', side_effect=archive_before_claim):
+            self.assertEqual(409, (await accept_continuation(self.request)).status)
+        self.assertEqual(before, await self.store.get_workflow_run('run'))
+        self.assertIsNotNone((await self.store.task('task'))['archived_at'])
+        self.assertEqual('failed', (await self.store.task('task'))['status'])
+        self.orch.spawn_team.assert_not_awaited()
 
     async def test_unowned_legacy_run_cannot_bypass_task_guards(self):
         await self.store.write("UPDATE workflow_runs SET task_id=NULL WHERE run_id='run'")

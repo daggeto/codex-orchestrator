@@ -219,7 +219,7 @@ class TaskService:
         acquired = False
         try:
             task = await self.store.task(task_id)
-            if task_id in self.cancelling or (task['status'] in TERMINAL and continuation is None):
+            if task['archived_at'] or task_id in self.cancelling or (task['status'] in TERMINAL and continuation is None):
                 return
             if task['owner_pid'] and task['owner_pid'] != self.owner_pid and owner_alive(task['owner_pid'], task['owner_started']):
                 return
