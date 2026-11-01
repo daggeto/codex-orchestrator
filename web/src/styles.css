@@ -180,3 +180,8 @@ small, time, .muted { color: var(--muted); }
   .composer-settings { padding: 12px; }
   .composer-settings label { flex-basis: 100%; }
 }
+
+.workspace-merge { margin-block: 1rem; min-width: 0; }
+.workspace-merge p, .workspace-merge code { overflow-wrap: anywhere; }
+.workspace-merge pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 18rem; overflow: auto; }
+.workspace-merge .resource-state { margin-block: .75rem; }

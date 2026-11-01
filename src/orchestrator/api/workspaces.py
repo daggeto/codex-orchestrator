@@ -65,7 +65,38 @@ async def navigation(request):
         'agents': await store.rows('SELECT agent_id,task_id,role,status,retired_at FROM agents WHERE task_id IS NOT NULL UNION SELECT a.agent_id,p.task_id,a.role,a.status,a.retired_at FROM task_agents p JOIN agents a USING(agent_id)')})
 
 
+async def merge_eligibility(request):
+    service = request.app['orch'].merges
+    await service.reconcile()
+    return web.json_response(await service.preflight(request.match_info['workspace_id']))
+
+
+async def merge_status(request):
+    service = request.app['orch'].merges
+    await service.reconcile()
+    operation = await service.store.merge_operation(request.match_info['operation_id'])
+    if not operation or request.match_info['workspace_id'] not in {operation['source_workspace_id'], operation['destination_workspace_id']}:
+        raise LookupError('Merge operation not found for this workspace')
+    return web.json_response({'operation': operation})
+
+
+async def merge(request):
+    data = await body(request)
+    async def accept():
+        service = request.app['orch'].merges
+        await service.reconcile()
+        operation, created = await service.begin(request.match_info['workspace_id'], data)
+        if created:
+            own_task(request.app, service.execute(operation['operation_id']))
+        return web.json_response({'operation': operation, 'status_url':
+            '/api/workspaces/' + operation['source_workspace_id'] + '/merges/' + operation['operation_id']}, status=202)
+    return await asyncio.shield(own_task(request.app, accept()))
+
+
 def register(app):
+    app.router.add_get('/api/workspaces/{workspace_id}/merge', merge_eligibility)
+    app.router.add_post('/api/workspaces/{workspace_id}/merge', merge)
+    app.router.add_get('/api/workspaces/{workspace_id}/merges/{operation_id}', merge_status)
     app.router.add_get('/api/navigation', navigation)
     app.router.add_get('/api/workspaces/{workspace_id}/archive', archive_status)
     app.router.add_get('/api/repositories', repositories)

@@ -245,8 +245,8 @@ curl -X POST http://127.0.0.1:8420/api/send/implementer \
 # Check worktree diffs
 curl http://127.0.0.1:8420/api/workspaces/{id}/diff
 
-# Merge approved work
-curl -X POST http://127.0.0.1:8420/api/workspaces/{id}/merge -d '{"strategy": "squash"}'
+# Inspect local-main merge eligibility and the latest persisted outcome
+curl http://127.0.0.1:8420/api/workspaces/{id}/merge
 
 # Stream all events
 curl -N http://127.0.0.1:8420/api/events
@@ -411,6 +411,9 @@ The legacy project and workflow endpoints remain adapters; new integrations use:
 - `POST /api/input-requests/{id}/resolve` with `response`
 - `GET /api/agents/{id}/events?after=0&limit=200`
 - `DELETE /api/workspaces/{id}` and `GET /api/workspaces/{id}/archive`
+- `GET /api/workspaces/{id}/merge` for local-main eligibility and latest operation
+- `POST /api/workspaces/{id}/merge` to accept an idempotent local merge
+- `GET /api/workspaces/{id}/merges/{operation_id}` for its persisted outcome
 
 Submission returns 202 with a task ID and status URL. Retrying the same key and
 payload returns the same task; changed payloads conflict. Missing resources return
@@ -508,3 +511,106 @@ the applicability assessment stays scoped. Exercise a UX rejection and a code
 rejection separately; each revision must repeat both reviews. After approvals,
 create another commit and confirm publication blocks stale approvals. Check that
 the summary lists outstanding visual/usability validation.
+
+
+### Merge a worktree into local main
+
+Workspace details offers **Merge to main** beside the displayed source branch,
+commit, and destination checkout path. The destination is the existing checkout
+holding `refs/heads/main`, even when that is a linked worktree rather than the
+primary folder. Commit or remove dirty tracked/untracked files in both checkouts
+first. Missing main, detached or changed branches, unfinished Git operations,
+submodules, active execution, archive operations, and unresolved merges block
+acceptance. Ignored files are protected against overwriting by Git.
+
+This action merges the captured source commit with a fast-forward or normal merge
+commit. It does not fetch, push, switch branches, squash, rebase, archive, or delete.
+The existing diff/log views still compare against the recorded base; they are not
+a preview against main. Both workspaces are temporarily reserved as `merging`.
+Verified completion restores `active`, so the worktree can accept tasks and merge
+new commits later. Outcomes are separate persisted records, not lifecycle statuses.
+
+The eligibility GET returns `eligible`, visible `blockers`, `source_workspace_id`,
+`source_branch`, `source_sha`, `destination_workspace_id`, `destination_path`,
+`destination_sha`, and `latest_operation`. POST requires exactly these six string
+fields (the five captured identities plus a caller-generated operation ID):
+
+```json
+{
+  "operation_id": "unique-client-operation-id",
+  "source_branch": "feature/example",
+  "source_sha": "full-source-commit-from-eligibility",
+  "destination_workspace_id": "destination-id-from-eligibility",
+  "destination_path": "/actual/main/checkout",
+  "destination_sha": "full-main-commit-from-eligibility"
+}
+```
+
+POST returns HTTP 202 with `operation` and `status_url`; acceptance is not success.
+Reuse the same ID and exact request after a lost response. Different input for an
+existing ID returns 409. Invalid requests return 400, missing resources 404, and
+stale or unsafe requests 409 with an explanation. Status GET returns HTTP 200 for
+an existing operation, including failed attempts. Inspect `operation.state`:
+`accepted`, `running`, `merged`, `already_integrated`, `failed`, or
+`recovery_required`. Success includes the destination path and `resulting_sha`;
+failures include an error, bounded diagnostics, and captured conflict paths.
+
+The browser saves the request per workspace before submitting and polls its saved
+operation after reload. A lost response offers **Check saved merge attempt** before
+retrying; it reuses that operation ID. A terminal failed attempt needs a new ID.
+Accepted work belongs to the application and continues after a browser disconnect.
+Service shutdown stops its managed Git process group and retains uncertain state.
+Migration 5 adds merge records and indexes without replacing task/archive history.
+
+A conflicting merge is aborted only when its MERGE_HEAD and original HEAD match
+this operation. Cleanup must be verified before releasing reservations. Timeouts,
+interruption, or uncertain checkout state retain `merge_recovery_required` on both
+workspaces. Startup and merge/status reads reconcile dead owners and verify the
+original HEAD, exact fast-forward result, or two-parent merge result before
+releasing them. A live or unverifiable orphan Git process group stays blocked.
+The child waits for its persisted process identity before executing Git, so a crash
+before recording that identity cannot start a merge.
+
+For recovery, inspect the reported destination with `git status`, `git log`, and
+`git reflog`. Stop any remaining merge process before editing Git state. Resolve or
+abort an unfinished merge manually after checking its ownership, then reload to
+reconcile. An unexpected HEAD or checkout identity remains blocked for operator
+inspection; do not clear reservations just to retry. No destructive reset is run.
+External Git tools do not honor orchestrator reservations, so avoid concurrent
+manual Git changes in either checkout during a merge.
+
+Manual acceptance (not performed during implementation):
+
+1. In a disposable repository, merge a clean branch that can fast-forward main.
+   Check the displayed destination/SHA, unchanged source branch/files, restored
+   `active` status, and ability to submit another task. Add another commit and merge
+   again; the new attempt must capture the new source SHA.
+2. Create independent, nonconflicting commits on main and a worktree. Merge and
+   inspect the resulting two-parent commit. Merge again and expect “Already
+   integrated into local main” with no extra commit.
+3. Create conflicting committed edits. Check visible conflict paths and diagnostics;
+   verify main returns to its original clean HEAD without MERGE_HEAD. Resolve on
+   the source branch, commit, and retry with a new attempt.
+4. Add tracked, staged, and untracked changes to each checkout in turn. Verify
+   specific blockers and preservation of files. Check that an ignored file which
+   would be overwritten makes Git fail safely. Exercise an unfinished merge or
+   rebase, detached source, missing main checkout, and changed source/destination
+   SHAs between eligibility and POST; all must block safely.
+5. Check out main in a linked worktree while the primary checkout holds another
+   branch. Verify the displayed and actual destination is that linked checkout.
+   Register a newly created source worktree and merge without restarting.
+6. Race merge requests, task starts/continuations, and archive requests against both
+   checkouts, including requests through two services sharing the same database.
+   Only one unresolved repository merge may exist; reserved checkouts reject
+   execution and deletion while unrelated workspaces remain usable. Repeat an ID
+   with identical input and then different input; expect the same operation and
+   a 409 respectively.
+7. Disconnect after POST and reload during execution. Verify the saved ID is queried
+   and no duplicate merge occurs. Stop/restart the service around acceptance,
+   execution, and completion. Check verified outcomes or explicit recovery blockers;
+   no hidden unfinished merge may be reported as success. After manually aborting
+   an interrupted owned merge, reload and check reconciliation releases reservations.
+8. Use the keyboard to reach and activate the button. Check visible focus, announced
+   progress/results/errors, destination wrapping at narrow widths, and disabled
+   merge/archive controls while busy. Switch workspaces during submission and
+   polling; no previous workspace result or error may appear in the new page.

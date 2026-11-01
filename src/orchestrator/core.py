@@ -64,6 +64,9 @@ class Orchestrator:
         from orchestrator.archives import ArchiveService
         self.archives = ArchiveService(self)
         self.workspace.archive_service = self.archives
+        from orchestrator.merges import MergeService
+        self.merges = MergeService(self)
+        self.workspace.merge_service = self.merges
         self._team_lock = asyncio.Lock()
         self._running = False
         self._shutdown_event = asyncio.Event()
@@ -74,6 +77,7 @@ class Orchestrator:
         await self.store.register_project(str(self.config.effective_project_dir.resolve()))
 
         await self.workspaces.reconcile()
+        await self.merges.reconcile()
 
         # Init audit log on the same DB connection
         from orchestrator.audit import AuditLog

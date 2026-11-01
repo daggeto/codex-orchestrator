@@ -94,7 +94,6 @@ def create_app(orch: Orchestrator) -> web.Application:
     app.router.add_post("/api/workspaces", create_workspace)
     app.router.add_get("/api/workspaces/{wt_id}/diff", workspace_diff)
     app.router.add_get("/api/workspaces/{wt_id}/log", workspace_log)
-    app.router.add_post("/api/workspaces/{wt_id}/merge", merge_workspace)
 
     return app
 
@@ -678,23 +677,6 @@ async def workspace_log(request: web.Request) -> web.Response:
         return _json({"log": log})
     except KeyError:
         return _error(f"Worktree {wt_id} not found", 404)
-
-
-async def merge_workspace(request: web.Request) -> web.Response:
-    orch: Orchestrator = request.app["orch"]
-    wt_id = request.match_info["wt_id"]
-    body = await request.json()
-    try:
-        result = await orch.workspace.merge_worktree(
-            wt_id,
-            target_branch=body.get("target_branch"),
-            strategy=body.get("strategy", "merge"),
-        )
-        return _json({"result": result})
-    except KeyError:
-        return _error(f"Worktree {wt_id} not found", 404)
-    except Exception as e:
-        return _error(str(e))
 
 
 async def cleanup_workspace(request: web.Request) -> web.Response:

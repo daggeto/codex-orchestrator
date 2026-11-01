@@ -32,7 +32,7 @@ class WorkspaceService:
         except Exception as exc:
             raise Conflict('Workspace is already executing another task') from exc
         if not claimed:
-            raise Conflict('Workspace is being archived or unavailable')
+            raise Conflict('Workspace is merging, awaiting merge recovery, being archived, or unavailable')
 
     async def backends_stopped(self, lease):
         workspace = await self.store.workspace_record(lease['workspace_id'])
@@ -60,12 +60,18 @@ class WorkspaceService:
     async def register(self, path):
         root = await _run(str(Path(path).expanduser().resolve()), 'git', 'rev-parse', '--show-toplevel')
         common = await _run(root, 'git', 'rev-parse', '--path-format=absolute', '--git-common-dir')
-        output = await _run(root, 'git', 'worktree', 'list', '--porcelain')
-        entries = []
-        for block in output.split('\n\n'):
-            fields = dict(line.split(' ', 1) if ' ' in line else (line, '') for line in block.splitlines())
-            if fields.get('worktree'):
-                entries.append(fields)
+        output = await _run(root, 'git', 'worktree', 'list', '--porcelain', '-z')
+        entries, fields = [], {}
+        for field in output.split('\0'):
+            if not field:
+                if fields.get('worktree'):
+                    entries.append(fields)
+                fields = {}
+            else:
+                key, _, value = field.partition(' ')
+                fields[key] = value
+        if fields.get('worktree'):
+            entries.append(fields)
         main = str(Path(entries[0]['worktree']).resolve())
         record = await self.store.one('SELECT * FROM repositories WHERE common_dir=?', (common,))
         rid = record['repository_id'] if record else uuid.uuid4().hex
@@ -150,7 +156,7 @@ class WorkspaceService:
             task = await self.store.task(task_id)
             workspace = await self.store.workspace_record(task['workspace_id'])
             if workspace['status'] != 'active':
-                raise RuntimeError('Workspace is unavailable or being archived')
+                raise RuntimeError('Workspace is merging, awaiting merge recovery, being archived, or unavailable')
             if not Path(workspace['path']).is_dir():
                 raise RuntimeError('Workspace directory is unavailable')
             if workspace['kind'] == 'main' and isolate:

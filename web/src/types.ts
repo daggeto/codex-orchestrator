@@ -71,3 +71,20 @@ export interface TaskView {
   task: TaskRecord; agents: OwnedAgent[]; workflow: { workflow_name: string } | null;
   steps: StepExecution[]; pending_input: InputRequest[];
 }
+
+export type MergeState = 'accepted' | 'running' | 'merged' | 'already_integrated' | 'failed' | 'recovery_required';
+export interface MergeRequest {
+  operation_id: string; source_branch: string; source_sha: string;
+  destination_workspace_id: string; destination_path: string; destination_sha: string;
+}
+export interface MergeOperation extends MergeRequest {
+  source_workspace_id: string; created_at: string; state: MergeState; resulting_sha: string | null;
+  error_code: string | null; error_message: string | null; diagnostics: string | null;
+  conflict_paths: string[];
+}
+export interface MergeEligibility {
+  eligible: boolean; blockers: string[]; source_workspace_id: string;
+  source_branch: string | null; source_sha: string | null;
+  destination_workspace_id: string | null; destination_path: string | null; destination_sha: string | null;
+  latest_operation: MergeOperation | null;
+}

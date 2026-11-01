@@ -38,6 +38,9 @@ COMMANDS = (
             "The API port defaults to 8420. The task home registers server projects persistently, "
             "accepts durable tasks asynchronously, and starts a task-owned team. "
             "Browser disconnects leave accepted work running; service shutdown interrupts it. "
+            "Workspace details can merge a captured worktree commit into the checkout holding local main. "
+            "Merge operations persist across reloads, reserve both checkouts against tasks/deletion, "
+            "and restore active status after verified completion; uncertain recovery remains blocked. No remote publication occurs. "
             "Codex backends require lsof and reserve ports across processes using shared per-user locks.",
             ("make start",
              'make start ARGS="--cwd /path/to/repo --roles-dir ./roles --spawn-team architect"')),
@@ -48,6 +51,7 @@ COMMANDS = (
             "(feature by default); --api-url selects another service port. Repeat --var/-v KEY=VALUE for inputs. "
             "Existing worktrees are reused without switching branches; Main tasks create one when isolation is needed. "
             "All workflow roles share the resolved checkout and a workspace lease. "
+            "Checkouts reserved for a local-main merge or merge recovery reject task execution. "
             "Feature automatically includes senior-ux-designer for source assessment before planning and "
             "UX review before code review. Either rejection repeats implementation and both reviews; "
             "source inspection leaves visual/usability validation outstanding. "

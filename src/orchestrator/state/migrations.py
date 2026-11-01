@@ -1,7 +1,7 @@
 """Ordered, additive migrations. Historical records without evidence stay unowned."""
 from __future__ import annotations
 
-VERSION = 4
+VERSION = 5
 MIGRATIONS = {2: """
 CREATE TABLE repositories (
  repository_id TEXT PRIMARY KEY, name TEXT NOT NULL, main_path TEXT NOT NULL UNIQUE,
@@ -86,6 +86,23 @@ INSERT OR IGNORE INTO task_agents SELECT e.task_id,e.agent_id FROM task_events e
 INSERT OR IGNORE INTO task_agents SELECT t.task_id,a.agent_id FROM tasks t JOIN agents a ON a.agent_id=json_extract(t.settings_json,'$.legacy_agent_id');
 INSERT OR IGNORE INTO task_threads SELECT task_id,thread_id FROM threads WHERE task_id IS NOT NULL;
 INSERT OR IGNORE INTO task_threads SELECT e.task_id,e.thread_id FROM task_events e JOIN threads t USING(thread_id) WHERE e.task_id IS NOT NULL;
+""", 5: """
+CREATE TABLE workspace_merges (
+ operation_id TEXT PRIMARY KEY, repository_id TEXT NOT NULL REFERENCES repositories(repository_id),
+ source_workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+ destination_workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+ source_branch TEXT NOT NULL, source_sha TEXT NOT NULL, destination_path TEXT NOT NULL,
+ destination_sha TEXT NOT NULL, fingerprint TEXT NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('accepted','running','merged','already_integrated','failed','recovery_required')),
+ resulting_sha TEXT, error_code TEXT, error_message TEXT, diagnostics TEXT,
+ conflict_paths_json TEXT NOT NULL DEFAULT '[]',
+ owner_pid INTEGER NOT NULL, owner_started TEXT NOT NULL, git_pid INTEGER, git_started TEXT,
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT
+);
+CREATE INDEX workspace_merge_latest ON workspace_merges(source_workspace_id,created_at DESC);
+CREATE INDEX workspace_merge_destination ON workspace_merges(destination_workspace_id,created_at DESC);
+CREATE UNIQUE INDEX repository_merge_pending ON workspace_merges(repository_id)
+ WHERE state IN ('accepted','running','recovery_required');
 """}
 
 

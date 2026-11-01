@@ -103,7 +103,7 @@ class TaskService:
             if not workspace:
                 raise LookupError('Workspace not found')
             if workspace['status'] != 'active':
-                raise Conflict('Workspace is being archived or unavailable')
+                raise Conflict('Workspace is merging, awaiting merge recovery, being archived, or unavailable')
             if kind == 'workflow':
                 workflow = self.orch.workflows.get(settings.get('workflow', 'feature'))
                 if not workflow:
@@ -122,8 +122,10 @@ class TaskService:
             settings['isolate'] = isolate
             # Time-prefixed identities give task history a stable pagination cursor.
             tid = now() + '-' + uuid.uuid4().hex[:12]
-            await self.store.write('INSERT INTO tasks (task_id,workspace_id,title,prompt,kind,settings_json,idempotency_key,fingerprint,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-                                   (tid, workspace_id, prompt.splitlines()[0][:100], prompt, kind, json.dumps(settings), idempotency_key, fingerprint, now(), now()))
+            claimed = await self.store.write("INSERT INTO tasks (task_id,workspace_id,title,prompt,kind,settings_json,idempotency_key,fingerprint,created_at,updated_at) SELECT ?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM workspaces WHERE workspace_id=? AND status='active')",
+                                   (tid, workspace_id, prompt.splitlines()[0][:100], prompt, kind, json.dumps(settings), idempotency_key, fingerprint, now(), now(), workspace_id))
+            if not claimed:
+                raise Conflict('Workspace is reserved for merging, recovery, or archiving')
             await self.store.write('UPDATE tasks SET owner_pid=?,owner_started=? WHERE task_id=?',
                                    (self.owner_pid, self.owner_started, tid))
             self.schedule(tid, self.execute(tid))
@@ -151,15 +153,17 @@ class TaskService:
         async with self.accept_lock:
             workspace = await self.store.one('SELECT * FROM workspaces WHERE path=?', (root,))
             if not workspace or workspace['status'] != 'active':
-                raise Conflict('Workspace is being archived or unavailable')
+                raise Conflict('Workspace is merging, awaiting merge recovery, being archived, or unavailable')
             tid = now() + '-' + uuid.uuid4().hex[:12]
-            await self.store.write(
-                'INSERT INTO tasks (task_id,workspace_id,title,prompt,kind,settings_json,fingerprint,created_at,updated_at,owner_pid,owner_started) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+            claimed = await self.store.write(
+                "INSERT INTO tasks (task_id,workspace_id,title,prompt,kind,settings_json,fingerprint,created_at,updated_at,owner_pid,owner_started) SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS (SELECT 1 FROM workspaces WHERE workspace_id=? AND status='active')",
                 (tid, workspace['workspace_id'], message.splitlines()[0][:100], message, 'agent',
                  json.dumps({'legacy_agent_id': agent.agent_id, 'legacy_thread_id': thread_id,
                              'legacy_supervised': supervised, 'legacy_cwd': cwd or root,
                              'isolate': False, 'effective_role': asdict(agent.role)}),
-                 '', now(), now(), self.owner_pid, self.owner_started))
+                 '', now(), now(), self.owner_pid, self.owner_started, workspace['workspace_id']))
+            if not claimed:
+                raise Conflict('Workspace is reserved for merging, recovery, or archiving')
             await self.store.participate(tid, agent.agent_id)
             job = self.schedule(tid, self._execute_legacy(tid, workspace, agent, operation, cwd or root))
         return await asyncio.shield(job)
@@ -250,7 +254,7 @@ class TaskService:
             acquired = True
             latest = await self.store.workspace_record(workspace['workspace_id'])
             if latest['status'] != 'active':
-                raise Conflict('Workspace is being archived')
+                raise Conflict('Workspace is merging, awaiting merge recovery, or being archived')
             await self.orch.workspaces.claim_lease(workspace['workspace_id'], task_id, self.owner_pid, self.owner_started)
             leased = True
             await self.store.task_status(task_id, 'active', 'Starting agents', expected=('queued',))
@@ -305,6 +309,8 @@ class TaskService:
             if not task:
                 raise LookupError('Task not found')
             workspace = await self.store.workspace_record(task['workspace_id'])
+            if workspace['status'] in {'merging', 'merge_recovery_required'}:
+                raise Conflict('Workspace is reserved for merging or merge recovery; continue after it is released')
             if task['kind'] != 'agent' or task['status'] in TERMINAL or workspace['status'] != 'active':
                 raise Conflict('Task cannot receive messages')
             if task['owner_pid'] and task['owner_pid'] != self.owner_pid and owner_alive(task['owner_pid'], task['owner_started']):
@@ -328,7 +334,7 @@ class TaskService:
                 raise Conflict('Finish or cancel the active turn before completing the session')
             workspace = await self.store.workspace_record(task['workspace_id'])
             if workspace['status'] != 'active':
-                raise Conflict('Workspace is unavailable')
+                raise Conflict('Workspace is merging, awaiting merge recovery, or unavailable')
             await self.store.task_status(task_id, 'completed', 'Manually completed')
 
     async def cancel(self, task_id):

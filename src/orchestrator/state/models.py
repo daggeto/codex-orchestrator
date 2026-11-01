@@ -95,3 +95,66 @@ class OwnershipStore:
     async def resolve_input(self, request_id, response):
         return await self.write("UPDATE input_requests SET status='resolved',response_json=?,updated_at=? WHERE request_id=? AND status='pending'",
                                 (json.dumps(response), now(), request_id)) == 1
+
+    async def merge_operation(self, operation_id):
+        return await self.one('SELECT * FROM workspace_merges WHERE operation_id=?', (operation_id,))
+
+    async def reserve_merge(self, operation):
+        """A dedicated connection isolates the reservation from shared writes."""
+        import aiosqlite
+        from orchestrator.tasks import Conflict
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute('PRAGMA foreign_keys=ON')
+            await db.execute('BEGIN IMMEDIATE')
+            try:
+                previous = await (await db.execute('SELECT * FROM workspace_merges WHERE operation_id=?',
+                                                  (operation['operation_id'],))).fetchone()
+                if previous:
+                    if previous['fingerprint'] != operation['fingerprint']:
+                        raise Conflict('Operation ID belongs to a different merge request')
+                    return False
+                for wid in (operation['source_workspace_id'], operation['destination_workspace_id']):
+                    row = await (await db.execute('SELECT status FROM workspaces WHERE workspace_id=?', (wid,))).fetchone()
+                    if not row or row['status'] != 'active':
+                        raise Conflict('Workspace is reserved for merging, recovery, or archiving')
+                    lease = await (await db.execute('SELECT 1 FROM workspace_leases WHERE workspace_id=?', (wid,))).fetchone()
+                    if lease:
+                        raise Conflict('Workspace is executing a task')
+                columns = list(operation)
+                await db.execute('INSERT INTO workspace_merges (' + ','.join(columns) + ') VALUES (' +
+                                 ','.join('?' for _ in columns) + ')', tuple(operation.values()))
+                await db.execute("UPDATE workspaces SET status='merging',updated_at=? WHERE workspace_id IN (?,?)",
+                                 (now(), operation['source_workspace_id'], operation['destination_workspace_id']))
+                await db.commit()
+                return True
+            except aiosqlite.IntegrityError as exc:
+                await db.rollback()
+                raise Conflict('Repository already has an unresolved merge operation') from exc
+            except BaseException:
+                await db.rollback()
+                raise
+
+    async def finish_merge(self, operation_id, state, resulting_sha=None, error_code=None,
+                           error_message=None, diagnostics='', conflict_paths=None):
+        import aiosqlite
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute('BEGIN IMMEDIATE')
+            try:
+                current = await (await db.execute('SELECT state FROM workspace_merges WHERE operation_id=?', (operation_id,))).fetchone()
+                if not current or current[0] not in {'accepted', 'running', 'recovery_required'}:
+                    return
+                await db.execute("""UPDATE workspace_merges SET state=?,resulting_sha=?,error_code=?,
+                    error_message=?,diagnostics=?,conflict_paths_json=?,updated_at=?,completed_at=?
+                    WHERE operation_id=?""", (state, resulting_sha, error_code, error_message,
+                    diagnostics[-16000:], json.dumps((conflict_paths or [])[:200]), now(),
+                    None if state == 'recovery_required' else now(), operation_id))
+                await db.execute("""UPDATE workspaces SET status=?,updated_at=? WHERE workspace_id IN (
+                    SELECT source_workspace_id FROM workspace_merges WHERE operation_id=? UNION
+                    SELECT destination_workspace_id FROM workspace_merges WHERE operation_id=?)
+                    AND status IN ('merging','merge_recovery_required')""",
+                    ('merge_recovery_required' if state == 'recovery_required' else 'active', now(), operation_id, operation_id))
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise

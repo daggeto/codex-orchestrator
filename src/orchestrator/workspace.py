@@ -176,59 +176,27 @@ class WorkspaceManager:
         self,
         worktree_id: str,
         target_branch: str | None = None,
-        strategy: str = "merge",  # merge, squash, rebase
+        strategy: str = "merge",
     ) -> str:
-        """
-        Merge worktree changes back to the target branch.
-
-        Returns the merge commit hash or error message.
-        """
-        wt = self._active.get(worktree_id)
-        if not wt:
-            raise KeyError(f"Worktree {worktree_id} not found")
-
-        target = target_branch or wt.base_branch
-
-        if strategy == "squash":
-            cmd = ["git", "merge", "--squash", wt.branch]
-        elif strategy == "rebase":
-            # Rebase worktree branch onto target, then fast-forward merge
-            proc = await asyncio.create_subprocess_exec(
-                "git", "rebase", target,
-                cwd=wt.worktree_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                return f"Rebase failed: {stderr.decode()}"
-            cmd = ["git", "merge", "--ff-only", wt.branch]
-        else:
-            cmd = ["git", "merge", wt.branch, "--no-edit"]
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=wt.repo_path,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            return f"Merge failed: {stderr.decode()}"
-
-        # Get the merge commit
-        proc = await asyncio.create_subprocess_exec(
-            "git", "rev-parse", "HEAD",
-            cwd=wt.repo_path,
-            stdout=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        commit = stdout.decode().strip()
-
-        wt.status = "merged"
-        logger.info("Merged worktree %s into %s (commit=%s)", worktree_id, target, commit[:12])
-        return commit
+        """Compatibility entry point; use the same durable local-main contract."""
+        import uuid
+        if target_branch not in (None, 'main') or strategy != 'merge':
+            raise ValueError('Only normal merges into local main are supported')
+        service = getattr(self, 'merge_service', None)
+        if not service:
+            raise RuntimeError('Safe merging requires the persistent merge service')
+        check = await service.preflight(worktree_id)
+        if not check['eligible']:
+            raise RuntimeError('; '.join(check['blockers']))
+        from orchestrator.merges import IDENTITY
+        operation, created = await service.begin(worktree_id, {
+            'operation_id': uuid.uuid4().hex, **{key: check[key] for key in IDENTITY}})
+        if created:
+            await service.execute(operation['operation_id'])
+        result = await service.store.merge_operation(operation['operation_id'])
+        if result['state'] not in {'merged', 'already_integrated'}:
+            raise RuntimeError(result['error_message'] or 'Merge did not complete')
+        return result['resulting_sha']
 
     async def cleanup_worktree(self, worktree_id: str, delete_branch: bool = False):
         """Archive before removal; branches and historical records are retained."""

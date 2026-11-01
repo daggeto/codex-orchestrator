@@ -1,7 +1,7 @@
 import type { Agent, Connection, JsonObject, MonitorEvent, Snapshot, Task, TaskDetail, WorkflowRun, Workspace } from './types';
 
 export class ApiError extends Error {
-  constructor(message: string, public status: number) { super(message); }
+  constructor(message: string, public status: number, public details?: unknown) { super(message); }
 }
 export async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   const timeout = AbortSignal.timeout(5000);
@@ -14,7 +14,7 @@ export async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
     const message = typeof result?.error === 'string' ? result.error : missingRepositoryApi
       ? 'The service is missing the repository API. After active tasks finish, restart the service from the current checkout with make start, then reload this page.'
       : `Request failed (${response.status})`;
-    throw new ApiError(message, response.status);
+    throw new ApiError(message, response.status, result);
   }
   return response.json() as Promise<T>;
 }
@@ -69,6 +69,6 @@ export async function post<T>(path: string, body: unknown, timeout = 15000): Pro
     body: JSON.stringify(body), signal: AbortSignal.timeout(timeout),
   });
   const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new ApiError(typeof result.error === 'string' ? result.error : `Request failed (${response.status})`, response.status);
+  if (!response.ok) throw new ApiError(typeof result.error === 'string' ? result.error : `Request failed (${response.status})`, response.status, result);
   return result as T;
 }
