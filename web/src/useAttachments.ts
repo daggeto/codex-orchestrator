@@ -13,6 +13,8 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
   const [limits, setLimits] = useState<AttachmentLimits>();
   const [error, setError] = useState('');
   const [recovering, setRecovering] = useState(!!saved.draftId);
+  const [submitted, setSubmitted] = useState(false);
+  const [acceptedTaskId, setAcceptedTaskId] = useState<string>();
   const draftRef = useRef(saved.draftId);
   const creating = useRef<Promise<string> | null>(null);
   const selections = useRef(files);
@@ -45,7 +47,13 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
         });
         return [...recovered, ...draft.files.filter(file => !known.has(file.attachment_id) && file.state !== 'deleted')];
       });
-      if (draft.state === 'submitted') { setError('These files were accepted. Retry the original submission to recover its task or message.'); return; }
+      if (draft.state === 'submitted') {
+        setSubmitted(true);
+        const owners = new Set(draft.files.map(file => file.task_id).filter((id): id is string => !!id));
+        if (owners.size === 1) setAcceptedTaskId([...owners][0]);
+        else setError('These files were accepted, but their task could not be identified. Open task history to find the accepted request.');
+        return;
+      }
       if (draft.state !== 'open' || Date.parse(draft.expires_at) <= Date.now()) {
         replace(previous => previous.map(file => ({ ...file, state: 'failed', localError: 'Draft expired. Remove and reselect this file.' })));
         throw new Error('Upload draft expired. Remove selections and reselect files for a new message.');
@@ -111,10 +119,11 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
   }
   function clear() {
     replace(() => []); draftRef.current = undefined; setDraftId(undefined); setError('');
+    setSubmitted(false); setAcceptedTaskId(undefined);
     try { sessionStorage.removeItem(storageKey); } catch { /* Optional storage. */ }
   }
-  const ready = !recovering && !removing && files.every(file => file.state === 'ready');
+  const ready = !submitted && !recovering && !removing && files.every(file => file.state === 'ready');
   const payload: AttachmentSubmission = { ...(draftId ? { draft_id: draftId } : {}), attachment_ids: files.map(file => file.attachment_id) };
-  return { files, limits, error, ready, recovering, removing, select, upload, remove, recover, clear, payload };
+  return { files, limits, error, ready, recovering, removing, submitted, acceptedTaskId, select, upload, remove, recover, clear, payload };
 }
 export type AttachmentController = ReturnType<typeof useAttachments>;

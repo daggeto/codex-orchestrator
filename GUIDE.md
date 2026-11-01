@@ -291,8 +291,11 @@ required. General workflow chat is not an attachment destination.
 
 Ready uploads recover after reload. Browser file selections do not: interrupted
 uploads may need **Recover uploaded files**, or removal and reselection from your
-device. Retry an uncertain submission without changing its contents to recover the
-same task or message. Completed selections expire if abandoned for 24 hours.
+device. If the request was accepted before its response was lost, recovery offers
+**Open accepted task** using the files' saved ownership. This opens the original
+task even when execution settings reset after reload; the files cannot be submitted
+again. Otherwise, retry an uncertain submission without changing its contents.
+Completed selections expire if abandoned for 24 hours.
 
 Task files appear above the participant history, with references beside their
 originating messages. Every role resolves the same task context on each turn.

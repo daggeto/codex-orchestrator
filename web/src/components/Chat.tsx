@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { Link } from 'react-router';
 import type { ChatMessage, AttachmentSubmission } from '../types';
 import { Button } from './ui/Button';
 import { useAttachments } from '../useAttachments';
@@ -23,7 +24,7 @@ export function Chat({ attachmentContext, draftKey, messages, onSubmit, label, p
   const lock = useRef(false);
   useEffect(() => { if (resetKey !== undefined) setDraft(''); setFailure(''); }, [resetKey]);
   useEffect(() => { if (draftKey) { try { sessionStorage.setItem(draftKey, draft); } catch { /* Draft remains in memory. */ } } }, [draftKey, draft]);
-  const blocked = disabled || loading || sending;
+  const blocked = disabled || loading || sending || attachments.submitted;
   // A caller managing recovery can supply an empty error to clear transport failures.
   const shownError = error ?? failure;
   return <div className="chat" aria-busy={loading || sending}>
@@ -33,6 +34,10 @@ export function Chat({ attachmentContext, draftKey, messages, onSubmit, label, p
         <MessageContent text={message.content} />
       </article>)}
     </div>
+    {attachments.acceptedTaskId && <p role="status">Your request was accepted. <Link to={`/tasks/${encodeURIComponent(attachments.acceptedTaskId)}`} onClick={() => {
+      setDraft(''); attachments.clear();
+      try { if (draftKey) sessionStorage.removeItem(draftKey); } catch { /* Optional storage. */ }
+    }}>Open accepted task</Link> to view its progress and files.</p>}
     <form onDragOver={event => { if (attachmentContext && event.dataTransfer.types.includes('Files')) event.preventDefault(); }} onDrop={event => { if (attachmentContext && event.dataTransfer.files.length) { event.preventDefault(); if (!blocked) void attachments.select(event.dataTransfer.files); } }} onSubmit={async event => {
       event.preventDefault();
       if (blocked || lock.current || !attachments.ready || !(draft.trim() || attachments.files.length)) return;
