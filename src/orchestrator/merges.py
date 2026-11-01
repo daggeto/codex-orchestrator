@@ -180,7 +180,7 @@ class MergeService:
             raise LookupError('Workspace not found')
         repository = await self.store.one('SELECT * FROM repositories WHERE repository_id=?', (source['repository_id'],))
         latest = await self.store.one('SELECT * FROM workspace_merges WHERE source_workspace_id=? OR destination_workspace_id=? ORDER BY created_at DESC LIMIT 1', (workspace_id, workspace_id))
-        result = dict(eligible=False, can_commit=False, blockers=[], dirty_checkouts=[], changes={}, source_workspace_id=workspace_id,
+        result = dict(eligible=False, can_commit=False, already_integrated=False, blockers=[], dirty_checkouts=[], changes={}, source_workspace_id=workspace_id,
                       source_branch=source['branch'], source_sha=None,
                       destination_workspace_id=None, destination_path=None, destination_sha=None,
                       latest_operation=latest)
@@ -232,6 +232,8 @@ class MergeService:
             pending = await self.store.one("SELECT operation_id FROM workspace_merges WHERE repository_id=? AND state IN ('accepted','running','recovery_required')", (repository['repository_id'],))
             if pending and not reserved:
                 raise Conflict('Repository has an unresolved merge: ' + pending['operation_id'])
+            integrated = await self.ancestor(path, result['source_sha'], result['destination_sha'])
+            result['already_integrated'] = integrated and not result['dirty_checkouts']
             result['can_commit'] = bool(result['dirty_checkouts'])
             result['eligible'] = not result['can_commit']
             result['blockers'].extend(f'Uncommitted changes at {item["path"]}' for item in result['dirty_checkouts'])

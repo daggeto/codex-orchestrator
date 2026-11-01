@@ -89,6 +89,7 @@ export interface MergeOperation extends Omit<MergeRequest, 'changes' | 'commit_c
 }
 export interface MergeEligibility {
   eligible: boolean; blockers: string[]; source_workspace_id: string;
+  already_integrated?: boolean;
   dirty_checkouts?: { path: string; status: string }[];
   can_commit?: boolean; changes?: Record<string, string>;
   source_branch: string | null; source_sha: string | null;

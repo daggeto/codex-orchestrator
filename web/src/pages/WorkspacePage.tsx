@@ -36,10 +36,12 @@ function WorkspaceDetails({ workspaceId }: { workspaceId: string }) {
       <p>Destination: local <code>main</code>{' '}
         {merge.eligibility.data?.destination_sha && <code>{merge.eligibility.data.destination_sha}</code>}
         <br /><code>{merge.eligibility.data?.destination_path || 'No verified main checkout'}</code></p>
-      <Button disabled={merge.submitting || (!merge.uncertain && (merge.busy || !(merge.eligibility.data?.eligible || merge.eligibility.data?.can_commit))) || busy}
+      {merge.eligibility.data?.already_integrated && !merge.busy
+        ? <p className="muted" role="status">Already merged into local main. No new changes to merge.</p>
+        : <Button disabled={merge.submitting || (!merge.uncertain && (merge.busy || !(merge.eligibility.data?.eligible || merge.eligibility.data?.can_commit))) || busy}
         onClick={() => void merge.merge()}>{merge.submitting || ['accepted', 'running'].includes(merge.operation?.state || '')
           ? merge.operation?.phase === 'committing' ? 'Committing changes…' : 'Merging…'
-          : merge.uncertain ? 'Check saved merge attempt' : merge.eligibility.data?.can_commit ? 'Commit and merge' : 'Merge to main'}</Button>
+          : merge.uncertain ? 'Check saved merge attempt' : merge.eligibility.data?.can_commit ? 'Commit and merge' : 'Merge to main'}</Button>}
       {merge.eligibility.data && merge.eligibility.data.can_commit === undefined && <p className="muted">Restart the orchestrator service to load Commit and merge. Eligibility updates automatically.</p>}
       {merge.eligibility.data?.blockers.map(blocker => <p className="muted" key={blocker}>{blocker}</p>)}
       {!!merge.eligibility.data?.dirty_checkouts?.length && <div>
