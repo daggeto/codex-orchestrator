@@ -66,6 +66,8 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
         body = await response.json()
         self.assertEqual(len(body['runs']), 51)
         self.assertEqual(body['runs'][1]['state']['current_step'], '54')
+        # App shutdown queries this store, so finish it before reopening the DB.
+        await self.client.close()
         await self.store.close()
         self.store = StateStore(Path(self.tmp.name) / 'test.db')
         await self.store.init()
