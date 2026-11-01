@@ -98,7 +98,10 @@ async def accept(request):
         supplied = variables.get('cwd')
         if not isinstance(supplied, str):
             raise ValueError('Expected a saved workflow directory')
-        variables = {**variables, 'cwd': str(Path(supplied).expanduser().resolve())}
+        # Directory lookup canonicalizes paths at acceptance, but the fingerprint
+        # retains the supplied spelling. Preserve it on retry as well, including
+        # trailing slashes and tilde paths used by existing submissions.
+        variables = dict(variables)
         if data.get('copy_from_task_id'):
             source = await orch.store.task(data['copy_from_task_id'])
             source_workspace = await orch.store.workspace_record(source['workspace_id']) if source else None
@@ -107,6 +110,15 @@ async def accept(request):
         # Execution may have moved the task into an isolated checkout. Its
         # original fingerprint belongs to the workspace used at acceptance.
         submission_workspace_id = previous.get('submission_workspace_id')
+        if not submission_workspace_id:
+            # Older records may not have been backfilled when their saved cwd
+            # used a noncanonical spelling. Resolve only for workspace lookup,
+            # without requiring the original checkout to still exist.
+            saved_cwd = previous['settings'].get('variables', {}).get('cwd')
+            if isinstance(saved_cwd, str):
+                original = await orch.store.one('SELECT workspace_id FROM workspaces WHERE path=?',
+                    (normalize_directory(saved_cwd, validate=False),))
+                submission_workspace_id = original['workspace_id'] if original else None
         if not submission_workspace_id:
             raise ValueError('The original submission workspace is unavailable for this older task. Open the accepted task from task history.')
         task = await orch.tasks.submit(submission_workspace_id, variables.get('task_description'),
