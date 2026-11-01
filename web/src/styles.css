@@ -180,3 +180,39 @@ small, time, .muted { color: var(--muted); }
   .composer-settings { padding: 12px; }
   .composer-settings label { flex-basis: 100%; }
 }
+
+/* Task navigation and conversation surfaces. */
+.app-shell { grid-template-columns: 248px minmax(0, 1fr); }
+.repository-sidebar { padding: 20px 10px; }
+.repository-sidebar nav .task-row { display: flex; margin: 2px 0; padding: 4px 8px; gap: 8px; min-height: 40px; align-items: center; border-radius: 6px; }
+.task-tabs { display: flex; gap: 8px; margin: 12px 0; }
+.task-tabs a { flex: 1; padding: 8px 12px; border-radius: 6px; text-decoration: none; color: var(--muted); }
+.task-tabs a[aria-current=page] { color: var(--text); background: var(--surface-raised); font-weight: 650; }
+.repository-group { margin: 14px 0; }
+.repository-group-heading { display: flex; align-items: center; min-width: 0; gap: 4px; }
+.repository-group-heading button { background: transparent; border: 0; padding: 8px; color: var(--muted); }
+.repository-group-heading a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
+.repository-group.has-selection .repository-group-heading a { color: var(--text); }
+.repository-sidebar .task-row-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.task-row { display: flex; gap: 12px; align-items: center; padding: 10px 12px; color: var(--text); text-decoration: none; min-width: 0; border-radius: 6px; }
+.task-row:hover { background: var(--surface-raised); }
+.task-row.selected { background: var(--accent-soft); box-shadow: inset 2px 0 var(--accent); }
+.task-row-copy { min-width: 0; flex: 1; }
+.task-row-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-row small { display: block; color: var(--muted); font-size: 11px; line-height: 1.2; }
+.status-symbol { width: 16px; text-align: center; flex-shrink: 0; color: var(--muted); }
+.status-symbol.waiting_input { color: var(--warning); }
+.status-symbol.failed { color: var(--danger); }
+.status-symbol.completed { color: var(--success); }
+.task-row-status { color: var(--muted); font-size: 12px; }
+.repository-sidebar .browse-tasks { font-size: 12px; padding-left: 32px; color: var(--muted); }
+.secondary-navigation { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 12px; }
+.task-list { list-style: none; padding: 0; }
+.task-list li { border-bottom: 1px solid var(--border); }
+.task-filters { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.archive-restore { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 8px 0; }
+.archive-restore span { overflow-wrap: anywhere; min-width: 0; }
+@media (max-width: 999px) { .app-shell { grid-template-columns: 1fr; } .task-row { min-height: 44px; } .repository-sidebar nav .task-row { min-height: 44px; } }
+.task-list > li { display: flex; align-items: center; gap: 8px; }
+.task-list > li > .task-row { flex: 1; }
+.secondary-navigation > a { display: block; padding: 8px; color: var(--muted); }

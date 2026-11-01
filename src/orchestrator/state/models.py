@@ -43,9 +43,43 @@ class OwnershipStore:
     async def task(self, task_id):
         return await self.one('SELECT * FROM tasks WHERE task_id=?', (task_id,))
 
-    async def tasks(self, workspace_id, before=None, limit=50):
-        return await self.rows('SELECT * FROM tasks WHERE workspace_id=? AND (? IS NULL OR task_id < ?) ORDER BY task_id DESC LIMIT ?',
-                               (workspace_id, before, before, max(1, min(limit, 100))))
+    async def tasks(self, workspace_id, before=None, limit=50, archived='all'):
+        return await self.query_tasks(workspace_id=workspace_id, before=before, limit=limit, archived=archived)
+
+    async def query_tasks(self, workspace_id=None, repository_id=None, status=None,
+                          archived='exclude', before=None, limit=50):
+        if archived not in {'exclude', 'only', 'all'}:
+            raise ValueError('archived must be exclude, only, or all')
+        clauses, params = [], []
+        for column, value in [('t.workspace_id', workspace_id), ('w.repository_id', repository_id)]:
+            if value:
+                clauses.append(column + '=?')
+                params.append(value)
+        if status == 'open':
+            clauses.append("t.status NOT IN ('completed','failed','cancelled')")
+        elif status:
+            clauses.append('t.status=?')
+            params.append(status)
+        if archived != 'all':
+            clauses.append('t.archived_at IS ' + ('NOT NULL' if archived == 'only' else 'NULL'))
+        if before:
+            clauses.append('t.task_id<?')
+            params.append(before)
+        sql = 'SELECT t.* FROM tasks t JOIN workspaces w USING(workspace_id)'
+        if clauses:
+            sql += ' WHERE ' + ' AND '.join(clauses)
+        return await self.rows(sql + ' ORDER BY t.task_id DESC LIMIT ?', (*params, max(1, min(limit, 101))))
+
+    async def task_page(self, limit=50, **filters):
+        limit = max(1, min(limit, 100))
+        rows = await self.query_tasks(limit=limit + 1, **filters)
+        return {'tasks': rows[:limit], 'next_cursor': rows[limit - 1]['task_id'] if len(rows) > limit else None}
+
+    async def set_task_archived(self, task_id, archived):
+        return await self.write(
+            "UPDATE tasks SET archived_at=CASE WHEN ? THEN COALESCE(archived_at,?) ELSE NULL END "
+            "WHERE task_id=? AND (?=0 OR status IN ('completed','failed','cancelled'))",
+            (archived, now(), task_id, archived))
 
     async def participate(self, task_id, agent_id, thread_id=None):
         if not task_id:

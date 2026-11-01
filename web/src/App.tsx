@@ -5,6 +5,7 @@ import { AppShell } from './components/AppShell';
 import { RepositoriesPage } from './pages/RepositoriesPage';
 import { RepositoryPage } from './pages/RepositoryPage';
 import { WorkspacePage } from './pages/WorkspacePage';
+import { TasksPage } from './pages/TasksPage';
 import { TaskPage } from './pages/TaskPage';
 import { AgentPage } from './pages/AgentPage';
 
@@ -13,6 +14,7 @@ export function App() {
     <Route path="/" element={<RepositoriesPage />} /><Route path="/home" element={<Navigate to="/" replace />} />
     <Route path="/repositories/:repositoryId" element={<RepositoryPage />} />
     <Route path="/workspaces/:workspaceId" element={<WorkspacePage />} />
+    <Route path="/tasks" element={<TasksPage />} />
     <Route path="/tasks/:taskId" element={<TaskPage />} />
     <Route path="/agents/:agentId" element={<AgentPage />} />
     <Route path="/monitor" element={<Monitor />} />

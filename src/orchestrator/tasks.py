@@ -317,6 +317,13 @@ class TaskService:
                 raise Conflict('Task changed while accepting the message')
             self.schedule(task_id, self.execute(task_id, message.strip()))
 
+    async def set_archived(self, task_id, archived):
+        if not await self.store.task(task_id):
+            raise LookupError('Task not found')
+        if not await self.store.set_task_archived(task_id, archived):
+            raise Conflict('Complete or cancel this task before archiving it')
+        return await self.store.task(task_id)
+
     async def complete(self, task_id):
         async with self.accept_lock:
             task = await self.store.task(task_id)

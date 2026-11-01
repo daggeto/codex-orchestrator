@@ -66,8 +66,27 @@ async def history(request):
     wid = request.match_info['workspace_id']
     if not await store.workspace_record(wid):
         raise LookupError('Workspace not found')
-    tasks = await store.tasks(wid, request.query.get('before'), int(request.query.get('limit', 50)))
-    return web.json_response({'tasks': tasks, 'next_cursor': tasks[-1]['task_id'] if tasks else None})
+    return web.json_response(await task_listing(request, workspace_id=wid, default_archive='all'))
+
+
+async def task_listing(request, workspace_id=None, default_archive='exclude'):
+    return await request.app['orch'].store.task_page(
+        workspace_id=workspace_id or request.query.get('workspace_id'),
+        repository_id=request.query.get('repository_id'), status=request.query.get('status'),
+        archived=request.query.get('archived', default_archive),
+        before=request.query.get('before') or None, limit=int(request.query.get('limit', 50)))
+
+
+async def listing(request):
+    return web.json_response(await task_listing(request))
+
+
+async def archive(request):
+    data = await body(request)
+    if type(data.get('archived')) is not bool:
+        raise ValueError('archived must be a boolean')
+    task = await request.app['orch'].tasks.set_archived(request.match_info['task_id'], data['archived'])
+    return web.json_response({'task': task})
 
 
 async def message(request):
@@ -109,7 +128,9 @@ async def events(request):
 
 
 def register(app):
+    app.router.add_get('/api/tasks', listing)
     app.router.add_post('/api/tasks', submit)
+    app.router.add_post('/api/tasks/{task_id}/archive', archive)
     app.router.add_get('/api/tasks/{task_id}', detail)
     app.router.add_post('/api/tasks/{task_id}/messages', message)
     app.router.add_post('/api/tasks/{task_id}/complete', complete)
