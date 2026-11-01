@@ -45,6 +45,16 @@ export function useWorkspaceMerge(workspaceId: string) {
   const attempt = useResource<{ operation: MergeOperation }>(state.pending
     ? `${endpoint}/merges/${encodeURIComponent(state.pending.operation_id)}` : null);
   const [accepted, setAccepted] = useState<{ id: string; operation: MergeOperation } | null>(null);
+  function remember(id: string, incoming: MergeOperation) {
+    setAccepted(previous => {
+      if (previous?.id !== id) return { id, operation: incoming };
+      // Reconcile against the current cache, not the response handler's snapshot.
+      if (previous.operation.operation_id === incoming.operation_id) {
+        return { id, operation: reconcile(previous.operation, incoming)! };
+      }
+      return previous.operation.created_at > incoming.created_at ? previous : { id, operation: incoming };
+    });
+  }
   const ownOperation = reconcile(accepted?.id === workspaceId &&
     (!state.pending || accepted.operation.operation_id === state.pending.operation_id) ? accepted.operation : null,
     attempt.data?.operation);
@@ -54,7 +64,7 @@ export function useWorkspaceMerge(workspaceId: string) {
   useEffect(() => {
     if (operation && terminal(operation) && state.pending?.operation_id === operation.operation_id) {
       // Preserve the result before stopping pending-operation polling.
-      setAccepted({ id: workspaceId, operation });
+      remember(workspaceId, operation);
       setAction(previous => previous.pending?.operation_id === operation.operation_id
         ? { ...previous, pending: null } : previous);
       try {
@@ -78,7 +88,7 @@ export function useWorkspaceMerge(workspaceId: string) {
         try {
           const found = await get<{ operation: MergeOperation }>(`${endpoint}/merges/${encodeURIComponent(request.operation_id)}`);
           if (!active()) return;
-          setAccepted({ id, operation: found.operation });
+          remember(id, found.operation);
           // Checking a saved attempt never authorizes another merge.
           return;
         } catch (reason) {
@@ -106,7 +116,7 @@ export function useWorkspaceMerge(workspaceId: string) {
       localStorage.setItem(key(id), JSON.stringify(request));
       setAction({ id, pending: request, busy: true, error: '' });
       const response = await post<{ operation: MergeOperation }>(`${endpoint}/merge`, request);
-      if (active()) setAccepted({ id, operation: response.operation });
+      if (active()) remember(id, response.operation);
     } catch (reason) {
       if (active()) {
         // Explicit rejection means no operation was accepted. Transport errors remain pending.
