@@ -186,6 +186,9 @@ async def _accept_continuation(request):
             if await _run(root, "git", "branch", "--show-current") != variables.get("task_branch"):
                 raise ValueError("The saved worktree is on a different branch")
             await _run(root, "git", "merge-base", "--is-ancestor", variables["task_baseline"], "HEAD")
+        if checkpoint["next_step"] == "validate":
+            # Only an explicitly accepted Continue authorizes another QA pass.
+            variables["validation_resume_request"] = token
         record.state["continuations"] = [*attempts, {
             "request_id": token, "previous_status": record.status,
             "previous_error": record.state.get("error"),

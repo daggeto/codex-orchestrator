@@ -49,6 +49,7 @@ export function ContinueRun({ run, disabled }: { run: RunIdentity; disabled: boo
   return <details className="restart-run" open={open} onToggle={event => setOpen(event.currentTarget.open)}>
     <summary>Continue workflow</summary>
     <p>Retries the unfinished step using saved outputs, workspace, and conversation when available. Completed workflow steps are skipped. The unfinished step may repeat actions it already started.</p>
+    {checkpoint?.step === 'validate' && <p>Continuing final validation runs automated checks again. Earlier results are retained, and the one-repair limit still applies.</p>}
     <p>Restore your allowance before continuing after a usage limit. Publication can proceed if it was enabled for this run.</p>
     {!checkpoint && !error && <p role="status">Loading checkpoint…</p>}
     {checkpoint?.step && <p>Continue from: <code>{checkpoint.step}</code></p>}

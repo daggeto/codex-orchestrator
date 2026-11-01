@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 
 from orchestrator.workflows.steps import AssignStep, Step, StepResult
 from orchestrator.workflows.merge_request import _run
@@ -11,6 +12,25 @@ DEFER_CHECKS = (
     "QA owns final automated checks after source approvals. Follow repository restrictions. "
     "Report pending browser acceptance separately."
 )
+
+
+def validation_report(text):
+    """Read the final JSON report even when streamed commentary precedes it."""
+    decoder = json.JSONDecoder()
+    reports = []
+    for offset, character in enumerate(text):
+        if character != '{':
+            continue
+        try:
+            value, end = decoder.raw_decode(text, offset)
+        except ValueError:
+            continue
+        if (isinstance(value, dict) and 'checks' in value
+                and text[end:].strip() in ('', '```')):
+            reports.append(value)
+    if len(reports) != 1:
+        raise ValueError('QA must provide one final JSON validation report')
+    return reports[0]
 
 
 class FinalValidationStep(Step):
@@ -51,6 +71,18 @@ class FinalValidationStep(Step):
                 raise ValueError('Final validation requires a clean committed checkout')
             return await _run(root, 'git', 'rev-parse', 'HEAD')
         try:
+            resume_request = v.pop('validation_resume_request', None)
+            if resume_request and any(v.get(f'validation_attempt_{i}') for i in range(2)):
+                # Preserve evidence and the repair budget across explicit retries.
+                v.setdefault('validation_history', []).append({
+                    'request_id': resume_request,
+                    'attempts': [deepcopy(v.get(f'validation_attempt_{i}')) for i in range(2)],
+                    'report': v.get('validation_report'),
+                })
+                for i in range(2):
+                    v.pop(f'validation_attempt_{i}', None)
+                v.pop('validation_report', None)
+            await ctx.persist()
             for attempt in range(2):
                 key = f'validation_attempt_{attempt}'
                 previous = v.get(key)
@@ -67,7 +99,7 @@ class FinalValidationStep(Step):
                 v.update(result.output)
                 if not result.success:
                     return result
-                report = json.loads(v['validation_report'])
+                report = validation_report(v['validation_report'])
                 checks = report['checks']
                 if not isinstance(checks, list) or not checks or {c['category'] for c in checks} != {'tests', 'typecheck', 'lint'}:
                     raise ValueError('Validation must report tests, typecheck and lint')
@@ -83,7 +115,7 @@ class FinalValidationStep(Step):
                 if all(c['status'] in {'passed', 'skipped'} for c in checks):
                     return StepResult(success=True, output={'validation_commit': head, 'validation_checks': checks,
                         'validation_summary': json.dumps(report)})
-                if attempt or any(c['status'] == 'blocked' for c in checks):
+                if attempt or v.get('validation_repair_used') or any(c['status'] == 'blocked' for c in checks):
                     return StepResult(success=False, error='Final validation failed or blocked; inspect validation results')
                 v['validation_repair_used'] = True
                 await ctx.persist()

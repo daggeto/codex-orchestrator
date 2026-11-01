@@ -167,6 +167,19 @@ class Workflow:
         return hashlib.sha256(json.dumps(definition, sort_keys=True).encode()).hexdigest()
 
 
+def continuation_workflow(workflow, record):
+    """Keep saved feature runs on their original, exactly matching routing."""
+    signature = record.config.get("workflow_signature", workflow.signature)
+    if signature == workflow.signature:
+        return workflow
+    if workflow.name == "feature":
+        from orchestrator.workflows.builtins import _final_checks, _specialized_feature_workflow
+        legacy = _final_checks(_specialized_feature_workflow())
+        if signature == legacy.signature:
+            return legacy
+    raise ValueError("Workflow definition changed since this run; restart it instead")
+
+
 def continuation_checkpoint(workflow, record):
     """Validate saved progress without executing or reserving any work."""
     checkpoint = record.state.get("checkpoint")
@@ -182,8 +195,7 @@ def continuation_checkpoint(workflow, record):
             raise ValueError("This older run stopped during preparation; inspect its files and restart")
         checkpoint = {"next_step": step, "variables": saved, "threads": {},
                       "iteration": max(0, record.state.get("iteration", 1) - 1)}
-    if record.config.get("workflow_signature", workflow.signature) != workflow.signature:
-        raise ValueError("Workflow definition changed since this run; restart it instead")
+    workflow = continuation_workflow(workflow, record)
     checkpoint = dict(checkpoint)
     step = checkpoint.get("next_step")
     if step != "__end__" and not workflow.get_step(step):
@@ -235,6 +247,7 @@ class WorkflowEngine:
             if not await self._store.reserve_workflow_run(record):
                 raise ValueError("Workflow run ID already exists")
         if continuing:
+            workflow = continuation_workflow(workflow, record)
             checkpoint = continuation_checkpoint(workflow, record)
             ctx.variables = dict(checkpoint["variables"])
             ctx._threads = dict(checkpoint.get("threads", {}))
