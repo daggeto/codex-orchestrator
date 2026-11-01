@@ -21,7 +21,9 @@ from orchestrator.state.store import StateStore, WorkItemRecord, WorkflowRunReco
 class MonitorTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.store = StateStore(Path(self.tmp.name) / 'test.db')
+        self.addAsyncCleanup(self.close_store)
         await self.store.init()
         self.agent = ClaudeAgent('agent-1', RoleConfig(name='implementer', backend='claude'))
         self.agent.status = AgentStatus.RUNNING
@@ -29,12 +31,11 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
             agents={'agent-1': self.agent}, get_running_agents=lambda: [self.agent]),
             roles={}, workflows={}, bus=EventBus(), workspace=SimpleNamespace(list_worktrees=lambda: []))
         self.client = TestClient(TestServer(create_app(self.orch)))
+        self.addAsyncCleanup(self.client.close)
         await self.client.start_server()
 
-    async def asyncTearDown(self):
-        await self.client.close()
+    async def close_store(self):
         await self.store.close()
-        self.tmp.cleanup()
 
     async def test_read_only_task_details_and_missing_record(self):
         rec = WorkItemRecord('task', 'Title', description='Details', input_data={'x': 1},
@@ -115,13 +116,18 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
         stream = self.agent.stream_message('thread', 'work')
         await anext(stream)
         await stream.aclose()
-        self.assertEqual(self.agent.activity['state'], 'idle')
+        self.assertEqual(self.agent.activity['state'], 'error')
+        self.assertEqual(self.agent.activity['error'], 'Turn interrupted')
+        self.assertEqual(self.agent.activity['threads'], [])
+        self.assertEqual(self.agent._turn_tasks, {})
         task = asyncio.create_task(self.agent.send_message('thread', 'work'))
         await asyncio.sleep(0)
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await task
         self.assertEqual(self.agent.activity['threads'], [])
+        self.assertEqual(self.agent.activity['error'], 'Turn interrupted')
+        self.assertEqual(self.agent._turn_tasks, {})
 
     async def test_codex_events_and_incomplete_turn_cleanup(self):
         agent = CodexAgent('codex', RoleConfig(name='implementer', max_turn_seconds=0), port=9001)

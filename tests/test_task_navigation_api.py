@@ -14,7 +14,9 @@ from orchestrator.tasks import TaskService
 class TaskNavigationApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.store = StateStore(Path(self.temp.name) / 'state.db')
+        self.addAsyncCleanup(self.store.close)
         await self.store.init()
         await self.store.write("INSERT INTO repositories VALUES ('repo','Repo','/repo','/repo/.git',1,'now','now')")
         await self.store.write("INSERT INTO workspaces VALUES ('main','repo','main','/repo','main','sha','active','now','now')")
@@ -27,12 +29,8 @@ class TaskNavigationApiTests(unittest.IsolatedAsyncioTestCase):
         tasks.register(app)
         workspaces.register(app)
         self.client = TestClient(TestServer(app))
+        self.addAsyncCleanup(self.client.close)
         await self.client.start_server()
-
-    async def asyncTearDown(self):
-        await self.client.close()
-        await self.store.close()
-        self.temp.cleanup()
 
     async def test_history_and_complete_open_listing(self):
         result = await (await self.client.get('/api/workspaces/main/tasks?before=')).json()
@@ -76,18 +74,17 @@ class AttachmentHTTPTests(unittest.IsolatedAsyncioTestCase):
         from aiohttp.test_utils import TestClient, TestServer
         from unittest.mock import AsyncMock
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
         self.orch = Orchestrator(OrchestratorConfig(data_dir=Path(self.temp.name) / 'data', attachments_enabled=True))
+        self.addAsyncCleanup(self.orch.store.close)
         await self.orch.store.init()
+        self.addAsyncCleanup(self.orch.tasks.shutdown)
         await self.orch.store.write("INSERT INTO repositories VALUES ('repo','Repo','/repo','/repo/.git',1,'now','now')")
         await self.orch.store.write("INSERT INTO workspaces VALUES ('main','repo','main','/repo','main','sha','active','now','now')")
         self.orch.tasks.execute = AsyncMock()
         self.client = TestClient(TestServer(create_app(self.orch)))
+        self.addAsyncCleanup(self.client.close)
         await self.client.start_server()
-
-    async def asyncTearDown(self):
-        await self.client.close()
-        await self.orch.store.close()
-        self.temp.cleanup()
 
     async def test_stream_acceptance_download_and_tombstone_contract(self):
         response = await self.client.post('/api/attachment-drafts', json={'workspace_id': 'main'})

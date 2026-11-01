@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -5,6 +6,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from orchestrator.api.submissions import accept
+from orchestrator.config import OrchestratorConfig
+from orchestrator.core import Orchestrator
+from orchestrator.roles.loader import RoleConfig
+from orchestrator.tasks import Conflict
 from orchestrator.workflows.merge_request import (
     CreateMergeRequestStep, PrepareMergeRequestStep, PrepareWorktreeStep, _run,
 )
@@ -22,7 +27,12 @@ class WorktreeTests(unittest.IsolatedAsyncioTestCase):
         Path(self.root, 'file').write_text('original')
         await _run(self.root, 'git', 'add', 'file')
         await _run(self.root, 'git', 'commit', '-m', 'baseline')
-        self.ctx = SimpleNamespace(run_id='test', variables={'cwd': self.root, 'create_mr': False})
+
+        async def acquire_thread(agent, step, **kwargs):
+            return (await agent.start_thread(**kwargs)).thread_id
+
+        self.ctx = SimpleNamespace(run_id='test', variables={'cwd': self.root, 'create_mr': False},
+                                   acquire_thread=acquire_thread, persist_step_thread=AsyncMock())
 
     async def asyncTearDown(self):
         checkout = self.ctx.variables.get('task_worktree')
@@ -44,8 +54,6 @@ class WorktreeTests(unittest.IsolatedAsyncioTestCase):
                                 send_message=AsyncMock(return_value=SimpleNamespace(
                                     ok=True, full_text='Committed', files_changed=['file'], commands_run=[], error=None)))
         self.ctx.get_agent_for_role = lambda role: agent
-        self.ctx.get_or_create_thread = lambda agent, step: None
-        self.ctx.set_thread = lambda *args: None
         result = await AssignStep('implement', role='implementer', message_template='Fix', cwd='{cwd}').execute(self.ctx)
         self.assertTrue(result.success)
         self.assertEqual(result.output['task_commit'], await _run(checkout, 'git', 'rev-parse', 'HEAD'))
@@ -89,8 +97,6 @@ class WorktreeTests(unittest.IsolatedAsyncioTestCase):
         agent = SimpleNamespace(start_thread=AsyncMock(return_value=SimpleNamespace(thread_id='review-thread')),
                                 send_message=AsyncMock(return_value=SimpleNamespace(ok=True, full_text='APPROVED')))
         self.ctx.get_agent_for_role = lambda role: agent
-        self.ctx.get_or_create_thread = lambda agent, step: None
-        self.ctx.set_thread = lambda *args: None
         review = await feature_workflow().get_step('review').execute(self.ctx)
         self.assertTrue(review.success, review.error)
         prompt = agent.send_message.call_args.args[1]
@@ -129,70 +135,90 @@ class WorktreeTests(unittest.IsolatedAsyncioTestCase):
 class RetryTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
         self.directory = Path(self.tmp.name, 'project').resolve()
         self.directory.mkdir()
         self.variables = {'cwd': str(self.directory), 'task_description': 'Fix bug', 'create_mr': False}
-        self.workflow = SimpleNamespace(name='feature', publication_policy='optional', required_roles=['implementer'])
-        self.store = SimpleNamespace(get_workflow_run=AsyncMock(return_value=None),
-                                     reserve_workflow_run=AsyncMock(return_value=True),
-                                     list_projects=AsyncMock(return_value=[{'path': str(self.directory)}]))
-        self.request = SimpleNamespace(app={'orch': SimpleNamespace(store=self.store, workflows={'feature': self.workflow})},
-                                       match_info={'name': 'feature'}, json=AsyncMock(return_value={
-                                           'run_id': 'retry', 'variables': self.variables}))
-
-    async def asyncTearDown(self):
-        self.tmp.cleanup()
+        self.orch = Orchestrator(OrchestratorConfig(data_dir=Path(self.tmp.name) / 'data'))
+        self.store = self.orch.store
+        self.addAsyncCleanup(self.store.close)
+        await self.store.init()
+        self.addAsyncCleanup(self.orch.tasks.shutdown)
+        await self.store.register_project(str(self.directory))
+        await self.store.write("INSERT INTO repositories VALUES ('repo','Repo',?,'git',1,'now','now')", (str(self.directory),))
+        await self.store.write("INSERT INTO workspaces VALUES ('main','repo','main',?,'main','sha','active','now','now')", (str(self.directory),))
+        self.orch.workflows = {'feature': SimpleNamespace(name='feature', publication_policy='optional',
+                                                        required_roles=['implementer'], role_overrides={})}
+        self.orch.roles = {'implementer': RoleConfig(name='implementer')}
+        self.orch.workspaces.register = AsyncMock()
+        self.orch.tasks.execute = AsyncMock()
+        self.request = SimpleNamespace(app={'orch': self.orch}, match_info={'name': 'feature'},
+                                       json=AsyncMock(return_value={'run_id': 'retry', 'variables': self.variables}))
 
     async def save_acceptance(self):
-        def close_operation(app, operation):
-            operation.close()
-        with patch('orchestrator.api.submissions.own_task', close_operation):
-            self.assertEqual((await accept(self.request)).status, 202)
-        self.store.get_workflow_run.return_value = self.store.reserve_workflow_run.call_args.args[0]
+        response = await accept(self.request)
+        self.assertEqual(response.status, 202)
+        self.task_id = json.loads(response.body)['task_id']
+        self.orch.workspaces.register.assert_awaited_once_with(str(self.directory))
+        self.orch.workspaces.register.reset_mock()
+
+    async def assert_retry(self):
+        response = await accept(self.request)
+        self.assertEqual(response.status, 202)
+        self.assertEqual(json.loads(response.body)['task_id'], self.task_id)
+        self.orch.workspaces.register.assert_not_awaited()
+        self.assertEqual(len(await self.store.rows('SELECT * FROM tasks')), 1)
+        self.assertEqual(len(await self.store.rows('SELECT * FROM task_messages')), 1)
 
     async def test_retry_survives_removed_directory_and_registration(self):
         await self.save_acceptance()
         self.directory.rmdir()
-        self.store.list_projects.reset_mock()
-        self.store.list_projects.return_value = []
-        self.assertEqual((await accept(self.request)).status, 202)
-        self.store.list_projects.assert_not_awaited()
-        self.assertEqual(self.store.reserve_workflow_run.await_count, 1)
+        await self.store.write('DELETE FROM projects')
+        await self.assert_retry()
         self.variables['task_description'] = 'Different task'
-        self.assertEqual((await accept(self.request)).status, 409)
+        with self.assertRaises(Conflict):
+            await accept(self.request)
 
     async def test_retry_does_not_check_access(self):
         await self.save_acceptance()
         with patch('orchestrator.api.projects.os.access', return_value=False):
-            self.assertEqual((await accept(self.request)).status, 202)
+            await self.assert_retry()
 
     async def test_legacy_retry_survives_removed_directory(self):
         await self.save_acceptance()
-        self.store.get_workflow_run.return_value.config.pop('request_fingerprint')
+        await self.store.write('UPDATE tasks SET submission_workspace_id=NULL WHERE task_id=?', (self.task_id,))
         self.directory.rmdir()
-        self.assertEqual((await accept(self.request)).status, 202)
+        await self.assert_retry()
 
     async def test_new_submission_still_validates_directory(self):
         self.directory.rmdir()
-        self.assertEqual((await accept(self.request)).status, 400)
-        self.store.reserve_workflow_run.assert_not_awaited()
+        with self.assertRaisesRegex(ValueError, 'Directory does not exist'):
+            await accept(self.request)
+        self.orch.workspaces.register.assert_not_awaited()
+        self.assertEqual(await self.store.rows('SELECT * FROM tasks'), [])
 
-    async def test_normalized_retries_survive_removed_directory(self):
+    async def test_saved_path_spellings_retry_after_directory_removal(self):
+        # The task fingerprint retains the submitted spelling, even though
+        # workspace lookup canonicalizes it. A retry must repeat that payload.
+        for suffix in ('/', '/.', '/../project'):
+            with self.subTest(suffix=suffix):
+                self.variables['cwd'] = str(self.directory) + suffix
+                self.request.json.return_value['run_id'] = 'retry-' + str(len(suffix))
+                self.directory.mkdir(exist_ok=True)
+                await self.save_acceptance()
+                self.directory.rmdir()
+                response = await accept(self.request)
+                self.assertEqual(response.status, 202)
+                self.assertEqual(json.loads(response.body)['task_id'], self.task_id)
+                self.orch.workspaces.register.assert_not_awaited()
+                self.variables['cwd'] = str(self.directory)
+                with self.assertRaises(Conflict):
+                    await accept(self.request)
+        self.assertEqual(len(await self.store.rows('SELECT * FROM tasks')), 3)
+        self.assertEqual(len(await self.store.rows('SELECT * FROM task_messages')), 3)
+
+    async def test_saved_path_spelling_retry_does_not_check_access(self):
         self.variables['cwd'] = str(self.directory) + '/'
         await self.save_acceptance()
-        self.directory.rmdir()
-        self.store.list_projects.reset_mock()
-        for path in (str(self.directory), str(self.directory) + '/.', str(self.directory) + '/../project'):
-            with self.subTest(path=path):
-                self.variables['cwd'] = path
-                self.assertEqual((await accept(self.request)).status, 202)
-        self.store.list_projects.assert_not_awaited()
-        self.assertEqual(self.store.reserve_workflow_run.await_count, 1)
-        self.variables['task_description'] = 'Different task'
-        self.assertEqual((await accept(self.request)).status, 409)
-
-    async def test_normalized_retry_does_not_check_access(self):
-        await self.save_acceptance()
-        self.variables['cwd'] = str(self.directory) + '/'
         with patch('orchestrator.api.projects.os.access', return_value=False):
-            self.assertEqual((await accept(self.request)).status, 202)
+            await self.assert_retry()
