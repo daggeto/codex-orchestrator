@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import Markdown from 'react-markdown';
-import type { ThemedToken } from 'shiki';
+import type { BundledLanguage, ThemedToken } from 'shiki';
 
 function Code({ text, language }: { text: string; language: string }) {
   const [tokens, setTokens] = useState<ThemedToken[][]>();
@@ -8,7 +8,7 @@ function Code({ text, language }: { text: string; language: string }) {
     let active = true;
     setTokens(undefined);
     // Shiki's shorthand loads only the requested grammar and theme on demand.
-    void import('shiki').then(({ codeToTokens }) => codeToTokens(text, { lang: language, theme: 'github-dark' }))
+    void import('shiki').then(({ codeToTokens, bundledLanguages }) => codeToTokens(text, { lang: language in bundledLanguages ? language as BundledLanguage : 'text', theme: 'github-dark' }))
       .then(result => { if (active) setTokens(result.tokens); }).catch(() => { /* Unknown grammars use plain text. */ });
     return () => { active = false; };
   }, [text, language]);

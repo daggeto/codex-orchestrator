@@ -216,3 +216,53 @@ small, time, .muted { color: var(--muted); }
 .task-list > li { display: flex; align-items: center; gap: 8px; }
 .task-list > li > .task-row { flex: 1; }
 .secondary-navigation > a { display: block; padding: 8px; color: var(--muted); }
+.task-page { max-width: var(--conversation-width); margin: 0 auto; }
+.task-context { margin-bottom: 12px; }
+.task-context h1 { font-size: clamp(22px, 2.5vw, 28px); margin: 10px 0; overflow-wrap: anywhere; }
+.context-breadcrumb { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; color: var(--muted); font-size: 12px; }
+.context-breadcrumb a { color: var(--muted); }
+.task-state { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; }
+.task-page .badge { padding: 2px 7px; }
+.badge-neutral { background: var(--surface-raised); color: var(--muted); }
+.badge-warning { background: var(--warning-soft); color: var(--warning); }
+.badge-danger { background: var(--danger-soft); color: var(--danger); }
+.badge-success { background: var(--surface-raised); color: var(--success); }
+.button.neutral { background: var(--surface-raised); color: var(--text); }
+.button.warning { background: var(--warning-soft); color: var(--warning); }
+.button.success { background: var(--surface-raised); color: var(--success); }
+.participant-strip { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 16px; }
+.participant { display: flex; align-items: stretch; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 12px; }
+.participant button, .participant a { border: 0; border-radius: 0; margin: 0; padding: 6px 9px; background: transparent; color: var(--muted); text-decoration: none; }
+.participant button[aria-pressed=true], .participant a[aria-current=page] { background: var(--accent-soft); color: var(--accent); }
+.participant small { margin-left: 8px; font-size: 10px; }
+.participant-detail { border-left: 1px solid var(--border) !important; }
+.conversation-panel { min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.conversation-scroll { max-height: min(68dvh, 900px); min-height: 120px; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; overscroll-behavior: contain; padding: 4px; }
+.task-page .chat-message { padding: 12px 8px; margin: 0 0 8px; border: 0; background: transparent; border-radius: 6px; }
+.task-page .chat-message.assistant { border-left: 0; }
+.task-page .chat-message.user { background: var(--surface-raised); margin-left: 0; padding: 12px; }
+.task-page .chat-message.error { border-left: 3px solid var(--danger); background: var(--danger-soft); padding: 12px; }
+.activity-group { margin: 4px 0 12px; color: var(--muted); font-size: 12px; }
+.activity-group > summary { padding: 5px 8px; }
+.activity-group > details { padding-left: 12px; }
+.activity-group pre, .task-page pre { max-height: 360px; overflow: auto; max-width: 100%; }
+.conversation-updating { display: block; min-height: 18px; padding: 4px; font-size: 11px; }
+.execution-details { border-top: 1px solid var(--border); margin-top: 20px; padding-top: 4px; }
+.execution-details > summary { color: var(--muted); font-size: 12px; }
+.task-page .pending-input { margin: 12px 0; padding: 16px; border-radius: 8px; }
+.pending-input .input-option { display: flex; gap: 8px; align-items: baseline; padding: 8px; border: 1px solid var(--border); border-radius: 6px; margin: 6px 0; }
+.input-option input { flex-shrink: 0; }
+.input-option small { display: block; }
+.pending-input fieldset fieldset { margin-bottom: 16px; }
+.pending-input legend { font-weight: 650; }
+.agent-context-link { margin: 12px 0; font-size: 12px; }
+@media (max-width: 600px) {
+  .task-page .conversation-panel { padding: 8px; }
+  .task-list .task-row-status { max-width: 80px; }
+  .task-list > li { flex-wrap: wrap; }
+  .task-list > li > .task-row { flex-basis: 200px; }
+  .task-page button, .task-tabs a, .participant a, .pending-input .input-option { min-height: 44px; }
+  .participant { max-width: 100%; }
+  .participant button { overflow-wrap: anywhere; }
+}
+@media (prefers-reduced-motion: reduce) { .task-page *, .repository-sidebar * { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }

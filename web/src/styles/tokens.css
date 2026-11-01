@@ -51,3 +51,4 @@
   --warning-soft: #fff7e4;
   --shadow: 0 12px 36px #21336b08;
 }
+:root { --task-row-height: 40px; --task-icon-size: 16px; --task-gap: 8px; --conversation-width: 960px; }
