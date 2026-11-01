@@ -1,54 +1,59 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { reduceConversation } from '../conversation';
+import { ActivityGroup } from './ActivityGroup';
+import { Button } from './ui/Button';
 import { get } from '../api';
 import type { DurableEvent, OwnedAgent } from '../types';
 import { ResourceState } from './ui/ResourceState';
 import { MessageContent } from './MessageContent';
 
-export function AgentHistory({ agentId, taskId }: { agentId: string; taskId?: string }) {
+export function AgentHistory({ agentId, taskId, label = 'Agent' }: { agentId: string; taskId?: string; label?: string }) {
   const [events, setEvents] = useState<DurableEvent[]>([]);
   const [failure, setFailure] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [updating, setUpdating] = useState(false);
+  const [unread, setUnread] = useState(false);
+  const transcript = useRef<HTMLDivElement>(null);
+  const following = useRef(true);
   useEffect(() => {
-    setEvents([]); setFailure('');
+    if (following.current) transcript.current?.scrollTo({ top: transcript.current.scrollHeight });
+    else setUnread(true);
+  }, [events]);
+  useEffect(() => {
+    setEvents([]); setFailure(''); setLoading(true); setUnread(false); following.current = true;
     let cursor = 0;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     async function refresh() {
       try {
+        setUpdating(true);
         const result = await get<{ events: DurableEvent[]; next_cursor: number }>(`/api/agents/${agentId}/events?after=${cursor}&limit=500${taskId ? `&task_id=${encodeURIComponent(taskId)}` : ''}`, controller.signal);
         if (controller.signal.aborted) return;
         cursor = result.next_cursor;
-        setEvents(previous => [...previous, ...result.events]); setFailure('');
+        if (result.events.length) setEvents(previous => { const ids = new Set(previous.map(e => e.id)); return [...previous, ...result.events.filter(e => !ids.has(e.id))]; }); setFailure(''); setLoading(false); setUpdating(false);
         timer = setTimeout(refresh, result.events.length === 500 ? 0 : 2000);
       } catch (reason) {
-        if (!controller.signal.aborted) { setFailure(String(reason)); timer = setTimeout(refresh, 3000); }
+        if (!controller.signal.aborted) { setFailure(String(reason)); setLoading(false); setUpdating(false); timer = setTimeout(refresh, 3000); }
       }
     }
     void refresh();
     return () => { controller.abort(); clearTimeout(timer); };
   }, [agentId, taskId]);
-  const messages: { key: string; kind: string; text: string; event: DurableEvent }[] = [];
-  for (const event of events) {
-    if (event.kind === 'user') messages.push({ key: String(event.id), kind: 'user', text: String(event.payload.text || ''), event });
-    else if (event.kind === 'item/agentMessage/delta') {
-      const previous = messages[messages.length - 1];
-      const delta = String(event.payload.delta || event.payload.textDelta || '');
-      if (previous?.kind === 'assistant' && previous.event.turn_id === event.turn_id) previous.text += delta;
-      else messages.push({ key: String(event.id), kind: 'assistant', text: delta, event });
-    } else if (event.kind === 'error' || event.kind === 'turn/ended' && event.payload.error) {
-      messages.push({ key: String(event.id), kind: 'error', text: String(event.payload.message || event.payload.error), event });
-    } else if (!['turn/started','turn/completed','turn/ended'].includes(event.kind)) {
-      const item = event.payload.item as { type?: string; text?: string } | undefined;
-      if (item?.type === 'agentMessage') {
-        if (!messages.some(message => message.kind === 'assistant' && message.event.turn_id === event.turn_id)) messages.push({ key: String(event.id), kind: 'assistant', text: item.text || '', event });
-      } else messages.push({ key: String(event.id), kind: 'action', text: event.kind, event });
-    }
-  }
-  return <div className="chat-transcript" aria-label="Persisted conversation">
-    {messages.map(message => message.kind === 'action' ? <details key={message.key} className="action-result"><summary>{message.text}</summary><pre>{JSON.stringify(message.event.payload, null, 2)}</pre></details> :
-      <article key={message.key} className={`chat-message ${message.kind}`}><strong>{message.kind === 'user' ? 'You' : message.kind === 'assistant' ? 'Agent' : 'Error'}</strong><MessageContent text={message.text} /></article>)}
-    {!events.length && <ResourceState>No recorded messages yet.</ResourceState>}
-    {failure && <p className="error" role="alert">{failure}</p>}
-  </div>;
+  const messages = reduceConversation(events);
+  return <><div ref={transcript} className="chat-transcript conversation-scroll" aria-label="Persisted conversation" role="region" tabIndex={0} onScroll={event => {
+    const node = event.currentTarget;
+    following.current = node.scrollHeight - node.scrollTop - node.clientHeight < 80;
+    if (following.current) setUnread(false);
+  }}>
+    {messages.map(message => message.kind === 'activity' ? <ActivityGroup key={message.key} events={message.events} /> :
+      <article key={message.key} className={`chat-message ${message.kind}`}><strong>{message.kind === 'user' ? 'You' : message.kind === 'assistant' ? label : 'Error'}</strong><MessageContent text={message.text} />{message.kind === 'error' && <details><summary>Failure details</summary><pre>{JSON.stringify(message.events[0].payload, null, 2)}</pre></details>}</article>)}
+    {loading && <ResourceState>Loading conversation…</ResourceState>}
+    {!loading && !failure && !events.length && <ResourceState>No recorded messages yet.</ResourceState>}
+  </div>
+    {unread && <Button onClick={() => { following.current = true; transcript.current?.scrollTo({ top: transcript.current.scrollHeight }); setUnread(false); }}>New messages ↓</Button>}
+    {failure ? <p className="error" role="alert">Updates failed: {failure}. {events.length ? 'Showing recorded history. Retrying…' : 'Retrying…'}</p> : <small className="conversation-updating">{updating ? 'Updating…' : 'History up to date'}</small>}
+  </>;
+
 }
 // Compatibility for the old Home view: history is durable and read-only here.
 export function AgentConversation({ cwd: _cwd }: { cwd: string }) {

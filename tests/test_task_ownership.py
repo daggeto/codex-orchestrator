@@ -125,3 +125,30 @@ class AgentScopeTests(unittest.TestCase):
         registry._agents = {str(index): Mock(status=AgentStatus.STOPPED) for index in range(30)}
         registry._agents['live'] = Mock(status=AgentStatus.RUNNING)
         self.assertEqual(1, registry.live_count)
+
+class TaskArchiveTests(OwnershipTests):
+    async def test_archive_is_terminal_only_idempotent_and_durable(self):
+        task = await self.submit()
+        tid = task['task_id']
+        with self.assertRaises(Conflict):
+            await self.service.set_archived(tid, True)
+        await self.store.task_status(tid, 'completed', 'Done')
+        first = await self.service.set_archived(tid, True)
+        self.assertEqual(first['archived_at'], (await self.service.set_archived(tid, True))['archived_at'])
+        self.assertEqual([], await self.store.tasks('main', archived='exclude'))
+        await self.store.close()
+        await self.store.init()
+        self.assertEqual('completed', (await self.store.task(tid))['status'])
+        self.assertEqual(1, len(await self.store.tasks('main', archived='only')))
+        self.assertIsNone((await self.service.set_archived(tid, False))['archived_at'])
+        self.assertEqual('active', (await self.store.workspace_record('main'))['status'])
+
+    async def test_history_empty_cursor_and_exact_pagination(self):
+        await self.submit('one')
+        await self.submit('two')
+        self.assertEqual(2, len(await self.store.tasks('main', before='')))
+        page = await self.store.task_page(limit=1)
+        self.assertIsNotNone(page['next_cursor'])
+        last = await self.store.task_page(limit=1, before=page['next_cursor'])
+        self.assertIsNone(last['next_cursor'])
+        self.assertNotEqual(page['tasks'][0]['task_id'], last['tasks'][0]['task_id'])

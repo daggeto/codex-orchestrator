@@ -1,7 +1,7 @@
 """Ordered, additive migrations. Historical records without evidence stay unowned."""
 from __future__ import annotations
 
-VERSION = 5
+VERSION = 6
 MIGRATIONS = {2: """
 CREATE TABLE repositories (
  repository_id TEXT PRIMARY KEY, name TEXT NOT NULL, main_path TEXT NOT NULL UNIQUE,
@@ -103,6 +103,10 @@ CREATE INDEX workspace_merge_latest ON workspace_merges(source_workspace_id,crea
 CREATE INDEX workspace_merge_destination ON workspace_merges(destination_workspace_id,created_at DESC);
 CREATE UNIQUE INDEX repository_merge_pending ON workspace_merges(repository_id)
  WHERE state IN ('accepted','running','recovery_required');
+""", 6: """
+ALTER TABLE tasks ADD COLUMN archived_at TEXT DEFAULT NULL;
+CREATE INDEX tasks_visible_workspace ON tasks(workspace_id,task_id DESC) WHERE archived_at IS NULL;
+CREATE INDEX tasks_archived_cursor ON tasks(task_id DESC) WHERE archived_at IS NOT NULL;
 """}
 
 

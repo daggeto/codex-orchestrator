@@ -51,14 +51,14 @@ export interface WorkspaceRecord {
 }
 export interface TaskRecord {
   task_id: string; workspace_id: string; title: string; prompt: string; kind: 'agent' | 'workflow';
-  status: string; phase: string; settings: Record<string, unknown>; created_at: string;
+  archived_at: string | null; status: string; phase: string; last_turn?: { ok: boolean } | null; settings: Record<string, unknown>; created_at: string;
 }
 export interface OwnedAgent {
   agent_id: string; role: string; backend: string; task_id: string | null; status: string; retired_at: string | null;
   activity?: { state: string };
 }
 export interface DurableEvent {
-  id: number; kind: string; payload: Record<string, unknown>; turn_id: string; item_id: string | null; created_at: string;
+  id: number; agent_id?: string; thread_id?: string; kind: string; payload: Record<string, unknown>; turn_id: string; item_id: string | null; created_at: string;
 }
 export interface StepExecution {
   execution_id: string; step_id: string; attempt: number; parent_id: string | null; dependencies: string[];

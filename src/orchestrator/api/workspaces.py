@@ -61,7 +61,7 @@ async def navigation(request):
     for workspace in workspaces:
         workspace['archive'] = await store.one('SELECT * FROM archives WHERE workspace_id=? ORDER BY created_at DESC LIMIT 1', (workspace['workspace_id'],))
     return web.json_response({'repositories': await store.repositories(), 'workspaces': workspaces,
-        'tasks': await store.rows('SELECT * FROM tasks WHERE task_id IN (SELECT task_id FROM (SELECT task_id, ROW_NUMBER() OVER (PARTITION BY workspace_id ORDER BY task_id DESC) AS position FROM tasks) WHERE position<=20) ORDER BY task_id DESC'),
+        'tasks': await store.rows('SELECT * FROM tasks WHERE task_id IN (SELECT task_id FROM (SELECT task_id, ROW_NUMBER() OVER (PARTITION BY workspace_id ORDER BY task_id DESC) AS position FROM tasks WHERE archived_at IS NULL) WHERE position<=20) ORDER BY task_id DESC'),
         'agents': await store.rows('SELECT agent_id,task_id,role,status,retired_at FROM agents WHERE task_id IS NOT NULL UNION SELECT a.agent_id,p.task_id,a.role,a.status,a.retired_at FROM task_agents p JOIN agents a USING(agent_id)')})
 
 
