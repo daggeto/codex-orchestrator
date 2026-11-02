@@ -14,7 +14,7 @@ from orchestrator.workflows.merge_request import (
     CreateMergeRequestStep, PrepareMergeRequestStep, PrepareWorktreeStep, _run,
 )
 from orchestrator.workflows.builtins import feature_workflow
-from orchestrator.workflows.steps import AssignStep
+from orchestrator.workflows.steps import AssignStep, ReviewStep, task_snapshot
 
 
 class WorktreeTests(unittest.IsolatedAsyncioTestCase):
@@ -70,18 +70,77 @@ class WorktreeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f"git diff {self.ctx.variables['task_baseline']}..HEAD", agent.send_message.call_args.args[1])
         self.assertEqual(await _run(self.root, 'git', 'branch', '--show-current'), 'main')
 
-    async def test_dirty_implementation_cannot_advance_to_review(self):
+    async def test_committed_implementation_preserves_unrelated_edits_through_review(self):
+        self.ctx.variables.update(workspace_resolved=True, workspace_kind='main')
         prepared = await PrepareMergeRequestStep('prepare').execute(self.ctx)
         self.ctx.variables.update(prepared.output)
         checkout = self.ctx.variables['cwd']
-        Path(checkout, 'file').write_text('partial implementation')
+        self.ctx.acquire_thread = AsyncMock(return_value='thread')
+        # Task and concurrent work can touch the same file. Source review must
+        # use Git objects, rather than requiring all working edits committed.
+        Path(checkout, 'file').write_text('committed implementation')
+        await _run(checkout, 'git', 'commit', '-am', 'task implementation')
+        head = await _run(checkout, 'git', 'rev-parse', 'HEAD')
+        Path(checkout, 'file').write_text('unrelated staged edit')
+        await _run(checkout, 'git', 'add', 'file')
+        Path(checkout, 'file').write_text('unrelated unstaged edit')
+        Path(checkout, 'notes').write_text('unrelated untracked edit')
+        before = await task_snapshot(self.ctx, require_clean=False)
         agent = SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(
-            ok=True, full_text='Done', files_changed=['file'], commands_run=[], error=None)))
+            ok=True, full_text='Committed task; unrelated edits preserved',
+            files_changed=['file'], commands_run=[], error=None)))
         self.ctx.get_agent_for_role = lambda role: agent
-        result = await AssignStep('implement', role='implementer', message_template='Fix').execute(self.ctx)
+        result = await AssignStep('implement', role='implementer', message_template='Fix',
+                                  output_key='implementation').execute(self.ctx)
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.output['task_commit'], head)
+        self.ctx.variables.update(result.output)
+        agent.send_message.return_value.full_text = 'APPROVED'
+        result = await ReviewStep('review', role='reviewer', review_template='{source}',
+                                  source_key='implementation', strict_decision=True).execute(self.ctx)
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.output['review_commit'], head)
+        prompt = agent.send_message.call_args.args[1]
+        self.assertIn(f'Source evidence is bound to commit {head}', prompt)
+        self.assertIn('git show <commit>:<path>', prompt)
+        self.assertIn('implementation missing from the committed revision', prompt)
+        self.assertEqual(await task_snapshot(self.ctx, require_clean=False), before)
+        with self.assertRaisesRegex(ValueError, 'Uncommitted changes'):
+            await task_snapshot(self.ctx)
+
+    async def test_dirty_checkout_consultation_uses_committed_source(self):
+        prepared = await PrepareMergeRequestStep('prepare').execute(self.ctx)
+        self.ctx.variables.update(prepared.output)
+        self.ctx.acquire_thread = AsyncMock(return_value='thread')
+        checkout = self.ctx.variables['cwd']
+        Path(checkout, 'file').write_text('unrelated concurrent work')
+        agent = SimpleNamespace(send_message=AsyncMock(return_value=SimpleNamespace(
+            ok=True, full_text='Advice', files_changed=[], commands_run=[], error=None)))
+        self.ctx.get_agent_for_role = lambda role: agent
+        result = await AssignStep('consult', role='architect', message_template='Advise',
+                                  stable_snapshot=True).execute(self.ctx)
+        self.assertTrue(result.success, result.error)
+        self.assertIn('Source evidence is bound to commit', agent.send_message.call_args.args[1])
+        self.assertEqual(Path(checkout, 'file').read_text(), 'unrelated concurrent work')
+
+    async def test_review_rejects_commit_change_even_with_unrelated_edits(self):
+        prepared = await PrepareMergeRequestStep('prepare').execute(self.ctx)
+        self.ctx.variables.update(prepared.output)
+        self.ctx.acquire_thread = AsyncMock(return_value='thread')
+        checkout = self.ctx.variables['cwd']
+        Path(checkout, 'notes').write_text('unrelated untracked edit')
+
+        async def review(*args):
+            Path(checkout, 'file').write_text('concurrent committed change')
+            await _run(checkout, 'git', 'commit', '-am', 'concurrent change')
+            return SimpleNamespace(ok=True, full_text='APPROVED', error=None)
+
+        self.ctx.get_agent_for_role = lambda role: SimpleNamespace(send_message=review)
+        result = await ReviewStep('review', role='reviewer', review_template='{source}',
+                                  strict_decision=True).execute(self.ctx)
         self.assertFalse(result.success)
-        self.assertIn('Uncommitted changes', result.error)
-        self.assertEqual(Path(checkout, 'file').read_text(), 'partial implementation')
+        self.assertEqual(result.error, 'Task commit changed during review')
+        self.assertEqual(Path(checkout, 'notes').read_text(), 'unrelated untracked edit')
 
     async def test_snapshot_modes_preserve_dirty_checkout_and_planning_evidence(self):
         from orchestrator.workflows.steps import task_snapshot

@@ -259,9 +259,8 @@ long planning or implementation turns keep running. In role configuration,
 `max_turn_seconds = 0` disables the limit; a positive value opts into a hard timeout.
 Explicit timeouts, backend errors, and incomplete turns fail their step instead of
 starting review. Cancellation and workflow step budgets still apply.
-Task handoffs and reviews require a clean committed checkout. Branch/commit changes
-or uncommitted edits invalidate the handoff; preserve unrelated edits and resolve
-ownership before resuming. Existing workspace leases serialize orchestrator tasks;
+Task handoffs and reviews use committed source and preserve existing local edits. Branch or commit changes invalidate the handoff; unrelated local edits do not.
+Preserve those edits when resuming. Existing workspace leases serialize orchestrator tasks;
 external tools must not edit the task checkout during review. Explicit task workspace
 selection takes precedence over generic role worktree instructions.
 
@@ -277,7 +276,7 @@ The existing step budget and pause behavior remain in place. Runs predating revi
 Other definition changes can continue when the saved step still exists.
 
 The feature workflow creates a draft GitHub PR (`gh`) or GitLab MR (`glab`) after
-code approval for the current clean commit when Git confirms committed changes.
+code approval for the current commit when Git confirms committed changes.
 Final UX findings remain in the report and do not block this authorized publication.
 Install and authenticate the matching
 CLI (`gh auth login` or `glab auth login`) and make sure Git can push to `origin`.
@@ -289,7 +288,7 @@ through `gh`/`glab` repository metadata, or accepts an explicit target:
 orch workflow run feature -v task_description="Improve transaction linking" --cwd /path/to/repo -v mr_base=main
 ```
 
-Start with a clean checkout. Existing PR/MR branches and feature branches with
+Existing local edits are allowed and preserved. Existing PR/MR branches and feature branches with
 committed work are reused. Otherwise the workflow creates `orch/feature-<run_id>`
 before implementation and leaves it checked out for inspection. The reviewer and any final advisory UX report
 inspect the entire proposed PR/MR diff, including existing branch commits.
@@ -638,7 +637,7 @@ consultation and confirm advice returns to the reviewer, without another plannin
 cycle. For a substantial UI task, have the final UX report record a violation:
 completion must retain it as unresolved follow-up work without starting revision.
 For a backend-only task, confirm the final UX report can be skipped. Check that
-publication still requires current code approval and a clean checkout. Interrupt
+publication still requires current code approval and preserves local edits. Interrupt
 an implementation manually and confirm review never starts on partial
 work. Let planning run beyond five minutes and confirm it continues until completion.
 Change the checkout during review and confirm the review fails safely.
@@ -650,14 +649,15 @@ Verify readable stage names and the saved completion report on the task page.
 Workspace details offers **Merge to main** beside the displayed source branch,
 commit, and destination checkout path. The destination is the existing checkout
 holding `refs/heads/main`, even when that is a linked worktree rather than the
-primary folder. When tracked or untracked changes exist, the same action becomes
-**Commit and merge**. It commits all displayed non-ignored changes in each affected
+primary folder. Local edits do not block this action and remain uncommitted; Git
+refuses a merge that would overwrite them. When tracked or untracked changes exist,
+an additional **Commit and merge** action is available. It commits all displayed non-ignored changes in each affected
 checkout, including local main, then merges. A short-lived read-only agent generates
 one commit subject per checkout; the service stages the captured content and creates
 the commits. `commit_model` in the orchestrator config selects the model, defaulting
 to `gpt-6-luna`. Changes are captured as Git trees using a temporary index, and
 rechecked before acceptance and after message generation. New changes require a
-fresh attempt. Once both checkouts are clean the button is **Merge to main**.
+fresh attempt. **Merge to main** remains available without committing local edits.
 If Git reports conflicts, a short-lived `conflict-resolver` agent gets one attempt
 to resolve them, using `gpt-6-luna` with low reasoning effort by default. The role
 can be configured in `roles/conflict-resolver.toml`; a built-in default is used
@@ -742,8 +742,9 @@ manual Git changes in either checkout during a merge.
 Manual acceptance (not performed during implementation):
 
 0. Make separate tracked and untracked changes in the source and local main.
-   Confirm one **Commit and merge** action and both file lists. Click once and
-   confirm one generated commit per dirty checkout, followed by the local merge.
+   Confirm **Merge to main** is available alongside optional **Commit and merge**
+   and both file lists. Merge to main preserves local edits; Git rejects overwrites.
+   Commit and merge creates one generated commit per checkout before merging.
    Reload during generation and confirm the same attempt continues. Change a file
    after capture and confirm the action stops rather than committing new content.
    With both checkouts clean, confirm only **Merge to main** is offered. Interrupt

@@ -592,15 +592,31 @@ class CodexAgent(Agent):
 
         logger.warning("Turn timed out on thread %s after %ds", thread_id, self.role.max_turn_seconds)
         try:
-            await self.interrupt(thread_id)
+            # Interrupt acknowledgement does not mean the turn's tools have
+            # stopped. Recovery must not inspect a checkout still being edited.
+            async with asyncio.timeout(30):
+                await self.interrupt(thread_id)
+                while True:
+                    event = await queue.get()
+                    yield event
+                    if event.is_turn_completed:
+                        break
+        except asyncio.CancelledError:
+            await self.stop()
+            raise
         except Exception as exc:
-            logger.warning("Could not interrupt timed-out turn %s: %s", thread_id, exc)
+            logger.warning("Timed-out turn %s did not confirm shutdown; stopping agent: %s", thread_id, exc)
+            await self.stop()
         yield StreamEvent(method="error", params={
             "message": f"Turn timed out after {self.role.max_turn_seconds}s; resume implementation before review",
         })
 
     async def interrupt(self, thread_id: str) -> None:
-        await self._request("turn/interrupt", {"threadId": thread_id})
+        params = {"threadId": thread_id}
+        turn_id = self._active_turn_ids.get(thread_id)
+        if turn_id:
+            params["turnId"] = turn_id
+        await self._request("turn/interrupt", params)
 
     # ── Utility ─────────────────────────────────────────────────────────
 

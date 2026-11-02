@@ -46,11 +46,14 @@ function WorkspaceDetails({ workspaceId }: { workspaceId: string }) {
         : <Button disabled={!!merge.eligibility.error || !!error || merge.submitting || (!merge.uncertain && (merge.busy || !(merge.eligibility.data?.eligible || merge.eligibility.data?.can_commit)))}
         onClick={() => void merge.merge()}>{merge.submitting || ['accepted', 'running'].includes(merge.operation?.state || '')
           ? merge.operation?.phase === 'committing' ? 'Committing changes…' : 'Merging…'
-          : merge.uncertain ? 'Check saved merge attempt' : merge.eligibility.data?.can_commit ? 'Commit and merge' : 'Merge to main'}</Button>}
+          : merge.uncertain ? 'Check saved merge attempt' : 'Merge to main'}</Button>}
+      {merge.eligibility.data?.can_commit && !merge.busy && !merge.uncertain && <Button
+        disabled={!!merge.eligibility.error || !!error || merge.submitting}
+        onClick={() => void merge.merge(true)}>Commit and merge</Button>}
       {merge.eligibility.data && merge.eligibility.data.can_commit === undefined && <p className="muted">Restart the orchestrator service to load Commit and merge. Eligibility updates automatically.</p>}
       {merge.eligibility.data?.blockers.map(blocker => <p className="muted" key={blocker}>{blocker}</p>)}
       {!!merge.eligibility.data?.dirty_checkouts?.length && <div>
-        <p>Commit and merge commits all listed tracked and untracked changes in each checkout below, using an AI-generated message for each commit, then merges into local main. Ignored files are excluded.</p>
+        <p>Merge to main preserves local changes and merges committed work. Git will stop if local changes would be overwritten. Commit and merge explicitly commits all listed changes first.</p>
         {merge.eligibility.data.dirty_checkouts.map(checkout => <div key={checkout.path}>
           <p>Changes in {checkout.path === merge.eligibility.data?.destination_path ? 'destination main' : 'source worktree'}: <code>{checkout.path}</code></p>
           <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{checkout.status}</pre>

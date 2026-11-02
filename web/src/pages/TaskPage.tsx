@@ -5,6 +5,7 @@ import { useNavigation } from '../navigation';
 import type { InputRequest } from '../types';
 import { ContinueRun, RestartRun, ValidationRecovery } from '../components/WorkflowRecovery';
 import { WorkflowTimeline } from '../components/WorkflowTimeline';
+import { WorkflowProgress } from '../components/WorkflowProgress';
 import { AgentHistory } from '../components/AgentConversation';
 import { TaskReply } from '../components/TaskReply';
 import { AttachmentList } from '../components/AttachmentList';
@@ -46,7 +47,12 @@ function TaskContent({ taskId }: { taskId: string }) {
     && typeof variables.summary === 'string' ? variables.summary : '';
   const closed = ['completed','cancelled','failed'].includes(task.status);
   const busy = ['queued','waiting_input'].includes(task.status) || task.phase === 'Agent running' || task.phase === 'Starting agents';
-  const participant = agents.find(a => a.agent_id === selected) || agents[0];
+  const progress = data.workflow_progress;
+  const currentAgents = progress ? agents.filter(agent => progress.agent_ids.includes(agent.agent_id)) : agents;
+  const currentAgentId = progress?.steps.find(step => step.current)?.agent_id;
+  const participant = currentAgents.find(a => a.agent_id === selected)
+    || currentAgents.find(a => a.agent_id === currentAgentId)
+    || currentAgents.find(a => a.activity?.state === 'working') || currentAgents[0];
   async function action(name: string, body = {}) {
     if (lock.current || error) return;
     lock.current = true; setPending(name); setFailure('');
@@ -72,7 +78,8 @@ function TaskContent({ taskId }: { taskId: string }) {
       <RestartRun key={`restart:${workflow.run_id}`} run={workflow} disabled={!!error || !!pending}
         select={(_runId, newTaskId) => navigate(newTaskId ? `/tasks/${encodeURIComponent(newTaskId)}` : '/monitor')} />
     </section>}
-    <ParticipantStrip agents={agents} taskId={task.task_id} selected={participant?.agent_id} onSelect={setSelected} />
+    {progress && <WorkflowProgress progress={progress} agents={agents} taskId={task.task_id} selected={participant?.agent_id} onSelect={setSelected} />}
+    {!progress && <ParticipantStrip agents={agents} taskId={task.task_id} selected={participant?.agent_id} onSelect={setSelected} />}
     <section className="conversation-panel" aria-label="Task conversation">{participant ? <AgentHistory key={`${task.task_id}:${participant.agent_id}`} agentId={participant.agent_id} taskId={task.task_id} attachments={data.attachments} label={participant.role} /> : <ResourceState>{closed ? 'No recorded agent conversation.' : 'Waiting for an agent to join…'}</ResourceState>}
       {task.kind === 'agent' && <TaskReply taskId={taskId} workspaceId={task.workspace_id} messages={data.messages} disabled={!!error} unavailable={closed || busy || !!pending} refresh={refresh} />}
     </section>

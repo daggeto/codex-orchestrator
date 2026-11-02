@@ -67,10 +67,13 @@ async def detail(request):
         step = definition.get_step(plan['step_id']) if definition else None
         if isinstance(step, PlanApprovalStep):
             recover_plan(plan, variables, step.sources)
+    from orchestrator.api.workflow_progress import presentation as workflow_progress
+    steps = await orch.store.rows('SELECT * FROM step_executions WHERE task_id=? ORDER BY created_at', (tid,))
     return web.json_response(public_workflow({'task': task, 'agents': agents,
         'workflow': workflow,
+        'workflow_progress': await workflow_progress(orch, task, workflow, agents, steps),
         'scope_split': await presentation(orch, task, workflow),
-        'steps': await orch.store.rows('SELECT * FROM step_executions WHERE task_id=? ORDER BY created_at', (tid,)),
+        'steps': steps,
         'attachments': [public(row) for row in await orch.store.rows('SELECT * FROM attachments WHERE task_id=? ORDER BY created_at,attachment_id', (tid,))],
         'messages': await orch.store.rows('SELECT m.*, (SELECT json_group_array(attachment_id) FROM (SELECT attachment_id FROM message_attachments WHERE message_id=m.message_id ORDER BY position)) AS attachment_ids_json FROM task_messages m WHERE task_id=? ORDER BY created_at', (tid,)),
         'plan_approval': plan,

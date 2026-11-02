@@ -79,8 +79,6 @@ class PrepareCompletionStep(PrepareMergeRequestStep):
                     return _blocked("Resume must use the same repository as the saved run")
                 if await _run(root, "git", "branch", "--show-current") != saved.get("mr_checkout_branch", saved.get("mr_branch")):
                     return _blocked("Check out the saved PR/MR branch before resuming")
-                if await _run(root, "git", "status", "--porcelain", "--untracked-files=all"):
-                    return _blocked("Commit or resolve interrupted edits before resuming; files were preserved")
                 if await _run(root, "git", "remote", "get-url", "origin") != saved.get("mr_remote_url"):
                     return _blocked("The origin remote differs from the saved run")
                 for key in (
@@ -292,8 +290,7 @@ class MonitorCompletionStep(Step):
                     final_sha, final_checks = await _snapshot(v)
                     final_status, _ = _check_status(final_checks, required)
                     if final_sha == sha and final_status == "green":
-                        if (await _run(v["mr_repo"], "git", "rev-parse", "HEAD") != sha or
-                                await _run(v["mr_repo"], "git", "status", "--porcelain", "--untracked-files=all")):
+                        if await _run(v["mr_repo"], "git", "rev-parse", "HEAD") != sha:
                             return _blocked("Local work changed before completion; commit and resume for review")
                         return StepResult(success=True, output=output, next_step="__end__")
                     continue
@@ -343,8 +340,6 @@ class RepairCompletionStep(AssignStep):
             return _blocked(f"Reached {limit_key}={v[limit_key]}; inspect mr_ci_report and review_text before resuming")
         try:
             root = v["mr_repo"]
-            if await _run(root, "git", "status", "--porcelain", "--untracked-files=all"):
-                return _blocked("Uncommitted work appeared before repair; files were preserved")
             if await _run(root, "git", "branch", "--show-current") != v.get("mr_checkout_branch", v["mr_branch"]):
                 return _blocked("The selected branch changed before repair")
             before = await _run(root, "git", "rev-parse", "HEAD")
@@ -359,8 +354,6 @@ class RepairCompletionStep(AssignStep):
             if after == before:
                 return _blocked("Repair produced no new commit; refusing to repeat CI on unchanged code", **result.output)
             await _run(root, "git", "merge-base", "--is-ancestor", before, after)
-            if await _run(root, "git", "status", "--porcelain", "--untracked-files=all"):
-                return _blocked("Repair left uncommitted work; publication stopped", **result.output)
             result.output["review_decision"] = "pending"
             result.output["completion_reviewed_sha"] = ""
             result.next_step = "review"

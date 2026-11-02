@@ -44,7 +44,9 @@ class FinalValidationStep(Step):
         self.sub_steps = [AssignStep(
             step_id='validation-qa', role='qa', output_key='validation_report',
             message_template=(
-                'Validate the final committed changes in {cwd}. Request: {task_description}\n'
+                'Validate the selected checkout in {cwd}. Request: {task_description}\n'
+                'Existing local edits are allowed and may affect check results. Disclose them in the report; '
+                'do not claim these checks cover only committed source. '
                 'Read repository instructions and command definitions. Run applicable tests, '
                 'typecheck and lint once each, avoiding duplicate coverage from combined commands. '
                 'Checks are authorized by this workflow unless task or repository rules prohibit them. '
@@ -87,8 +89,6 @@ class FinalValidationStep(Step):
             return StepResult(success=False, error=reason)
 
         async def identity():
-            if await _run(root, 'git', 'status', '--porcelain', '--untracked-files=all'):
-                raise ValueError('Final validation requires a clean committed checkout')
             return await _run(root, 'git', 'rev-parse', 'HEAD')
         try:
             resume_request = v.pop('validation_resume_request', None)

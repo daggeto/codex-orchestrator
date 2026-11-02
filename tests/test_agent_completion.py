@@ -53,11 +53,39 @@ class AgentCompletionTests(unittest.IsolatedAsyncioTestCase):
     async def test_timeout_interrupts_backend_and_returns_failure(self):
         agent = CodexAgent('agent', RoleConfig(name='implementer', max_turn_seconds=0.001), port=9999)
         agent._request = AsyncMock(return_value={})
-        agent.interrupt = AsyncMock()
-        result = await agent.send_message('thread', 'Implement')
+        interrupted = asyncio.Event()
+
+        async def interrupt(thread_id):
+            interrupted.set()
+
+        agent.interrupt = AsyncMock(side_effect=interrupt)
+        task = asyncio.create_task(agent.send_message('thread', 'Implement'))
+        self.addAsyncCleanup(task.cancel)
+        await interrupted.wait()
+        self.assertFalse(task.done(), 'Recovery must wait for the turn to stop')
+        agent._event_queues['thread'].put_nowait(StreamEvent('turn/completed', {
+            'turn': {'status': 'interrupted'}}))
+        result = await task
         self.assertFalse(result.ok)
         self.assertIn('timed out', result.error)
         agent.interrupt.assert_awaited_once_with('thread')
+
+    async def test_failed_timeout_interrupt_stops_backend_before_returning(self):
+        agent = CodexAgent('agent', RoleConfig(name='implementer', max_turn_seconds=0.001), port=9999)
+        agent._request = AsyncMock(return_value={})
+        agent.interrupt = AsyncMock(side_effect=RuntimeError('No acknowledgement'))
+        agent.stop = AsyncMock()
+        result = await agent.send_message('thread', 'Implement')
+        self.assertFalse(result.ok)
+        agent.stop.assert_awaited_once()
+
+    async def test_interrupt_identifies_the_active_turn(self):
+        agent = CodexAgent('agent', RoleConfig(name='implementer'), port=9999)
+        agent._active_turn_ids['thread'] = 'active-turn'
+        agent._request = AsyncMock()
+        await agent.interrupt('thread')
+        agent._request.assert_awaited_once_with('turn/interrupt', {
+            'threadId': 'thread', 'turnId': 'active-turn'})
 
     async def test_zero_limit_waits_for_codex_completion(self):
         agent = CodexAgent('agent', RoleConfig(name='planner', max_turn_seconds=0), port=9999)

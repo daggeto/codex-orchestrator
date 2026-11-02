@@ -7,7 +7,7 @@ model turns. Failed CI invokes the implementer to inspect logs and commit a focu
 repair, then the reviewer approves it before another push.
 
 The CLI starts or reuses the implementer and reviewer automatically. Authenticate
-`gh` or `glab` first and use a clean checkout. Keep the intended branch checked out.
+`gh` or `glab` first. Existing local edits are allowed and preserved. Keep the intended branch checked out.
 `--roles-dir` selects role definitions independently of the target repository.
 The workflow preserves dirty files and stops rather than overwriting them.
 

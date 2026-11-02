@@ -95,9 +95,9 @@ No tests or browser checks were run during implementation. Manual acceptance:
 3. Change an API or contract used by the plan. Confirm replanning returns a new
    revision for approval and preserves the saved developer draft as feedback.
 4. Change files during assessment. Confirm approval stops and asks for a retry.
-5. Cause a repairable source failure on a clean checkout. Confirm assigned files
+5. Cause a repairable source failure with unrelated local edits present. Confirm assigned files
    alone are committed, stale approvals are invalidated, and the workflow returns
-   to source review. Check that dirty files or unapproved plans prevent mutation.
+   to source review. Check that unrelated local edits remain outside the repair commit and unapproved plans prevent mutation.
 6. Cancel during assessment. Confirm the assistant stops, the incident is retained,
    and implementation does not start. Reload to inspect saved history.
 7. Merge branches with a resolvable conflict. Confirm individual attempts appear

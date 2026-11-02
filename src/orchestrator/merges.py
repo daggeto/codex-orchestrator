@@ -120,8 +120,6 @@ class MergeService:
             raise Conflict(f'Git check failed at {path}: {err.strip()[:1000] or status.strip()[:1000]}')
         if len(status.encode()) >= 65536:
             raise Conflict(f'Git inspection output exceeds the safe limit at {path}; inspect changes manually')
-        if status.strip() and not allow_dirty:
-            raise DirtyCheckout(path, status)
         for name in ('MERGE_HEAD', 'MERGE_AUTOSTASH', 'BISECT_START', 'AUTO_MERGE', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'sequencer', 'index.lock'):
             target = await self.value(path, 'rev-parse', '--path-format=absolute', '--git-path', name)
             if Path(target).exists():
@@ -228,18 +226,15 @@ class MergeService:
                 status = await self.clean(workspace['path'], allow_dirty=True)
                 if status.strip():
                     tree = await self.change_tree(workspace['path'])
-                    if tree == await self.value(workspace['path'], 'rev-parse', 'HEAD^{tree}'):
-                        raise Conflict(f'Staged changes differ from the working files at {workspace["path"]}; review the index before committing')
                     result['changes'][workspace['workspace_id']] = tree
                     result['dirty_checkouts'].append(dict(path=workspace['path'], status=status))
             pending = await self.store.one("SELECT operation_id FROM workspace_merges WHERE repository_id=? AND state IN ('accepted','running','recovery_required')", (repository['repository_id'],))
             if pending and not reserved:
                 raise Conflict('Repository has an unresolved merge: ' + pending['operation_id'])
             integrated = await self.ancestor(path, result['source_sha'], result['destination_sha'])
-            result['already_integrated'] = integrated and not result['dirty_checkouts']
+            result['already_integrated'] = integrated
             result['can_commit'] = bool(result['dirty_checkouts'])
-            result['eligible'] = not result['can_commit']
-            result['blockers'].extend(f'Uncommitted changes at {item["path"]}' for item in result['dirty_checkouts'])
+            result['eligible'] = True
         except (Conflict, OSError, TimeoutError) as exc:
             result['blockers'].append(str(exc) or 'Git inspection timed out')
             if isinstance(exc, DirtyCheckout):
@@ -578,8 +573,9 @@ class MergeService:
                                         operation_id=operation['operation_id'], timeout=30)
         if code:
             raise Conflict('Cannot stage resolved merge: ' + (err or out)[-1000:])
-        if await self.value(path, 'write-tree') != after_tree or await self.change_tree(path) != after_tree:
+        if await self.change_tree(path) != after_tree:
             raise Conflict('Resolution changed before committing; inspect retained merge state')
+        await self.value(path, 'write-tree')
         await verify_owner()
         code, out, err = await self.git(path, 'commit', '--no-verify', '--no-gpg-sign', '--no-edit',
                                         operation_id=operation['operation_id'], timeout=30)
@@ -656,7 +652,7 @@ class MergeService:
                     if state != 'failed':
                         raise Conflict('Git reported failure after changing destination HEAD')
                     await self.store.finish_merge(operation_id, 'failed', head, 'merge_conflict' if conflicts else 'git_failed',
-                                                  'Conflict resolver could not complete the merge; it was aborted. Inspect diagnostics, resolve the branch and retry.' if conflicts else 'Git merge failed; destination is clean. Inspect diagnostics before retrying.',
+                                                  'Conflict resolver could not complete the merge; it was aborted. Inspect diagnostics, resolve the branch and retry.' if conflicts else 'Git merge failed; local edits were retained. Inspect diagnostics before retrying.',
                                                   diagnostics, conflicts)
                 else:
                     state, head = await self.verified_result(operation)
@@ -712,7 +708,7 @@ class MergeService:
                 state, head = await self.verified_result(operation)
                 await self.store.finish_merge(operation['operation_id'], state, head,
                                               error_code='interrupted' if state == 'failed' else None,
-                                              error_message='Merge stopped without integrating changes; destination is clean' if state == 'failed' else None,
+                                              error_message='Merge stopped without integrating changes; local edits were retained' if state == 'failed' else None,
                                               diagnostics=operation['diagnostics'] or '', conflict_paths=operation['conflict_paths'])
             except (Conflict, OSError, TimeoutError) as exc:
                 await self.recovery(operation, str(exc), operation['diagnostics'] or '', operation['conflict_paths'])

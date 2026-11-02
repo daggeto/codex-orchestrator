@@ -163,8 +163,6 @@ class PrepareMergeRequestStep(Step):
                            mr_url="", mr_branch=result.output["task_branch"], mr_base="")
         try:
             root = await _run(cwd, "git", "rev-parse", "--show-toplevel")
-            if await _run(root, "git", "status", "--porcelain", "--untracked-files=all"):
-                return _status("blocked", "Repository has existing uncommitted changes; no task branch created")
             selected = ctx.variables.get('publication_source') or await resolve_publication_identity(root, ctx.variables)
             remote_url, provider = selected['remote'], selected['provider']
             if await _run(root, 'git', 'remote', 'get-url', 'origin') != remote_url:
@@ -199,7 +197,7 @@ class PrepareMergeRequestStep(Step):
 
 
 class CreateMergeRequestStep(Step):
-    """Push only clean, approved task commits, then create a draft PR/MR."""
+    """Push only approved task commits, then create a draft PR/MR."""
 
     def __init__(self, step_id: str, require_ux_approval: bool = False, **kwargs):
         super().__init__(step_id, **kwargs)
@@ -223,8 +221,6 @@ class CreateMergeRequestStep(Step):
             current = await _run(root, "git", "branch", "--show-current")
             if current != v.get("mr_checkout_branch", branch):
                 return _status("blocked", "Agent changed branches; task branch was not published")
-            if await _run(root, "git", "status", "--porcelain", "--untracked-files=all"):
-                return _status("blocked", "Uncommitted changes remain; commit and review them before publishing")
             if await _run(root, "git", "remote", "get-url", "origin") != v["mr_remote_url"]:
                 return _status("blocked", "The origin remote changed during the task")
             await _run(root, "git", "merge-base", "--is-ancestor", v["mr_baseline"], "HEAD")

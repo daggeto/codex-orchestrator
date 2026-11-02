@@ -88,7 +88,7 @@ export function useWorkspaceMerge(workspaceId: string) {
     !ownOperation && !pendingOutcome
     ? state.transportWarning?.message : '';
 
-  async function merge() {
+  async function merge(commitChanges = false) {
     const id = workspaceId;
     if (state.busy || sending.current) return;
     sending.current = true;
@@ -110,7 +110,7 @@ export function useWorkspaceMerge(workspaceId: string) {
         }
       }
       if (!request) {
-        const committing = !!eligibility.data?.can_commit;
+        const committing = commitChanges;
         const check = await get<MergeEligibility>(`${endpoint}/merge`);
         if (!active()) return;
         if (!(committing ? check.can_commit : check.eligible) || !check.source_branch || !check.source_sha || !check.destination_workspace_id || !check.destination_path || !check.destination_sha) {

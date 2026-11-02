@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,7 +41,9 @@ async def source_repair(service, ctx, decision, incident, attempt, expected_snap
             raise ValueError('Repair path is outside the selected checkout or is Git metadata')
         if '.git' in resolved.relative_to(root).parts:
             raise ValueError('Repair path is outside the selected checkout or is Git metadata')
-    before = await task_snapshot(ctx)  # Never stage or commit pre-existing dirty files.
+    before = await task_snapshot(ctx)
+    before_tree = await service.orch.merges.change_tree(str(root))
+    staged_paths = set(filter(None, (await _run(str(root), 'git', 'diff', '--cached', '--name-only', '-z')).split('\0')))
     if not before:
         raise ValueError('A selected task checkout is required for source repair')
     role = deepcopy(service.orch.roles.get('workflow-assistant') or service.orch.roles['implementer'])
@@ -73,18 +76,33 @@ async def source_repair(service, ctx, decision, incident, attempt, expected_snap
             raise ValueError('Repair introduced a symlink or changed path ownership; edits retained')
     if await _run(str(root), 'git', 'rev-parse', 'HEAD') != before or await _run(str(root), 'git', 'branch', '--show-current') != ctx.variables['task_branch']:
         raise ValueError('Checkout identity changed during repair; edits retained for inspection')
-    changed = set(filter(None, (await _run(str(root), 'git', 'diff', '--name-only', '-z', 'HEAD')).split('\0')))
-    changed.update(filter(None, (await _run(str(root), 'git', 'ls-files', '--others', '--exclude-standard', '-z')).split('\0')))
+    tree = await service.orch.merges.change_tree(str(root))
+    changed = set(filter(None, (await _run(str(root), 'git', 'diff', '--name-only', '-z', before_tree, tree)).split('\0')))
     if not result.ok or not changed or changed - set(paths):
         raise ValueError('Repair was incomplete, made no progress, or edited unassigned files. Edits retained. ' + (result.error or result.full_text)[-4000:])
-    tree = await service.orch.merges.change_tree(str(root))
-    await _run(str(root), 'git', '--literal-pathspecs', 'add', '--all', '--', *sorted(changed))
-    if await _run(str(root), 'git', 'write-tree') != tree or await service.orch.merges.change_tree(str(root)) != tree:
-        raise ValueError('Files changed while staging the repair; staged edits retained for inspection')
-    if (await _run(str(root), 'git', 'rev-parse', 'HEAD') != before
-        or await _run(str(root), 'git', 'branch', '--show-current') != ctx.variables['task_branch']):
-        raise ValueError('HEAD changed before the repair commit; staged edits retained')
-    await _run(str(root), 'git', '-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgSign=false', 'commit', '-m', 'Repair workflow blocker')
+    # Commit only the repair delta through a temporary index. Existing staged,
+    # unstaged and untracked changes remain outside the repair commit.
+    repaired_snapshot = await task_snapshot(ctx, require_clean=False)
+    with tempfile.TemporaryDirectory(prefix='orch-repair-') as directory:
+        index_file = str(Path(directory) / 'index')
+        patch_file = Path(directory) / 'repair.patch'
+        await _run(str(root), 'git', 'diff', '--binary', '--full-index',
+                   '--output=' + str(patch_file), before_tree, tree)
+        async def indexed(*args):
+            return await _run(str(root), 'env', 'GIT_INDEX_FILE=' + index_file, 'git', *args)
+        await indexed('read-tree', before)
+        await indexed('apply', '--cached', str(patch_file))
+        repair_tree = await indexed('write-tree')
+        if (await task_snapshot(ctx, require_clean=False) != repaired_snapshot
+            or await service.orch.merges.change_tree(str(root)) != tree):
+            raise ValueError('Checkout changed before the repair commit; edits retained')
+        commit = await _run(str(root), 'git', '-c', 'commit.gpgSign=false', 'commit-tree', repair_tree,
+                            '-p', before, '-m', 'Repair workflow blocker')
+        await _run(str(root), 'git', 'update-ref', 'HEAD', commit, before)
+        # Update previously unstaged repair paths; retain existing staged entries.
+        unstaged_paths = changed - staged_paths
+        if unstaged_paths:
+            await _run(str(root), 'git', '--literal-pathspecs', 'reset', '--quiet', commit, '--', *sorted(unstaged_paths))
     commit = await task_snapshot(ctx)
     return result.full_text, commit, stopped
 
@@ -116,9 +134,26 @@ async def recover_step(service, ctx, workflow, step, failure):
     result = failure
     try:
         async with asyncio.timeout(max(0, remaining)):
-            for attempt in range(2, 4):
+            current_snapshot = await task_snapshot(ctx, require_clean=False)
+            reassessed = current_snapshot != snapshot
+            if reassessed:
+                # A late write invalidates the diagnosis, not the retained work.
+                # Refresh once within the original incident's time/action budget.
+                previous_incident = incident
+                await ctx.store.write("UPDATE workflow_recoveries SET status='superseded',updated_at=? WHERE incident_id=?",
+                    (now(), previous_incident))
+                snapshot = current_snapshot
+                decision = await service.assess(ctx, step.step_id, failure.error or 'Step failed',
+                    {'boundary': 'step_failure', 'snapshot': snapshot,
+                     'supersedes': previous_incident}, allow_repair=True)
+                incident = decision['incident_id']
+                row = await ctx.store.one('SELECT * FROM workflow_recoveries WHERE incident_id=?', (incident,))
+                if row['attempts'] > 1 or row['status'] in {'recovered', 'replanning', 'awaiting_approval', 'superseded'}:
+                    raise ValueError('Recovery was already attempted; inspect the saved result before continuing')
+            # A refreshed diagnosis consumes one of the three allowed actions.
+            for attempt in range(2, 3 if reassessed else 4):
                 if await task_snapshot(ctx, require_clean=False) != snapshot:
-                    raise ValueError('Checkout changed after assessment; recovery must be assessed again')
+                    raise ValueError('Checkout is still changing after recovery assessment; stop other writers before retrying recovery')
                 kind = decision['decision']
                 if kind not in {'repair', 'review', 'retry', 'install', 'replan'}:
                     break
@@ -172,7 +207,7 @@ async def recover_step(service, ctx, workflow, step, failure):
                     elif kind == 'review':
                         commit = await task_snapshot(ctx)
                         if not commit:
-                            raise ValueError('Fresh review requires a selected clean checkout')
+                            raise ValueError('Fresh review requires a selected checkout')
                         for key in list(ctx.variables):
                             if key.startswith('review_') or key == 'completion_reviewed_sha':
                                 ctx.variables.pop(key, None)

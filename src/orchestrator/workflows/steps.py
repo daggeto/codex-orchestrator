@@ -73,6 +73,18 @@ async def task_snapshot(
     return snapshot.hexdigest()
 
 
+def committed_source_instructions(commit: str) -> str:
+    return (
+        f"\n\nSource evidence is bound to commit {commit}. The selected checkout may "
+        "contain unrelated staged, unstaged, or untracked edits. Preserve them. "
+        "Inspect committed content using git show <commit>:<path> and git diff "
+        "<baseline> <commit>; reading working files can include unrelated edits. "
+        "Exclude uncommitted edits from source approval and report any requested "
+        "implementation missing from the committed revision. Do not stage, commit, "
+        "stash, reset, or discard unrelated edits."
+    )
+
+
 def reviewer_criteria(variables) -> str:
     """Every reviewer receives the same planning evidence, including repair reviews."""
     sections = [
@@ -140,16 +152,21 @@ class AssignStep(Step):
                 "\n\nThe task has selected this checkout: "
                 f"{ctx.variables['task_worktree']} on branch {ctx.variables['task_branch']}. "
                 "Reuse this checkout and branch for all edits and commits. Do not create "
-                "another worktree or switch branches; review and publication use this checkout."
+                "another worktree or switch branches; review and publication use this checkout. "
+                "Finish and commit the task changes before handoff. Preserve unrelated edits; "
+                "they do not need to be committed or removed for source review. Review covers "
+                "committed content only, so uncommitted task changes cannot receive approval."
             )
         if ctx.variables.get('workspace_kind') == 'main':
             message += "\n\nThe task explicitly selected execution in this main checkout. Use this folder and its current branch for implementation."
         cwd = ctx.variables.get("cwd") if ctx.variables.get("workspace_resolved") else (self.cwd.format(**ctx.variables) if self.cwd else ctx.variables.get("cwd"))
 
         try:
-            before = await task_snapshot(ctx) if self.stable_snapshot else None
+            before = await task_snapshot(ctx, committed_only=True) if self.stable_snapshot else None
         except (OSError, RuntimeError, ValueError) as exc:
             return StepResult(success=False, error=str(exc))
+        if before:
+            message += committed_source_instructions(before)
         thread = await ctx.acquire_thread(agent, getattr(self, 'thread_key', None) or self.step_id, cwd=cwd, model=self.model)
 
         await ctx.persist_step_thread(agent, thread)
@@ -162,7 +179,7 @@ class AssignStep(Step):
             from orchestrator.workflows.merge_request import _run
             try:
                 root = ctx.variables["task_worktree"]
-                head = await task_snapshot(ctx)
+                head = await task_snapshot(ctx, committed_only=True)
                 if self.stable_snapshot and head != before:
                     raise ValueError("Task commit changed during consultation; use a stable checkout")
                 if self.role == "implementer":
@@ -239,17 +256,18 @@ class ReviewStep(Step):
         reviewed = {}
         if ctx.variables.get("task_worktree"):
             try:
-                head = await task_snapshot(ctx)
+                head = await task_snapshot(ctx, committed_only=True)
                 if ctx.variables.get("task_commit", head) != head:
                     raise ValueError("Task commit changed since implementation handoff; finish implementation before review")
                 reviewed[f"{self.output_namespace}_commit"] = head
+                message += committed_source_instructions(head)
             except (OSError, RuntimeError, ValueError) as exc:
                 return StepResult(success=False, error=str(exc))
         await ctx.persist_step_thread(agent, thread)
         result = await agent.send_message(thread, message)
         if reviewed:
             try:
-                if await task_snapshot(ctx) != reviewed[f"{self.output_namespace}_commit"]:
+                if await task_snapshot(ctx, committed_only=True) != reviewed[f"{self.output_namespace}_commit"]:
                     return StepResult(success=False, error="Task commit changed during review")
             except (OSError, RuntimeError, ValueError) as exc:
                 return StepResult(success=False, error=str(exc))
@@ -268,12 +286,15 @@ class ReviewStep(Step):
         rejected = self.reject_keyword.upper() in text
 
         if self.strict_decision:
-            # Require a final standalone marker and reject conflicting markers anywhere.
+            # Only standalone decision lines are markers; ordinary prose may
+            # mention approval (for example, "developer-approved plan").
+            # Still reject conflicting standalone markers in the same response.
             markers = set(re.findall(
-                rf"\b(?:{re.escape(self.approve_keyword.upper())}|{re.escape(self.reject_keyword.upper())})\b",
+                rf"^[ \t]*({re.escape(self.approve_keyword.upper())}|{re.escape(self.reject_keyword.upper())})[ \t]*\r?$",
                 text,
+                re.MULTILINE,
             ))
-            final = text.strip().splitlines()[-1] if text.strip() else ""
+            final = text.strip().splitlines()[-1].strip() if text.strip() else ""
             approved = markers == {self.approve_keyword.upper()} and final == self.approve_keyword.upper()
             rejected = markers == {self.reject_keyword.upper()} and final == self.reject_keyword.upper()
 

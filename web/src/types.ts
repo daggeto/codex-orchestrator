@@ -69,12 +69,19 @@ export interface InputRequest {
   request_id: string; kind: string; prompt: string; options: unknown[];
 }
 export interface TaskView {
+  workflow_progress?: WorkflowProgress | null;
   recoveries?: RecoveryIncident[];
   plan_approval?: import('./components/PlanApproval').PlanApprovalState | null;
   task: TaskRecord; agents: OwnedAgent[]; workflow: (Pick<WorkflowRun, 'run_id' | 'workflow_name' | 'status' | 'updated_at'> & { state?: JsonObject }) | null;
   steps: StepExecution[]; pending_input: InputRequest[];
   attachments: Attachment[]; messages: TaskMessage[];
   scope_split?: ScopeSplit | null;
+}
+
+export interface WorkflowProgress {
+  steps: { step_id: string; label: string; role: string | null; agent_id: string | null; status: string; current: boolean }[];
+  agent_ids: string[]; other_agent_ids: string[];
+  history: { id: string; started_at: string; stopped_at: string | null; status: string | null; reason: string; agent_ids: string[] }[];
 }
 
 export interface RecoveryIncident {

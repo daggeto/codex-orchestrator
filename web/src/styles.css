@@ -237,6 +237,29 @@ small, time, .muted { color: var(--muted-foreground); }
 .participant button[aria-pressed=true], .participant a[aria-current=page] { background: var(--accent); color: var(--primary); }
 .participant small { margin-left: 8px; font-size: 10px; }
 .participant-detail { border-left: 1px solid var(--border) !important; }
+.workflow-progress { margin: 16px 0; }
+.workflow-progress-heading { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: baseline; margin-bottom: 8px; font-size: 13px; }
+.workflow-progress-heading > span { color: var(--primary); }
+.workflow-stepper { position: relative; display: flex; overflow-x: auto; list-style: none; margin: 0; padding: 4px 0 12px; gap: 8px; }
+.workflow-progress-step { display: flex; align-items: flex-start; gap: 8px; flex: 0 0 200px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; color: var(--muted-foreground); }
+.workflow-progress-step.is-current { border-color: var(--primary); background: var(--accent); color: var(--primary); }
+.workflow-progress-step.is-complete .workflow-step-number { color: var(--primary); }
+.workflow-step-number { display: grid; place-items: center; flex: 0 0 24px; height: 24px; border: 1px solid currentColor; border-radius: 50%; font-size: 12px; }
+.workflow-progress-step > div { min-width: 0; flex: 1; }
+.workflow-progress-step button { display: block; padding: 0; margin: 0; border: 0; background: transparent; color: inherit; text-align: left; font: inherit; font-weight: 600; }
+.workflow-progress-step button[aria-pressed=true] { text-decoration: underline; text-underline-offset: 3px; }
+.workflow-progress-step strong { font-size: inherit; }
+.workflow-progress-step small { display: block; margin-top: 5px; font-size: 11px; overflow-wrap: anywhere; }
+.workflow-step-detail { color: inherit; text-decoration: none; }
+.workflow-history { margin-top: 8px; color: var(--muted-foreground); font-size: 13px; }
+.workflow-history summary { cursor: pointer; padding: 8px 0; }
+.workflow-history article { border-top: 1px solid var(--border); padding: 12px 0; }
+.workflow-history article p { margin: 0 0 8px; overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .workflow-stepper { flex-direction: column; overflow: visible; }
+  .workflow-progress-step { flex-basis: auto; }
+  .workflow-progress-step button, .workflow-step-detail { min-height: 44px; }
+}
 .conversation-panel { min-width: 0; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
 .conversation-scroll { max-height: min(68dvh, 900px); min-height: 120px; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; overscroll-behavior: contain; padding: 4px; }
 .task-page .chat-message { padding: 12px 8px; margin: 0 0 8px; border: 0; background: transparent; border-radius: 6px; }
