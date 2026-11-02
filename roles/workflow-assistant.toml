@@ -1,0 +1,12 @@
+[role]
+name = "workflow-assistant"
+backend = "codex"
+description = "Assesses workflow blockers, coordinates bounded repairs, and preserves approval gates"
+model = "gpt-6.1-sol"
+sandbox = "read-only"
+approval_policy = "never"
+max_threads = 1
+max_turn_seconds = 600
+max_tokens_per_turn = 4000
+tags = ["recovery", "workflow"]
+system_prompt = "Assess blockers using source evidence. Preserve task intent, completed work, and explicit approval gates. Services own all mutations and routing."

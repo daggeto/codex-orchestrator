@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import os
 from pathlib import Path
@@ -20,8 +21,11 @@ if TYPE_CHECKING:
     from orchestrator.workflows.engine import WorkflowContext
 
 
+_recovery_environment = contextvars.ContextVar('recovery_environment', default=None)
+
+
 async def _run(cwd: str, *args: str) -> str:
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GH_PROMPT_DISABLED": "1"}
+    env = {**os.environ, **(_recovery_environment.get() or {}), "GIT_TERMINAL_PROMPT": "0", "GH_PROMPT_DISABLED": "1"}
     proc = await asyncio.create_subprocess_exec(
         *args, cwd=cwd, env=env, start_new_session=True, stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -133,6 +137,7 @@ async def resolve_publication_identity(root, variables):
 
 
 class PrepareWorktreeStep(Step):
+    recovery_retry_safe = True
     async def execute(self, ctx) -> StepResult:
         try:
             root = await _run(str(ctx.variables.get("cwd") or Path.cwd()),
@@ -144,6 +149,8 @@ class PrepareWorktreeStep(Step):
 
 class PrepareMergeRequestStep(Step):
     """Establish the Git baseline before any agent edits the repository."""
+
+    recovery_retry_safe = True
 
     async def execute(self, ctx: WorkflowContext) -> StepResult:
         cwd = str(Path(ctx.variables.get("cwd") or Path.cwd()).expanduser().resolve())

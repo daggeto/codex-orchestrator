@@ -87,6 +87,8 @@ async def merge_status(request):
     operation = await service.store.merge_operation(request.match_info['operation_id'])
     if not operation or request.match_info['workspace_id'] not in {operation['source_workspace_id'], operation['destination_workspace_id']}:
         raise LookupError('Merge operation not found for this workspace')
+    operation['recoveries'] = await service.orch.recovery.history(operation_id=operation['operation_id'],
+        before=request.query.get('before'), limit=request.query.get('limit', 20))
     return web.json_response({'operation': operation})
 
 
@@ -104,6 +106,8 @@ async def merge(request):
 
 
 def register(app):
+    from orchestrator.api.recovery import retry
+    app.router.add_post('/api/workspaces/{workspace_id}/recoveries/{incident_id}/retry', retry)
     app.router.add_get('/api/workspaces/{workspace_id}/merge', merge_eligibility)
     app.router.add_post('/api/workspaces/{workspace_id}/merge', merge)
     app.router.add_get('/api/workspaces/{workspace_id}/merges/{operation_id}', merge_status)

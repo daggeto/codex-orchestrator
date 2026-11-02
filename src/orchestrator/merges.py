@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import time
 
 from orchestrator.processes import owner_alive, process_group_alive, process_identity, stop_process_group
 from orchestrator.state.models import now
@@ -180,6 +181,8 @@ class MergeService:
             raise LookupError('Workspace not found')
         repository = await self.store.one('SELECT * FROM repositories WHERE repository_id=?', (source['repository_id'],))
         latest = await self.store.one('SELECT * FROM workspace_merges WHERE source_workspace_id=? OR destination_workspace_id=? ORDER BY created_at DESC LIMIT 1', (workspace_id, workspace_id))
+        if latest:
+            latest['recoveries'] = await self.orch.recovery.history(operation_id=latest['operation_id'])
         result = dict(eligible=False, can_commit=False, already_integrated=False, blockers=[], dirty_checkouts=[], changes={}, source_workspace_id=workspace_id,
                       source_branch=source['branch'], source_sha=None,
                       destination_workspace_id=None, destination_path=None, destination_sha=None,
@@ -427,7 +430,63 @@ class MergeService:
                 raise Conflict('Working changes differ from the interrupted commit snapshot')
 
     async def resolve_conflicts(self, operation, conflicts):
-        """One bounded agent attempt; the service retains ownership of Git state."""
+        """Try distinct, progressing resolutions within one persisted incident."""
+        recovery = self.orch.recovery
+        incident = await recovery.merge_incident(operation, 'Git merge conflicts', conflicts)
+        previous = await self.store.one('SELECT * FROM recovery_attempts WHERE incident_id=? ORDER BY attempt DESC LIMIT 1', (incident,))
+        if previous:
+            return False, 'A previous resolver attempt exists; inspect its persisted result before explicitly retrying the merge.'
+        started = time.monotonic()
+        report = ''
+        install_request = None
+        installed = ''
+        try:
+            async with asyncio.timeout(600):
+                for attempt in range(1, 4):
+                    before = await self.change_tree(operation['destination_path'])
+                    await self.store.write('INSERT INTO recovery_attempts (incident_id,attempt,status,action,started_at) VALUES (?,?,?,?,?)',
+                        (incident, attempt, 'working', 'Install missing recovery capability' if install_request else 'Resolve assigned merge conflicts', now()))
+                    await self.store.write('UPDATE workflow_recoveries SET attempts=?,updated_at=? WHERE incident_id=?', (attempt, now(), incident))
+                    try:
+                        if install_request:
+                            ready, report = await recovery.install_capability(incident, install_request, attempt)
+                            install_request = None
+                            resolved = False
+                            if ready:
+                                installed = report
+                        else:
+                            ready = None
+                            resolved, report = await self._resolve_conflicts_attempt(operation, conflicts, incident, attempt,
+                                report + '\nAvailable incident-local installed capabilities:\n' + installed)
+                    except BaseException as exc:
+                        await self.store.write('UPDATE recovery_attempts SET status=?,report=?,finished_at=? WHERE incident_id=? AND attempt=?',
+                            ('interrupted' if isinstance(exc, asyncio.CancelledError) else 'failed', str(exc), now(), incident, attempt))
+                        raise
+                    await self.store.write('UPDATE recovery_attempts SET status=?,report=?,finished_at=? WHERE incident_id=? AND attempt=?',
+                        ('resolved' if resolved else 'unresolved', report, now(), incident, attempt))
+                    if resolved:
+                        return True, report
+                    if ready is not None:
+                        if not ready:
+                            return False, report
+                        continue
+                    requests = re.findall(r'^INSTALL_REQUEST:\s*(\{[^\n]*\})\s*$', report, re.MULTILINE)
+                    if requests and not installed:
+                        try:
+                            install_request = json.loads(requests[-1])
+                        except ValueError:
+                            return False, report + '\nInvalid capability request.'
+                        continue
+                    if await self.change_tree(operation['destination_path']) == before:
+                        return False, report + '\nStopped: the attempt made no changes.'
+                    if time.monotonic() - started >= 600:
+                        break
+        except TimeoutError:
+            return False, report + '\nStopped: the ten-minute recovery budget expired.'
+        return False, report + '\nStopped: three recovery attempts were used.'
+
+    async def _resolve_conflicts_attempt(self, operation, conflicts, incident, attempt, previous_report):
+        """The service retains ownership of Git state throughout each attempt."""
         path = operation['destination_path']
         merge_head = Path(await self.value(path, 'rev-parse', '--path-format=absolute', '--git-path', 'MERGE_HEAD'))
 
@@ -457,11 +516,18 @@ class MergeService:
             max_threads=1, max_turn_seconds=180, max_tokens_per_turn=8000,
             config_overrides={'model_reasoning_effort': '"low"'},
             system_prompt='Resolve assigned Git merge conflicts with minimal edits, preserving both branches intent.')
-        agent = await self.orch.registry.create_agent(role)
+        owner = await self.store.one('SELECT task_id FROM workflow_recoveries WHERE incident_id=?', (incident,))
+        agent = await self.orch.registry.create_agent(role, task_id=owner['task_id'])
         try:
             async with asyncio.timeout(210):
                 await self.orch.registry.start_agent(agent.agent_id)
                 thread = await agent.start_thread(cwd=path)
+                from orchestrator.state.store import ThreadRecord
+                await self.store.save_thread(ThreadRecord(thread_id=thread.thread_id, agent_id=agent.agent_id, cwd=path, model=role.model))
+                await self.store.write('UPDATE recovery_attempts SET agent_id=?,thread_id=? WHERE incident_id=? AND attempt=?',
+                                       (agent.agent_id, thread.thread_id, incident, attempt))
+                await self.store.write('UPDATE workflow_recoveries SET agent_id=?,thread_id=? WHERE incident_id=?',
+                                       (agent.agent_id, thread.thread_id, incident))
                 result = await agent.send_message(thread.thread_id,
                     'Resolve this service-owned merge in the supplied checkout. Edit only these conflict paths: ' +
                     json.dumps(conflicts) + '\nDestination HEAD: ' + operation['destination_sha'] +
@@ -473,7 +539,12 @@ class MergeService:
                     'Do not run tests, install tools, delegate, or increase model/effort. '
                     'Report the resolution and any blockers. End with exactly one standalone RESOLVED '
                     'only if every assigned conflict is resolved, otherwise UNRESOLVED. '
-                    'The service will stage and commit.')
+                    'The service will stage and commit. Report relevant skills used and evidence of the resolution. '
+                    'If a missing skill or dependency prevents recovery, do not install into either checkout. '
+                    'Instead emit one line INSTALL_REQUEST: {"name":"...","source":"...","reason":"..."} '
+                    'and finish UNRESOLVED. An installer can prepare it in an isolated incident directory. '
+                    '\nPrevious attempt report (do not repeat an unsuccessful approach):\n' + previous_report
+                    + self.orch.recovery.skill_instructions(role.name, {'cwd': path, 'conflicts': json.dumps(conflicts)}))
         finally:
             # A stopped agent must precede all inspection, cleanup and reservation release.
             await self.orch.registry.stop_agent(agent.agent_id)
@@ -607,6 +678,12 @@ class MergeService:
                 raise
         finally:
             self.running.discard(operation_id)
+            current = await self.store.merge_operation(operation_id)
+            incident = await self.store.one('SELECT incident_id FROM workflow_recoveries WHERE operation_id=?', (operation_id,))
+            if current and (incident or current['state'] in {'failed', 'recovery_required'}):
+                iid = incident['incident_id'] if incident else await self.orch.recovery.merge_incident(current, current.get('error_message') or 'Merge failed', conflicts)
+                await self.orch.recovery.finish_merge(iid, current, diagnostics)
+            await self.store.write("UPDATE recovery_retry_requests SET status='finished',updated_at=? WHERE operation_id=?", (now(), operation_id))
 
     async def reconcile(self):
         for operation in await self.store.rows("SELECT * FROM workspace_merges WHERE state IN ('accepted','running','recovery_required')"):

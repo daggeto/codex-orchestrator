@@ -265,6 +265,14 @@ ownership before resuming. Existing workspace leases serialize orchestrator task
 external tools must not edit the task checkout during review. Explicit task workspace
 selection takes precedence over generic role worktree instructions.
 
+The workflow assistant checks failed handoffs and assesses changed checkouts against
+the saved plan. Eligible recovery gets up to three actions within ten minutes,
+preserving completed work and explicit approval gates. Source repairs return to
+review; uncertain side effects and unresolved blockers show specific next steps.
+Task and workspace pages retain attempt history, support older-history paging, and
+offer Retry recovery for a new bounded cycle. See [workflow assistant](docs/workflow-assistant.md)
+for recovery limits, retry contracts, and manual acceptance steps.
+
 The existing step budget and pause behavior remain in place. Runs predating reviewer-only approval can continue with their workspace, implementation, plans, and implementation conversations preserved. Old review gates and later stages resume at a fresh reviewer approval; unfinished preparation or implementation continues from its saved step. Saved approvals are invalidated, and Continue authorizes fresh final checks and a bounded repair cycle.
 Other definition changes can continue when the saved step still exists.
 

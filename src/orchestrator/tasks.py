@@ -239,12 +239,13 @@ class TaskService:
                     if started:
                         agent.task_id = None
 
-    async def execute(self, task_id, message=None, continuation=None):
+    async def execute(self, task_id, message=None, continuation=None, assistance_only=False, recovery_request=None):
         workspace = None
         owned = False
         leased = False
         lock = None
         acquired = False
+        team = None
         try:
             task = await self.store.task(task_id)
             if task['archived_at'] or task_id in self.cancelling or (task['status'] in TERMINAL and continuation is None):
@@ -294,12 +295,68 @@ class TaskService:
             await self.orch.workspaces.claim_lease(workspace['workspace_id'], task_id, self.owner_pid, self.owner_started)
             leased = True
             await self.store.task_status(task_id, 'active', 'Starting agents', expected=('queued',))
+            if assistance_only:
+                from orchestrator.workflows.engine import WorkflowContext
+                saved = dict(continuation.state.get('checkpoint', {}).get('variables', {}))
+                saved.update(task_id=task_id, cwd=workspace['path'])
+                ctx = WorkflowContext(continuation.run_id, self.orch.registry, self.store, self.orch.bus, saved)
+                if assistance_only in {'recover', 'review'}:
+                    from orchestrator.recovery_actions import recover_step
+                    from orchestrator.workflows.steps import ReviewStep, StepResult, task_snapshot
+                    workflow = self.orch.workflows[continuation.workflow_name]
+                    checkpoint = continuation.state['checkpoint']
+                    step = workflow.get_step(checkpoint['next_step'])
+                    if step is None:
+                        raise ValueError('Saved recovery step is unavailable')
+                    roles = settings.get('roles') or {name: self.role({'role': name}) for name in workflow.required_roles}
+                    team = await self.orch.spawn_team(list(roles), task_id=task_id, configurations=roles)
+                    ctx._threads = dict(checkpoint.get('threads', {}))
+                    incident = await self.store.one('SELECT * FROM workflow_recoveries WHERE incident_id=?', (recovery_request['incident_id'],)) if recovery_request else (
+                        await self.store.one('SELECT * FROM workflow_recoveries WHERE run_id=? ORDER BY created_at DESC LIMIT 1', (continuation.run_id,)))
+                    reason = incident['result']['summary'] if incident else continuation.state.get('error') or task['phase']
+                    if assistance_only == 'review':
+                        commit = incident['result'].get('repair_commit') if incident else None
+                        review = next((s for s in workflow.steps if isinstance(s, ReviewStep) and s.role == 'reviewer' and not s.advisory), None)
+                        if not commit or not review or await task_snapshot(ctx) != commit:
+                            raise ValueError('Retained repair no longer matches the checkout; inspect current changes before continuing')
+                        if ctx.variables.get('_requires_plan_approval') and (ctx.variables.get('plan_approval') or {}).get('status') != 'approved':
+                            raise ValueError('Developer plan approval is still required')
+                        for key in list(ctx.variables):
+                            if key.startswith('review_') or key == 'completion_reviewed_sha':
+                                ctx.variables.pop(key, None)
+                        ctx.variables.update(task_commit=commit, _recovery_review_commit=commit)
+                        result = StepResult(True, next_step=review.step_id)
+                    else:
+                        result = await recover_step(self.orch.recovery, ctx, workflow, step, StepResult(False, error=reason))
+                    if result.success:
+                        ctx.variables.update(result.output)
+                        target = result.next_step or (workflow.steps[workflow.steps.index(step) + 1].step_id if workflow.steps.index(step) + 1 < len(workflow.steps) else '__end__')
+                        if target != '__end__' and workflow.get_step(target) is None:
+                            raise ValueError('Recovery returned an unavailable step')
+                        checkpoint.update(next_step=target, variables=ctx.variables, threads=ctx._threads,
+                                          iteration=checkpoint['iteration'] + 1)
+                        continuation.status = 'accepted'
+                        continuation.state.update(phase='accepted', error=None)
+                        await self.store.save_workflow_run(continuation)
+                    else:
+                        continuation.status = 'failed'
+                        continuation.state.update(phase='failed', error=result.error or reason)
+                        await self.store.save_workflow_run(continuation)
+                        await self.store.task_status(task_id, 'failed', 'Recovery needs your input; see attempt history', expected=('active',))
+                        return
+                else:
+                    await self.orch.recovery.assess(ctx, continuation.state.get('current_step') or 'preparation',
+                        continuation.state.get('error') or task['phase'], {'boundary': 'existing_failure'})
+                    await self.store.task_status(task_id, 'failed', 'Assistant diagnosis available; see recovery history', expected=('active',))
+                    return
             if task['kind'] == 'workflow':
                 settings = task['settings']
                 roles = settings.get('roles') or {name: self.role({'role': name}) for name in self.orch.workflows[settings['workflow']].required_roles}
-                team = await self.orch.spawn_team(list(roles), task_id=task_id, configurations=roles)
+                team = team if team is not None else await self.orch.spawn_team(list(roles), task_id=task_id, configurations=roles)
                 variables = {**settings.get('variables', {}), 'task_description': task['prompt'],
                              'cwd': workspace['path'], 'workspace_resolved': True, 'task_id': task_id, 'workspace_kind': workspace['kind']}
+                if recovery_request:
+                    variables['_assistant_retry_request'] = recovery_request['request_id']
                 run = continuation or WorkflowRunRecord(run_id=task.get("idempotency_key") or uuid.uuid4().hex, workflow_name=settings['workflow'], status='accepted', config={'variables': variables}, state={'team': team})
                 if continuation:
                     run.state['team'] = team
@@ -338,9 +395,17 @@ class TaskService:
             raise
         except Exception as exc:
             if owned:
+                if task['kind'] == 'workflow' and not assistance_only:
+                    try:
+                        await self.orch.recovery.preparation_failure(task_id, exc, leased=leased)
+                    except Exception:
+                        import logging
+                        logging.getLogger(__name__).exception('Could not record preparation recovery for %s', task_id)
                 await self.store.task_status(task_id, 'failed', str(exc), expected=('queued','active','waiting_input'))
         finally:
             try:
+                if recovery_request:
+                    await self.store.write("UPDATE recovery_retry_requests SET status='finished',updated_at=? WHERE request_id=?", (now(), recovery_request['request_id']))
                 if continuation and owned:
                     latest_run = await self.store.get_workflow_run(continuation.run_id)
                     if latest_run and latest_run.status in {'accepted', 'starting', 'running'}:

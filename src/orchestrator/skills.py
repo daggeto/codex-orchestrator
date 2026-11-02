@@ -113,7 +113,7 @@ BUILTIN_SKILLS = [
     SkillConfig(
         name="investigate-bug",
         description="Investigate a bug and identify root cause",
-        roles=["architect", "implementer"],
+        roles=["architect", "implementer", "workflow-assistant"],
         prompt_template=(
             "Investigate this bug:\n\n{bug_description}\n\n"
             "Working directory: {cwd}\n\n"

@@ -120,6 +120,8 @@ class AssignStep(Step):
             return StepResult(success=False, error=f"No running agent with role '{self.role}'")
 
         message = self.message_template.format(**ctx.variables)
+        if ctx.variables.get('_recovery_capabilities'):
+            message += '\nIncident-local installed capabilities (use documented absolute paths; do not modify global configuration):\n' + ctx.variables['_recovery_capabilities']
         if ctx.variables.get("planning_feedback") and self.step_id in ctx.variables.get("planning_targets", []):
             message += "\nDeveloper feedback and current draft (preserve developer decisions):\n" + ctx.variables["planning_feedback"]
         if ctx.variables.get("approved_plan") and self.role in {"implementer", "reviewer"}:

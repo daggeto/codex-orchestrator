@@ -69,11 +69,20 @@ export interface InputRequest {
   request_id: string; kind: string; prompt: string; options: unknown[];
 }
 export interface TaskView {
+  recoveries?: RecoveryIncident[];
   plan_approval?: import('./components/PlanApproval').PlanApprovalState | null;
   task: TaskRecord; agents: OwnedAgent[]; workflow: (Pick<WorkflowRun, 'run_id' | 'workflow_name' | 'status' | 'updated_at'> & { state?: JsonObject }) | null;
   steps: StepExecution[]; pending_input: InputRequest[];
   attachments: Attachment[]; messages: TaskMessage[];
   scope_split?: ScopeSplit | null;
+}
+
+export interface RecoveryIncident {
+  operation_id?: string | null;
+  incident_id: string; step_id: string; status: string; issue: string;
+  attempts: number; created_at: string; agent_id: string | null;
+  result: { decision: string; summary: string; next_action: string; report?: string };
+  attempt_history?: { attempt: number; status: string; action: string; report: string; agent_id?: string | null }[];
 }
 
 export interface ScopeSuggestion {
@@ -94,6 +103,7 @@ export interface MergeRequest {
   commit_changes?: boolean; changes?: Record<string, string>;
 }
 export interface MergeOperation extends Omit<MergeRequest, 'changes' | 'commit_changes'> {
+  recoveries?: RecoveryIncident[];
   commit_changes?: boolean | 0 | 1;
   changes?: Record<string, string | { tree: string; path: string; original_sha: string }>;
   source_workspace_id: string; created_at: string; state: MergeState; resulting_sha: string | null;

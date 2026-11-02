@@ -67,10 +67,36 @@ class PlanApprovalStep(Step):
             snapshot = await task_snapshot(ctx, require_clean=False)
             if state.get('snapshot') is None and not action:
                 state['snapshot'] = snapshot
+                from orchestrator.recovery import checkout_evidence
+                state['checkout_evidence'] = await checkout_evidence(ctx)
             if action:
                 recovering_chat = action['action'] == 'chat' and state.get('snapshot') is None
                 if snapshot != state.get('snapshot') and not recovering_chat:
-                    raise ValueError('Checkout changed since planning. Send feedback to a planning agent to refresh the plan.')
+                    recovery = getattr(ctx.registry, 'workflow_recovery', None)
+                    if recovery is None:
+                        raise ValueError('Checkout changed since planning. Send feedback to a planning agent to refresh the plan.')
+                    from orchestrator.recovery import checkout_evidence
+                    current = await checkout_evidence(ctx)
+                    decision = await recovery.assess(ctx, self.step_id, 'Checkout changed since planning',
+                        {'previous': state.get('checkout_evidence'), 'current': current,
+                         'snapshot': snapshot, 'previous_snapshot': state.get('snapshot'),
+                         'saved_plan': state['markdown'],
+                         'approval_revision': state['revision']}, allow_continue=True)
+                    if await task_snapshot(ctx, require_clean=False) != snapshot:
+                        raise ValueError('Checkout changed during assistant assessment. Retry approval against the latest files.')
+                    if decision['decision'] == 'replan':
+                        await ctx.store.write("UPDATE workflow_recoveries SET status='replanning' WHERE incident_id=?", (decision['incident_id'],))
+                        state.update(status='rerouting', error=None)
+                        return StepResult(True, {'plan_approval': state, 'approved_plan': '',
+                            '_plan_action': None, 'planning_targets': list(self.targets),
+                            'planning_feedback': decision['summary'] + '\n' + decision['next_action']
+                            + '\nPreserve the developer draft and agreed scope:\n' + state['markdown']},
+                            next_step=next((key for key in self.targets if key == 'plan'), next(iter(self.targets))))
+                    if decision['decision'] != 'continue':
+                        raise ValueError(decision['summary'] + '\nNext step: ' + decision['next_action'])
+                    state['snapshot'] = snapshot
+                    state['checkout_evidence'] = current
+                    await ctx.store.write("UPDATE workflow_recoveries SET status='recovered' WHERE incident_id=?", (decision['incident_id'],))
                 if action['action'] == 'approve':
                     if not state.get('markdown', '').strip():
                         raise ValueError('Save a nonempty plan before approving')

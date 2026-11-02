@@ -69,6 +69,9 @@ class Orchestrator:
         self.workspace.archive_service = self.archives
         from orchestrator.merges import MergeService
         self.merges = MergeService(self)
+        from orchestrator.recovery import WorkflowRecovery
+        self.recovery = WorkflowRecovery(self)
+        self.registry.workflow_recovery = self.recovery
         self.workspace.merge_service = self.merges
         self._team_lock = asyncio.Lock()
         self._running = False
@@ -98,6 +101,7 @@ class Orchestrator:
 
         await self.registry.start_health_monitor()
         self._running = True
+        await self.recovery.start()
         logger.info(
             "Orchestrator started (roles=%d, workflows=%d, agents=%d)",
             len(self.roles), len(self.workflows), len(self.registry.agents),
@@ -107,6 +111,7 @@ class Orchestrator:
         """Graceful shutdown."""
         self._running = False
         self._shutdown_event.set()
+        await self.recovery.stop()
         await self.tasks.shutdown()
         await self.registry.shutdown()
         await self.attachments.stop()

@@ -294,7 +294,12 @@ class WorkflowEngine:
         pause_reason = None
         iteration_limit = record.config.setdefault("iteration_limit", workflow.max_iterations)
 
+        from orchestrator.workflows.merge_request import _recovery_environment
+        environment_token = _recovery_environment.set(None)
         try:
+            recovery = getattr(ctx.registry, 'workflow_recovery', None)
+            if recovery and ctx.variables.get('_recovery_capabilities'):
+                recovery.activate_capabilities(ctx.variables['_recovery_capabilities'])
             await self._bus.publish("workflow.started", {
                 "run_id": rid, "workflow": workflow.name,
             }, source="engine")
@@ -315,10 +320,33 @@ class WorkflowEngine:
 
                 record.state.update(current_step=step.step_id, iteration=iterations)
                 await self._store.save_workflow_run(record)
-                result = await ctx.execute_step(step)
+                mr_status_before = ctx.variables.get('mr_status')
+                try:
+                    result = await ctx.execute_step(step)
+                except Exception as exc:
+                    result = StepResult(False, error=str(exc))
+                if result.success and result.next_step and result.next_step != '__end__' and workflow.get_step(result.next_step) is None:
+                    result = StepResult(False, output=result.output, error=f"Branch target '{result.next_step}' not found")
+                if not result.success and not result.pause_reason:
+                    ctx.variables['_recovery_pre_failure_mr_status'] = mr_status_before
+                    ctx.variables.update(result.output)
+                    recovery = getattr(ctx.registry, 'workflow_recovery', None)
+                    if recovery:
+                        try:
+                            from orchestrator.recovery_actions import recover_step
+                            result = await recover_step(recovery, ctx, workflow, step, result)
+                        except Exception as exc:
+                            logger.exception('Recovery failed; preserving original failure at %s', step.step_id)
+                            try:
+                                await recovery.assess(ctx, step.step_id, result.error or 'Step failed', {'boundary': 'unavailable_recovery', 'reason': str(exc)})
+                            except Exception:
+                                logger.exception('Could not persist recovery diagnosis for %s', step.step_id)
                 record = await self._store.get_workflow_run(rid) or record
                 step_results.append((step.step_id, result))
                 ctx.variables.update(result.output)
+                recovery = getattr(ctx.registry, 'workflow_recovery', None)
+                if recovery:
+                    await recovery.reviewed(ctx)
 
                 if result.success:
                     if result.next_step == "__end__":
@@ -345,6 +373,8 @@ class WorkflowEngine:
                     variables=ctx.variables, threads=ctx._threads,
                 )
                 await self._store.save_workflow_run(record)
+                if recovery and 'plan_approval' in result.output:
+                    await recovery.plan_ready(ctx)
                 await self._bus.publish("workflow.step.completed", {
                     "run_id": rid, "step_id": step.step_id,
                     "success": result.success, "output_keys": list(result.output.keys()),
@@ -376,6 +406,7 @@ class WorkflowEngine:
             logger.exception("Workflow %s failed", rid[:8])
 
         finally:
+            _recovery_environment.reset(environment_token)
             del self._active_runs[rid]
 
         success = error is None

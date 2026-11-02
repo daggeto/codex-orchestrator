@@ -10,7 +10,8 @@ import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import { PageHeader } from '../components/ui/PageHeader';
 import { ResourceState } from '../components/ui/ResourceState';
-import type { TaskRecord } from '../types';
+import type { MergeOperation, TaskRecord } from '../types';
+import { RecoveryHistory } from '../components/RecoveryHistory';
 
 export function WorkspacePage() {
   const { workspaceId } = useParams();
@@ -19,6 +20,10 @@ export function WorkspacePage() {
 
 function WorkspaceDetails({ workspaceId }: { workspaceId: string }) {
   const merge = useWorkspaceMerge(workspaceId);
+  // Merge outcomes are immutable in the submission hook; incident reports can
+  // finish after that outcome is first observed, so refresh them independently.
+  const recoveryHistory = useResource<{ operation: MergeOperation }>(merge.operation && ['merged', 'already_integrated', 'failed', 'recovery_required'].includes(merge.operation.state)
+    ? `/api/workspaces/${encodeURIComponent(workspaceId)}/merges/${encodeURIComponent(merge.operation.operation_id)}` : null);
   const { data, error } = useNavigation();
   const workspace = data?.workspaces.find(item => item.workspace_id === workspaceId);
   const [before, setBefore] = useState('');
@@ -55,6 +60,10 @@ function WorkspaceDetails({ workspaceId }: { workspaceId: string }) {
       </div>}
       {merge.error && <ResourceState error>{merge.error}</ResourceState>}
       {merge.uncertain && <ResourceState>Checking the saved merge attempt. Reconcile it before retrying or archiving.</ResourceState>}
+      <RecoveryHistory key={merge.operation?.operation_id} incidents={recoveryHistory.data?.operation.recoveries ?? merge.operation?.recoveries}
+        workspace historyUrl={merge.operation ? `/api/workspaces/${encodeURIComponent(workspaceId)}/merges/${encodeURIComponent(merge.operation.operation_id)}` : undefined}
+        retryBase={merge.operation?.state === 'failed' ? `/api/workspaces/${encodeURIComponent(workspaceId)}/recoveries` : undefined}
+        refresh={() => { recoveryHistory.refresh(); merge.eligibility.refresh(); }} />
       {merge.operation && <ResourceState error={['failed', 'recovery_required'].includes(merge.operation.state)}>
         {['accepted', 'running'].includes(merge.operation.state) ? merge.operation.phase === 'committing' ? 'Generating commit messages and committing changes…' : 'Merging…' :
           merge.operation.state === 'merged' ? `Merged into local main at ${merge.operation.destination_path}. Commit: ${merge.operation.resulting_sha}.` :

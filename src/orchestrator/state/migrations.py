@@ -1,7 +1,7 @@
 """Ordered, additive migrations. Historical records without evidence stay unowned."""
 from __future__ import annotations
 
-VERSION = 9
+VERSION = 12
 MIGRATIONS = {2: """
 CREATE TABLE repositories (
  repository_id TEXT PRIMARY KEY, name TEXT NOT NULL, main_path TEXT NOT NULL UNIQUE,
@@ -149,6 +149,48 @@ ALTER TABLE tasks ADD COLUMN submission_workspace_id TEXT REFERENCES workspaces(
 UPDATE tasks SET submission_workspace_id=(
  SELECT workspace_id FROM workspaces
  WHERE path=json_extract(tasks.settings_json,'$.variables.cwd')
+);
+""", 10: """
+CREATE TABLE workflow_recoveries (
+ incident_id TEXT PRIMARY KEY, task_id TEXT REFERENCES tasks(task_id),
+ run_id TEXT NOT NULL REFERENCES workflow_runs(run_id), step_id TEXT NOT NULL,
+ fingerprint TEXT NOT NULL, status TEXT NOT NULL, issue TEXT NOT NULL,
+ evidence_json TEXT NOT NULL, result_json TEXT NOT NULL,
+ agent_id TEXT REFERENCES agents(agent_id), thread_id TEXT,
+ attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ UNIQUE(run_id,fingerprint)
+);
+CREATE INDEX recovery_task ON workflow_recoveries(task_id,created_at);
+""", 11: """
+CREATE TABLE recovery_incidents (
+ incident_id TEXT PRIMARY KEY, task_id TEXT REFERENCES tasks(task_id),
+ run_id TEXT REFERENCES workflow_runs(run_id), operation_id TEXT REFERENCES workspace_merges(operation_id),
+ step_id TEXT NOT NULL, fingerprint TEXT NOT NULL, status TEXT NOT NULL, issue TEXT NOT NULL,
+ evidence_json TEXT NOT NULL, result_json TEXT NOT NULL,
+ agent_id TEXT REFERENCES agents(agent_id), thread_id TEXT,
+ attempts INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ UNIQUE(run_id,fingerprint), UNIQUE(operation_id,fingerprint)
+);
+INSERT INTO recovery_incidents (incident_id,task_id,run_id,step_id,fingerprint,status,issue,evidence_json,result_json,agent_id,thread_id,attempts,created_at,updated_at)
+ SELECT incident_id,task_id,run_id,step_id,fingerprint,status,issue,evidence_json,result_json,agent_id,thread_id,attempts,created_at,updated_at FROM workflow_recoveries;
+DROP TABLE workflow_recoveries;
+ALTER TABLE recovery_incidents RENAME TO workflow_recoveries;
+CREATE INDEX recovery_task ON workflow_recoveries(task_id,created_at);
+CREATE INDEX recovery_merge ON workflow_recoveries(operation_id,created_at);
+CREATE TABLE recovery_attempts (
+ incident_id TEXT NOT NULL REFERENCES workflow_recoveries(incident_id),
+ attempt INTEGER NOT NULL, status TEXT NOT NULL, action TEXT NOT NULL,
+ report TEXT NOT NULL DEFAULT '', agent_id TEXT, thread_id TEXT,
+ started_at TEXT NOT NULL, finished_at TEXT,
+ PRIMARY KEY(incident_id,attempt)
+);
+""", 12: """
+CREATE UNIQUE INDEX recovery_preparation_identity ON workflow_recoveries(task_id,fingerprint)
+ WHERE run_id IS NULL AND operation_id IS NULL;
+CREATE TABLE recovery_retry_requests (
+ request_id TEXT PRIMARY KEY, incident_id TEXT NOT NULL REFERENCES workflow_recoveries(incident_id),
+ task_id TEXT REFERENCES tasks(task_id), operation_id TEXT,
+ status TEXT NOT NULL DEFAULT 'accepted', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 """}
 

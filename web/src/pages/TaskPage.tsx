@@ -16,6 +16,7 @@ import { ResourceState } from '../components/ui/ResourceState';
 import { MessageContent } from '../components/MessageContent';
 import { PlanApproval } from '../components/PlanApproval';
 import { ScopeSuggestions } from '../components/ScopeSuggestions';
+import { RecoveryHistory } from '../components/RecoveryHistory';
 export function TaskPage() {
   const { taskId } = useParams();
   return <TaskContent key={taskId} taskId={taskId || ''} />;
@@ -50,6 +51,10 @@ function TaskContent({ taskId }: { taskId: string }) {
     finally { lock.current = false; setPending(''); }
   }
   return <section className="task-page"><TaskContext task={task} />
+    <RecoveryHistory key={taskId} incidents={data.recoveries}
+      historyUrl={`/api/tasks/${encodeURIComponent(taskId)}/recoveries`}
+      retryBase={!task.archived_at && ['failed', 'interrupted', 'waiting_input'].includes(task.status) ? `/api/tasks/${encodeURIComponent(taskId)}/recoveries` : undefined}
+      refresh={() => { refresh(); navigation.refresh(); }} />
     {error && <p className="error" role="alert">{error} · Showing saved task state.</p>}
     {data.plan_approval && <PlanApproval key={`${data.plan_approval.id}:${data.plan_approval.revision}`} taskId={taskId} plan={data.plan_approval} disabled={!!error || closed} refresh={() => { refresh(); navigation.refresh(); }} />}
     {report && <details open className="execution-details"><summary>Implementation report and follow-up work</summary><MessageContent text={report} /></details>}

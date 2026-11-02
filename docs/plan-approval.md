@@ -33,14 +33,18 @@ send_back adds `message` and a configured `target`. Approve adds no content.
 An idle approval has no timeout, running agents, or workspace lease. Restarting the
 service preserves it. Chat and approval reacquire the normal task workspace lock
 and lease. Planning snapshots include existing local edits without committing or
-discarding them. Checkout changes after a saved snapshot block approval until
-planning is refreshed. Older gates that failed before saving their first snapshot
+discarding them. Checkout changes trigger a read-only workflow-assistant assessment
+under the task lease. Compatible plans can continue a requested approval after a
+second checkout check. Technical replanning returns to the Architect and then
+requires approval of the new revision. Ambiguous changes retain the plan and show
+specific next steps. Older gates that failed before saving their first snapshot
 can approve the recovered plan: acceptance captures the current selected checkout,
 and execution verifies it again under the workspace lease before implementation.
 Tasks awaiting input stay visible beneath their workspace even when its sidebar
 group is collapsed. Generic Continue
-cannot skip approval. Interrupted accepted operations use explicit workflow
-recovery; they are never automatically replayed on startup. Old unfinished feature
+cannot skip approval. Startup may assess a blocked approval and refresh planning,
+but does not approve implementation or replay interrupted mutations. Other
+interrupted accepted operations use explicit workflow recovery. Old unfinished feature
 runs require restart under the new policy. Completed historical records stay intact.
 
 ## Manual acceptance (not executed during implementation)
@@ -62,8 +66,10 @@ runs require restart under the new policy. Completed historical records stay int
    stale action is rejected and its local draft is retained. Retry a failed request.
 6. Approve the saved plan. Confirm implementation starts once with the approved
    text, and review receives that text. Confirm Continue cannot bypass the gate.
-7. While waiting, use another task in the workspace. Confirm checkout changes block
-   approval; refresh planning. Exercise merge reservations, cancellation during chat,
+7. While waiting, change the checkout. Confirm approval invokes the assistant and
+   task history shows its assessment. Compatible changes may continue approval;
+   technical plan changes return to planning and fresh approval. Change files during
+   assessment and confirm implementation does not start. Exercise merge reservations, cancellation during chat,
    malformed author responses, and service interruption during queued actions.
 8. Confirm backend-feature and ui-small do not acquire an approval gate.
 
