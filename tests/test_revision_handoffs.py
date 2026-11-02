@@ -20,7 +20,7 @@ from orchestrator.workflows.steps import AssignStep
 class WorktreeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.root = self.tmp.name
+        self.root = str(Path(self.tmp.name).resolve())
         await _run(self.root, 'git', 'init', '-b', 'main')
         await _run(self.root, 'git', 'config', 'user.email', 'test@example.com')
         await _run(self.root, 'git', 'config', 'user.name', 'Test')
@@ -39,7 +39,7 @@ class WorktreeTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         checkout = self.ctx.variables.get('task_worktree')
-        if checkout and checkout != self.root:
+        if checkout and Path(checkout).resolve() != Path(self.root).resolve():
             await _run(self.root, 'git', 'worktree', 'remove', '--force', checkout)
             Path(checkout).parent.rmdir()
         self.tmp.cleanup()
@@ -109,7 +109,8 @@ class WorktreeTests(unittest.IsolatedAsyncioTestCase):
         checkout = self.ctx.variables['cwd']
         Path(checkout, 'file').write_text('concurrent change')
         await _run(checkout, 'git', 'commit', '-am', 'foreign change')
-        agent = SimpleNamespace(send_message=AsyncMock())
+        agent = SimpleNamespace(start_thread=AsyncMock(return_value=SimpleNamespace(thread_id='thread')),
+                                send_message=AsyncMock())
         self.ctx.get_agent_for_role = lambda role: agent
         result = await feature_workflow().get_step('review').execute(self.ctx)
         self.assertFalse(result.success)
