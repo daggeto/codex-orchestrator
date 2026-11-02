@@ -40,7 +40,7 @@ class RoleConfig:
     claude_flags: list[str] = field(default_factory=list)
     mcp_config: str | None = None
     # Resource limits
-    max_turn_seconds: int = 600
+    max_turn_seconds: int = 0  # Zero disables the elapsed-time limit.
     max_tokens_per_turn: int | None = None
 
     @property

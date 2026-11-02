@@ -58,13 +58,21 @@ async def detail(request):
         agent['activity'] = runtime.activity if runtime else {'state': 'idle', 'threads': [], 'error': None}
     from orchestrator.api.scope import presentation
     workflow = await orch.store.one('SELECT * FROM workflow_runs WHERE task_id=? ORDER BY created_at DESC LIMIT 1', (tid,))
+    variables = workflow['state'].get('checkpoint', {}).get('variables', {}) if workflow else {}
+    plan = variables.get('plan_approval')
+    if plan:
+        from orchestrator.workflows.plan_approval import PlanApprovalStep, recover_plan
+        definition = orch.workflows.get(workflow['workflow_name'])
+        step = definition.get_step(plan['step_id']) if definition else None
+        if isinstance(step, PlanApprovalStep):
+            recover_plan(plan, variables, step.sources)
     return web.json_response({'task': task, 'agents': agents,
         'workflow': workflow,
         'scope_split': await presentation(orch, task, workflow),
         'steps': await orch.store.rows('SELECT * FROM step_executions WHERE task_id=? ORDER BY created_at', (tid,)),
         'attachments': [public(row) for row in await orch.store.rows('SELECT * FROM attachments WHERE task_id=? ORDER BY created_at,attachment_id', (tid,))],
         'messages': await orch.store.rows('SELECT m.*, (SELECT json_group_array(attachment_id) FROM (SELECT attachment_id FROM message_attachments WHERE message_id=m.message_id ORDER BY position)) AS attachment_ids_json FROM task_messages m WHERE task_id=? ORDER BY created_at', (tid,)),
-        'plan_approval': (workflow['state'].get('checkpoint', {}).get('variables', {}).get('plan_approval') if workflow else None),
+        'plan_approval': plan,
         'pending_input': await orch.store.pending_inputs(tid)})
 
 

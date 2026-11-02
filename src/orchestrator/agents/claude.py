@@ -374,7 +374,8 @@ class ClaudeAgent(Agent):
             raise ValueError(f"No session for thread {thread_id}")
 
         try:
-            async with asyncio.timeout(self.role.max_turn_seconds):
+            limit = self.role.max_turn_seconds
+            async with asyncio.timeout(limit if limit > 0 else None):
                 async for event in session.send(message):
                     yield event
         except TimeoutError:

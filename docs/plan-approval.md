@@ -7,6 +7,13 @@ to UX reruns UX and architecture; sending to Architect reruns architecture. Both
 return to approval. **Approve and implement** authorizes the saved revision and
 queues implementation. Other built-in workflows retain their existing behavior.
 
+The reading view shows a short TL;DR for each section, with **Read more** to expand
+its implementation details. UX and architecture planning provide explicit summaries
+while retaining the complete plan. Older plans and developer edits without TL;DRs
+show a short excerpt instead. **Read full plan** opens the original saved Markdown;
+editing, approval, and the implementer handoff always use that complete document.
+Collapsed details are included in approval. Summaries reset when the revision changes.
+
 Each approval uses the dedicated `PlanApprovalStep` kind. Workflow definitions
 configure the author role, contributing output keys, earlier return targets, and
 approved next step. Targets must precede the gate. Keep planning agents read-only.
@@ -25,8 +32,13 @@ send_back adds `message` and a configured `target`. Approve adds no content.
 
 An idle approval has no timeout, running agents, or workspace lease. Restarting the
 service preserves it. Chat and approval reacquire the normal task workspace lock
-and lease. Checkout changes block approval until planning is refreshed; restore
-the selected branch and a clean checkout before refreshing. Generic Continue
+and lease. Planning snapshots include existing local edits without committing or
+discarding them. Checkout changes after a saved snapshot block approval until
+planning is refreshed. Older gates that failed before saving their first snapshot
+can approve the recovered plan: acceptance captures the current selected checkout,
+and execution verifies it again under the workspace lease before implementation.
+Tasks awaiting input stay visible beneath their workspace even when its sidebar
+group is collapsed. Generic Continue
 cannot skip approval. Interrupted accepted operations use explicit workflow
 recovery; they are never automatically replayed on startup. Old unfinished feature
 runs require restart under the new policy. Completed historical records stay intact.
@@ -37,6 +49,11 @@ runs require restart under the new policy. Completed historical records stay int
    start. Reload the page and restart the service; the same revision remains pending.
 2. Review headings, tables, lists, and code on desktop/mobile in both themes.
    Navigate controls with the keyboard. HTML and unsafe links remain restricted.
+   Confirm sections start collapsed with brief summaries; Read more and Read less
+   toggle each section independently. Read full plan must include all saved text.
+   Check an older plan without TL;DRs and a plan without headings: excerpts and
+   expandable details should remain available. After saving a revision, confirm
+   the summary view refreshes and approval still passes all collapsed details.
 3. Edit and preview the draft. Save it, then discuss a change. Confirm discussion
    cannot approve, and the original request and revision history remain available.
 4. Send feedback to UX, then separately to Architect. Confirm the expected agents

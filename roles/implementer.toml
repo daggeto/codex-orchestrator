@@ -6,7 +6,7 @@ model = "gpt-6.1-sol"
 sandbox = "workspace-write"
 approval_policy = "on-failure"
 max_threads = 10
-max_turn_seconds = 600
+max_turn_seconds = 0
 max_tokens_per_turn = 16000
 tags = ["coding", "implementation", "execution"]
 

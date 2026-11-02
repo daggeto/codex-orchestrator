@@ -13,8 +13,10 @@ export function RepositorySidebar() {
   const selectedId = pathname.startsWith('/agents/') && !selected.data?.agents.some(a => pathname === `/agents/${a.agent_id}`) ? null : contextId;
   const tasks = [...(data?.tasks || [])];
   if (selectedId && selected.data?.task.task_id === selectedId && !tasks.some(t => t.task_id === selectedId)) tasks.unshift(selected.data.task);
+  const waiting = tasks.filter(task => task.status === 'waiting_input' && !task.archived_at);
   return <aside className="repository-sidebar"><Link className="brand" to="/"><span className="brand-mark" aria-hidden="true">O</span>Orchestrator</Link><nav aria-label="Task navigation">
     <div className="task-tabs"><Link to="/tasks" aria-current={pathname === '/tasks' && !search.includes('archive') ? 'page' : undefined}>Tasks</Link><Link to="/tasks?tab=archive" aria-current={search.includes('tab=archive') ? 'page' : undefined}>Archive</Link></div>
+    {!!waiting.length && <section aria-label="Waiting for you"><h2>Waiting for you</h2>{waiting.map(task => <TaskRow key={task.task_id} task={task} selected={task.task_id === selectedId} compact />)}</section>}
     {!data && !error && <p role="status">Loading repositories…</p>}
     {data?.repositories.length === 0 && <p>No repositories yet.</p>}
     {data?.repositories.map(repository => {
@@ -26,7 +28,8 @@ export function RepositorySidebar() {
         {workspaces.map(workspace => {
           const group = tasks.filter(t => t.workspace_id === workspace.workspace_id);
           const selected = group.some(t => t.task_id === selectedId);
-          if (!open && !selected) return null;
+          const needsInput = group.some(t => t.status === 'waiting_input' && !t.archived_at);
+          if (!open && !selected && !needsInput) return null;
           const key = `workspace:${workspace.workspace_id}`;
           const workspaceOpen = expanded[key] !== false;
           const label = workspaceLabel(workspace);
@@ -35,7 +38,7 @@ export function RepositorySidebar() {
               <button aria-expanded={workspaceOpen} aria-label={`Toggle ${label}`} onClick={() => toggle(key)}>{workspaceOpen ? '▾' : '▸'}</button>
               <Link to={`/workspaces/${workspace.workspace_id}`} title={`${label} · ${workspace.branch} · ${workspace.path}`}><span>{label}</span><small>{workspace.branch || 'Detached HEAD'}{workspace.status !== 'active' && ` · ${workspace.status}`}</small></Link>
             </div>
-            {(open && workspaceOpen ? group : group.filter(t => t.task_id === selectedId)).map(task => <TaskRow key={task.task_id} task={task} selected={task.task_id === selectedId} compact />)}
+            {(open && workspaceOpen ? group : group.filter(t => t.task_id === selectedId || (t.status === 'waiting_input' && !t.archived_at))).map(task => <TaskRow key={task.task_id} task={task} selected={task.task_id === selectedId} compact />)}
             {open && workspaceOpen && <>
               {group.length === 0 && <p className="workspace-empty">{workspace.status === 'active' ? 'No tasks yet' : 'No recent tasks'}</p>}
               <Link className="browse-tasks" to={`/workspaces/${workspace.workspace_id}`}>Browse all tasks</Link>

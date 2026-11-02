@@ -254,7 +254,11 @@ and any final UX report without another architect assignment. It is visible on
 the task page and included in new PR/MR descriptions. Source inspection does not
 establish visual or usability acceptance; outstanding validation stays explicit.
 
-Agent timeouts or incomplete turns fail their step instead of starting review.
+Built-in workflow roles wait for turn completion without an elapsed-time limit, so
+long planning or implementation turns keep running. In role configuration,
+`max_turn_seconds = 0` disables the limit; a positive value opts into a hard timeout.
+Explicit timeouts, backend errors, and incomplete turns fail their step instead of
+starting review. Cancellation and workflow step budgets still apply.
 Task handoffs and reviews require a clean committed checkout. Branch/commit changes
 or uncommitted edits invalidate the handoff; preserve unrelated edits and resolve
 ownership before resuming. Existing workspace leases serialize orchestrator tasks;
@@ -615,8 +619,9 @@ cycle. For a substantial UI task, have the final UX report record a violation:
 completion must retain it as unresolved follow-up work without starting revision.
 For a backend-only task, confirm the final UX report can be skipped. Check that
 publication still requires current code approval and a clean checkout. Interrupt
-an implementation at its turn limit and confirm review never starts on partial
-work. Change the checkout during review and confirm the review fails safely.
+an implementation manually and confirm review never starts on partial
+work. Let planning run beyond five minutes and confirm it continues until completion.
+Change the checkout during review and confirm the review fails safely.
 Verify readable stage names and the saved completion report on the task page.
 
 

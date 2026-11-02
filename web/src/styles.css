@@ -294,7 +294,19 @@ small, time, .muted { color: var(--muted); }
 .task-context, .resource-list li, .page-header { overflow-wrap: anywhere; }
 
 .plan-approval { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); padding: clamp(16px, 3vw, 32px); margin: 20px 0; min-width: 0; }
-.plan-approval > .message-content { max-width: 85ch; line-height: 1.7; overflow-wrap: anywhere; }
+.plan-document { max-width: 85ch; line-height: 1.7; overflow-wrap: anywhere; }
+.plan-section { border-bottom: 1px solid var(--border); padding: 12px 0; }
+.plan-section > summary { cursor: pointer; list-style: none; border-radius: 4px; }
+.plan-section > summary::-webkit-details-marker { display: none; }
+.plan-section > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+.plan-section-title { display: block; font-weight: 600; }
+.plan-section-preview { display: block; margin-top: 4px; font-size: 14px; }
+.plan-section-preview strong { color: var(--muted); font-weight: 500; }
+.plan-section-toggle { display: inline-block; color: var(--accent); font-size: 13px; margin-top: 6px; text-decoration: underline; }
+.plan-read-less, .plan-section[open] > summary .plan-read-more { display: none; }
+.plan-section[open] > summary .plan-read-less { display: inline; }
+.plan-section > .message-content { margin-top: 12px; }
+.plan-full { margin: 16px 0; }
 .plan-editor { font-family: var(--font-mono); width: 100%; }
 .plan-approval pre, .plan-approval table { display: block; max-width: 100%; overflow-x: auto; }
 .plan-approval th, .plan-approval td { padding: 8px 12px; border: 1px solid var(--border); }

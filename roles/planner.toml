@@ -6,7 +6,7 @@ model = "gpt-6-luna"
 sandbox = "read-only"
 approval_policy = "never"
 max_threads = 3
-max_turn_seconds = 300
+max_turn_seconds = 0
 tags = ["planning", "strategy", "breakdown"]
 
 system_prompt = """You are a strategic project planner. Your role:

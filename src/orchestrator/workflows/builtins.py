@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from orchestrator.workflows.engine import Workflow
-from orchestrator.workflows.plan_approval import PlanApprovalStep
+from orchestrator.workflows.plan_approval import PLAN_READING_FORMAT, PlanApprovalStep
 from orchestrator.workflows.feature import FeatureReviewStep, FeatureSummaryStep, UXPlanStep
 from orchestrator.workflows.merge_request import CreateMergeRequestStep, PrepareMergeRequestStep, PrepareWorktreeStep, VerifyMergeRequestStep
 from orchestrator.workflows.pr_completion import (
@@ -426,6 +426,9 @@ def small_change_workflow():
 def feature_workflow():
     workflow = _feature_workflow()
     workflow.initial_variables['_requires_plan_approval'] = True
+    for step in workflow.steps:
+        if isinstance(step, AssignStep) and step.output_key in {'ux_assessment', 'plan'}:
+            step.message_template += PLAN_READING_FORMAT
     index = next(i for i, step in enumerate(workflow.steps) if step.step_id == 'implement')
     workflow.steps.insert(index, PlanApprovalStep(step_id='plan-approval', name='Developer Plan Approval',
         author_role='architect', sources=['ux_assessment', 'plan'],

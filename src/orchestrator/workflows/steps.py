@@ -35,17 +35,33 @@ class Step(ABC):
         ...
 
 
-async def task_snapshot(ctx: WorkflowContext) -> str | None:
-    """Require a clean, committed task checkout at agent handoff boundaries."""
+async def task_snapshot(ctx: WorkflowContext, *, require_clean: bool = True) -> str | None:
+    """Identify the selected checkout; implementation handoffs require it clean."""
     root = ctx.variables.get("task_worktree")
     if not root:
         return None
     from orchestrator.workflows.merge_request import _run
     if await _run(root, "git", "branch", "--show-current") != ctx.variables["task_branch"]:
         raise ValueError("Task branch changed; restore the selected checkout before continuing")
-    if await _run(root, "git", "status", "--porcelain", "--untracked-files=all"):
+    status = await _run(root, "git", "status", "--porcelain", "--untracked-files=all")
+    if status and require_clean:
         raise ValueError("Uncommitted changes remain; finish implementation and commit task changes before review. Preserve unrelated edits.")
-    return await _run(root, "git", "rev-parse", "HEAD")
+    head = await _run(root, "git", "rev-parse", "HEAD")
+    if require_clean:
+        return head
+    # Planning can read an existing dirty checkout. Bind approval to its actual
+    # contents without staging, committing, or discarding the developer's edits.
+    import hashlib
+    snapshot = hashlib.sha256()
+    for value in (head, status, await _run(root, "git", "diff", "HEAD", "--binary", "--no-ext-diff")):
+        snapshot.update(value.encode())
+        snapshot.update(b"\0")
+    untracked = await _run(root, "git", "ls-files", "--others", "--exclude-standard", "-z")
+    for path in filter(None, untracked.split("\0")):
+        snapshot.update(path.encode())
+        snapshot.update((await _run(root, "git", "hash-object", "--", path)).encode())
+        snapshot.update(b"\0")
+    return snapshot.hexdigest()
 
 
 def reviewer_criteria(variables) -> str:

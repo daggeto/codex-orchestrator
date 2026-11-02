@@ -7,6 +7,35 @@ from datetime import datetime, timezone
 from orchestrator.workflows.steps import Step, StepResult, task_snapshot
 
 
+PLAN_READING_FORMAT = (
+    '\n\nPlan reading format: Return the complete implementation plan as Markdown, '
+    'organized into a few descriptive level-two (##) sections. Start each section '
+    'with a standalone paragraph formatted **TL;DR:** followed by one or two short '
+    'sentences (at most 35 words) explaining the outcome and any material scope '
+    'change, risk, or decision needing developer attention. Put implementation '
+    'details after that paragraph, using level-three headings where useful. '
+    'The developer sees these summaries first and can expand each section. '
+    'Keep all files, contracts, dependencies, edge cases, and acceptance criteria '
+    'needed by implementers in the detailed text; summaries must not replace them. '
+    'Avoid repeating details across sections.'
+)
+
+
+def recover_plan(state, variables, sources):
+    """Expose completed planning output even for a failed first approval entry."""
+    if state.get('markdown', '').strip():
+        return
+    text = str(variables.get(sources[-1]) or '').strip()
+    if not text:
+        return
+    supporting = [str(variables[key]) for key in sources[:-1] if variables.get(key)]
+    if supporting:
+        text += '\n\n## Supporting planning criteria\n\n' + '\n\n'.join(supporting)
+    revise(state, text, state['author'])
+    if state.get('error') and state.get('snapshot') is None:
+        state['error'] = 'Saved planning output recovered. Approval will verify the selected checkout before starting implementation.'
+
+
 class PlanApprovalStep(Step):
     def __init__(self, step_id, author_role, sources, targets, next_step, **kwargs):
         super().__init__(step_id, **kwargs)
@@ -22,29 +51,31 @@ class PlanApprovalStep(Step):
                      'status': 'rerouting', 'messages': [], 'revisions': [], 'revision': 0,
                      'markdown': ''}
         try:
-            snapshot = await task_snapshot(ctx)
-            if not state or state.get('status') == 'rerouting':
+            if state.get('status') == 'rerouting':
                 previous = state
                 state = {**previous, 'kind': 'plan_approval', 'id': previous.get('id', uuid.uuid4().hex),
                          'step_id': self.step_id, 'author': self.author_role, 'targets': self.targets,
-                         'snapshot': snapshot, 'status': 'waiting', 'messages': previous.get('messages', []),
+                         'snapshot': None, 'status': 'waiting', 'messages': previous.get('messages', []),
                          'revisions': previous.get('revisions', [])}
-                text = str(ctx.variables[self.sources[-1]])
-                if len(self.sources) > 1:
-                    text += '\n\n## Supporting planning criteria\n\n' + '\n\n'.join(str(ctx.variables[key]) for key in self.sources[:-1])
-                revise(state, text, self.author_role)
+                state['markdown'] = ''
+            recover_plan(state, ctx.variables, self.sources)
+            # Recovery must remain possible even when the checkout cannot be read.
+            if action and action['action'] == 'send_back':
+                state.update(status='rerouting', error=None)
+                return StepResult(True, {'plan_approval': state, 'approved_plan': '',
+                    'planning_targets': list(self.targets), 'planning_feedback': action['message'] + '\n\nCurrent developer draft:\n' + state['markdown']}, next_step=action['target'])
+            snapshot = await task_snapshot(ctx, require_clean=False)
+            if state.get('snapshot') is None and not action:
+                state['snapshot'] = snapshot
             if action:
-                if action['action'] != 'send_back' and snapshot != state.get('snapshot'):
+                recovering_chat = action['action'] == 'chat' and state.get('snapshot') is None
+                if snapshot != state.get('snapshot') and not recovering_chat:
                     raise ValueError('Checkout changed since planning. Send feedback to a planning agent to refresh the plan.')
                 if action['action'] == 'approve':
                     if not state.get('markdown', '').strip():
                         raise ValueError('Save a nonempty plan before approving')
                     state.update(status='approved', approved_revision=state['revision'])
                     return StepResult(True, {'plan_approval': state, 'approved_plan': state['markdown']}, next_step=self.next_step)
-                if action['action'] == 'send_back':
-                    state['status'] = 'rerouting'
-                    return StepResult(True, {'plan_approval': state, 'approved_plan': '',
-                        'planning_targets': list(self.targets), 'planning_feedback': action['message'] + '\n\nCurrent developer draft:\n' + state['markdown']}, next_step=action['target'])
                 if action['action'] == 'chat':
                     agent = ctx.get_agent_for_role(self.author_role)
                     thread = await ctx.acquire_thread(agent, self.step_id + '-discussion', cwd=ctx.variables.get('cwd'))
@@ -53,16 +84,18 @@ class PlanApprovalStep(Step):
                         'Return only a JSON object with reply (string) and markdown (complete revised plan string, or null if unchanged). '
                         'Preserve developer edits and original intent; make substitutions and scope reductions explicit.\nOriginal request:\n'
                         + ctx.variables['task_description'] + '\nCurrent plan:\n' + state['markdown']
-                        + '\nDiscussion:\n' + json.dumps(state['messages']))
+                        + '\nDiscussion:\n' + json.dumps(state['messages'])
+                        + PLAN_READING_FORMAT + '\nKeep the required JSON response envelope; apply the plan reading format inside its markdown string only.')
                     before = snapshot
                     response = await agent.send_message(thread, message)
                     if not response.ok:
                         raise ValueError(response.error or 'Plan discussion failed')
-                    if await task_snapshot(ctx) != before:
+                    if await task_snapshot(ctx, require_clean=False) != before:
                         raise ValueError('Checkout changed during plan discussion')
                     result = json.loads(response.full_text)
                     if not isinstance(result.get('reply'), str) or not (result.get('markdown') is None or isinstance(result['markdown'], str) and result['markdown'].strip()):
                         raise ValueError('Plan author returned an invalid response; saved draft retained')
+                    state['snapshot'] = snapshot
                     state['messages'].append({'role': 'assistant', 'text': result['reply']})
                     if result.get('markdown'):
                         revise(state, result['markdown'], self.author_role)
@@ -119,8 +152,6 @@ async def _accept_action(request):
             return web.json_response({'status': 'accepted'})
         if task['status'] != 'waiting_input' or task['archived_at'] or run.state.get('phase') != 'waiting_for_plan_approval' or tid in orch.tasks.running:
             raise Conflict('Plan is busy or no longer awaiting approval')
-        if data.get('revision') != state['revision']:
-            raise Conflict('Plan revision changed. Your draft is retained; load the latest revision.')
         workspace = await orch.store.workspace_record(task['workspace_id'])
         if workspace['status'] != 'active':
             raise Conflict('Workspace is merging or unavailable')
@@ -130,10 +161,23 @@ async def _accept_action(request):
         step = workflow.get_step(state['step_id'])
         if not isinstance(step, PlanApprovalStep):
             raise Conflict('Plan approval definition is no longer available; restart this task')
+        recover_plan(state, variables, step.sources)
+        if data.get('revision') != state['revision']:
+            raise Conflict('Plan revision changed. Your draft is retained; load the latest revision.')
         if kind == 'send_back' and data.get('target') not in step.targets:
             raise ValueError('Invalid planning target')
         if kind in {'chat', 'send_back'} and (not isinstance(data.get('message'), str) or not data['message'].strip()):
             raise ValueError('Feedback is required')
+        if kind == 'approve' and state.get('snapshot') is None:
+            # Older gates could fail before recording their first snapshot (for
+            # example, on a dirty main checkout). Bind this explicit approval to
+            # the current checkout, then let task-owned execution verify it again
+            # under the workspace lease before implementation can start.
+            from types import SimpleNamespace
+            if not state.get('markdown', '').strip():
+                raise ValueError('Save a nonempty plan before approving')
+            state['snapshot'] = await task_snapshot(SimpleNamespace(variables=variables), require_clean=False)
+            state['error'] = None
         if kind == 'save':
             if not isinstance(data.get('markdown'), str) or not data['markdown'].strip():
                 raise ValueError('Plan cannot be empty')

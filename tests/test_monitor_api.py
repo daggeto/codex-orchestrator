@@ -132,17 +132,19 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.agent._turn_tasks, {})
 
     async def test_codex_events_and_incomplete_turn_cleanup(self):
-        agent = CodexAgent('codex', RoleConfig(name='implementer', max_turn_seconds=0), port=9001)
+        agent = CodexAgent('codex', RoleConfig(name='implementer', max_turn_seconds=0.001), port=9001)
         async def request(*args, **kwargs):
             return {}
         agent._request = request
         observations = asyncio.Queue(maxsize=256)
         agent.set_observer(observations)
-        self.assertEqual([event async for event in agent.stream_message('thread', 'work')], [])
+        events = [event async for event in agent.stream_message('thread', 'work')]
+        self.assertEqual(len(events), 1)
+        self.assertIn('timed out', events[0].params['message'])
         self.assertEqual(agent.activity['state'], 'error')
         self.assertEqual(agent.activity['threads'], [])
         self.assertEqual([observations.get_nowait()[0] for _ in range(observations.qsize())],
-                         ['agent.activity', 'agent.activity'])
+                         ['agent.activity', 'agent.event', 'agent.activity'])
 
     async def test_codex_stream_preserves_and_forwards_events(self):
         agent = CodexAgent('codex', RoleConfig(name='implementer'), port=9001)

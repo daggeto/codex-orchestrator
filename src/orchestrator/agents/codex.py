@@ -579,8 +579,9 @@ class CodexAgent(Agent):
         started = await self._request("turn/start", params, timeout=10)
         self._active_turn_ids[thread_id] = started.get("turn", {}).get("id")
 
-        deadline = asyncio.get_event_loop().time() + self.role.max_turn_seconds
-        while asyncio.get_event_loop().time() < deadline:
+        deadline = (asyncio.get_event_loop().time() + self.role.max_turn_seconds
+                    if self.role.max_turn_seconds > 0 else None)
+        while deadline is None or asyncio.get_event_loop().time() < deadline:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=2.0)
                 yield event
