@@ -19,7 +19,6 @@ export function TaskReply({ taskId, workspaceId, disabled, unavailable, messages
     if (attempt && operation.unresolved && messages.some(message => 'idempotency_key' in message && message.idempotency_key === attempt.id)) { operation.settle(attempt, 'accepted'); clearSubmissionIdentity(`task:${taskId}:submission`, attempt.id); }
   }, [messages, operation.current]);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
   async function send(attempt: OperationAttempt<AttachmentSubmission & { message: string }>) {
     try {
       await post(`/api/tasks/${encodeURIComponent(taskId)}/messages`, { ...attempt.request, idempotency_key: attempt.id });
@@ -27,7 +26,7 @@ export function TaskReply({ taskId, workspaceId, disabled, unavailable, messages
     } catch (reason) { const receipt = operation.settle(attempt, 'uncertain', undefined, String(reason)); if (receipt.status !== 'accepted') throw reason; }
   }
   return <>
-    <Chat label="Continue conversation" rows={3} draftKey={`task:${taskId}`} messages={[]} attachmentContext={{ workspaceId, taskId }} disabled={disabled || busy} submitDisabled={operation.unresolved || unavailable}
+    <Chat error={operation.current?.warning || ''} attachmentLocked={operation.unresolved} acceptedAttachmentDraft={operation.current?.status === 'accepted' ? operation.current.result?.attachment_draft_id : undefined} label="Continue conversation" rows={3} draftKey={`task:${taskId}`} messages={[]} attachmentContext={{ workspaceId, taskId }} disabled={disabled || busy} submitDisabled={operation.unresolved || unavailable}
       submitReason={operation.unresolved ? 'Check the saved message before sending another. New draft text stays editable.' : disabled || unavailable ? 'Wait for fresh task state and an available agent before sending.' : undefined}
       onSubmit={async (message, attachments) => {
         const payload = { message, ...attachments };
@@ -35,11 +34,10 @@ export function TaskReply({ taskId, workspaceId, disabled, unavailable, messages
       }} />
     {operation.unresolved && <Button disabled={disabled || busy} onClick={async () => {
       if (!operation.current?.request || busy) return;
-      setBusy(true); setError('');
-      try { await send(operation.current); } catch (reason) { setError(String(reason)); } finally { setBusy(false); }
+      setBusy(true);
+      try { await send(operation.current); } catch { /* The reconciled operation owns feedback. */ } finally { setBusy(false); }
     }}>Check saved message</Button>}
     {operation.current?.status === 'accepted' && <p role="status">Message accepted. Agent execution is shown above.</p>}
     {!operation.durable && <p role="alert">Request recovery is available only while this page stays open.</p>}
-    {error && <p role="alert" className="error">{error}</p>}
   </>;
 }

@@ -338,7 +338,8 @@ async def get_work_item(request: web.Request) -> web.Response:
 async def list_workflow_runs(request: web.Request) -> web.Response:
     orch: Orchestrator = request.app["orch"]
     runs = await orch.store.list_workflow_runs()
-    return _json({"runs": [asdict(run) for run in runs]})
+    from orchestrator.api.projections import public_workflow
+    return _json({"runs": [public_workflow(asdict(run)) for run in runs]})
 
 
 async def create_work_item(request: web.Request) -> web.Response:
@@ -395,9 +396,10 @@ async def run_workflow(request: web.Request) -> web.Response:
     if not isinstance(variables, dict) or not isinstance(run_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', run_id):
         return _error('Expected workflow variables and a valid run ID')
     async def execute():
+        from orchestrator.api.projections import public_workflow
         result = await orch.run_workflow(request.match_info['name'], variables, run_id)
         return _json({'run_id': result.run_id, 'success': result.success,
-                      'outputs': {k: str(v)[:2000] for k,v in result.outputs.items()}, 'error': result.error})
+                      'outputs': {k: str(v)[:2000] for k,v in public_workflow(result.outputs).items()}, 'error': result.error})
     return await _service_owned(request, execute())
 
 

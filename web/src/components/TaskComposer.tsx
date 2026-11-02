@@ -27,7 +27,6 @@ export function TaskComposer({ workspace, stale = false }: { workspace: Workspac
   const roles = useResource<{ roles: Role[] }>('/api/roles', 0);
   const recipes = useResource<{ skills: { name: string; roles: string[] }[] }>('/api/skills', 0);
   const operation = useOperation<Record<string, unknown>>(`workspace:${workspace.workspace_id}:task`, 'task');
-  const [recoveryError, setRecoveryError] = useState('');
   const [recovering, setRecovering] = useState(false);
   useEffect(() => {
     if (operation.current) return;
@@ -57,7 +56,7 @@ export function TaskComposer({ workspace, stale = false }: { workspace: Workspac
       const result = await post<{ task_id: string }>('/api/tasks', { ...attempt.request, idempotency_key: attempt.id });
       operation.settle(attempt, 'accepted', { task_id: result.task_id });
       clearSubmissionIdentity(`workspace:${workspace.workspace_id}:submission`, attempt.id);
-      navigate(`/tasks/${encodeURIComponent(result.task_id)}`);
+      if (operation.isCurrent(attempt)) navigate(`/tasks/${encodeURIComponent(result.task_id)}`);
     } catch (reason) {
       const receipt = operation.settle(attempt, 'uncertain', undefined, String(reason));
       if (receipt.status === 'accepted') return;
@@ -66,7 +65,7 @@ export function TaskComposer({ workspace, stale = false }: { workspace: Workspac
   }
   return <Card className="task-composer"><div className="composer-heading"><div><h2>Start a task</h2><p className="resource-path">{workspace.path}</p></div><Badge>{workspace.kind === 'main' ? 'Main' : workspace.branch || 'Worktree'}</Badge></div>
     <div className="execution-summary"><span>Checkout: {workspace.kind !== 'main' ? 'Reuse selected worktree' : isolation === 'never' ? 'Use Main' : isolation === 'always' ? 'New worktree' : 'Isolate when needed'}</span><span>{kind === 'agent' ? 'Agent conversation' : selectedWorkflow?.publication_policy === 'required' ? 'Publishes approved commits' : selectedWorkflow?.publication_policy === 'optional' && publish ? 'Create draft PR/MR' : 'PR/MR publication disabled'}</span></div>
-    <Chat label="Start a task" draftKey={`workspace:${workspace.workspace_id}`} messages={[]} attachmentContext={{ workspaceId: workspace.workspace_id }} submitLabel="Start task" disabled={stale || workspace.status !== 'active'} submitDisabled={!ready || !!operation.unresolved || recovering} submitReason={stale ? 'Workspace state is stale. Wait for fresh data before starting; your draft stays editable.' : !ready ? 'Load valid settings for this execution mode before starting. Your draft stays editable.' : operation.unresolved ? 'A saved request needs reconciliation before another task can start.' : undefined}
+    <Chat error={operation.current?.warning || ''} attachmentLocked={operation.unresolved} acceptedAttachmentDraft={operation.current?.status === 'accepted' ? operation.current.result?.attachment_draft_id : undefined} label="Start a task" draftKey={`workspace:${workspace.workspace_id}`} messages={[]} attachmentContext={{ workspaceId: workspace.workspace_id }} submitLabel="Start task" disabled={stale || workspace.status !== 'active'} submitDisabled={!ready || !!operation.unresolved || recovering} submitReason={stale ? 'Workspace state is stale. Wait for fresh data before starting; your draft stays editable.' : !ready ? 'Load valid settings for this execution mode before starting. Your draft stays editable.' : operation.unresolved ? 'A saved request needs reconciliation before another task can start.' : undefined}
       toolbar={<div className="composer-settings">
         <label>Execution<NativeSelect value={kind} onChange={event => setKind(event.target.value)}><option value="workflow">Workflow</option><option value="agent">Agent conversation</option></NativeSelect></label>
         {kind === 'workflow' ? <><label>Workflow<NativeSelect value={workflow} onChange={event => setWorkflow(event.target.value)}>
@@ -93,12 +92,11 @@ export function TaskComposer({ workspace, stale = false }: { workspace: Workspac
       }} />
     {operation.unresolved && <Button disabled={recovering || stale} onClick={async () => {
       if (!operation.current?.request || recovering) return;
-      setRecovering(true); setRecoveryError('');
-      try { await send(operation.current); } catch (reason) { setRecoveryError(String(reason)); } finally { setRecovering(false); }
+      setRecovering(true);
+      try { await send(operation.current); } catch { /* The reconciled operation owns feedback. */ } finally { setRecovering(false); }
     }}>{recovering ? 'Checking saved attempt…' : 'Check saved task attempt'}</Button>}
     {operation.current?.status === 'accepted' && operation.current.result?.task_id && <p role="status">Task accepted: <Button onClick={() => navigate(`/tasks/${encodeURIComponent(operation.current!.result!.task_id)}`)}>Open task</Button></p>}
     {!operation.durable && <p role="alert">Request storage is unavailable. Recovery works only while this page stays open.</p>}
-    {recoveryError && <p role="alert" className="error">{recoveryError}</p>}
     {([['Workflow definitions', workflows], ['Roles', roles], ['Recipes', recipes]] as const).map(([label, resource]) =>
       <div key={label}>{resource.loading && <p role="status">Loading {label.toLowerCase()}…</p>}{resource.error && <p role="alert" className="error">{label}: {resource.error} <Button onClick={resource.refresh}>Retry {label.toLowerCase()}</Button></p>}</div>)}
   </Card>;

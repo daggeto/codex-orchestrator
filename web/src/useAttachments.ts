@@ -4,7 +4,7 @@ import type { Attachment, AttachmentDraft, AttachmentLimits, AttachmentSubmissio
 
 export interface Selection extends Attachment { local?: File; localError?: string }
 export interface AttachmentContext { workspaceId: string; taskId?: string }
-export function useAttachments(storageKey: string, context?: AttachmentContext) {
+export function useAttachments(storageKey: string, context?: AttachmentContext, protectedAttempt = false) {
   const [saved] = useState<{ draftId?: string; files?: Selection[] }>(() => {
     try { const value = JSON.parse(sessionStorage.getItem(storageKey) || '{}'); return value && typeof value === 'object' && (!value.files || Array.isArray(value.files)) ? value : {}; } catch { return {}; }
   });
@@ -35,10 +35,12 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
     return () => abort.abort();
   }, [context?.workspaceId]);
   async function recover() {
-    if (!draftRef.current) return;
+    const recoveringDraftId = draftRef.current;
+    if (!recoveringDraftId) return;
     setRecovering(true); setRecoveryRequired(true); setError('');
     try {
-      const draft = await get<AttachmentDraft>(`/api/attachment-drafts/${encodeURIComponent(draftRef.current)}`);
+      const draft = await get<AttachmentDraft>(`/api/attachment-drafts/${encodeURIComponent(recoveringDraftId)}`);
+      if (draftRef.current !== recoveringDraftId) return;
       // The server may have completed an upload after the browser last saved
       // its selections. Recover those rows too, including accepted submissions.
       replace(previous => {
@@ -64,8 +66,8 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
       }
       setLimits(draft.limits);
       setRecoveryRequired(false);
-    } catch (reason) { setError(String(reason)); }
-    finally { setRecovering(false); }
+    } catch (reason) { if (draftRef.current === recoveringDraftId) setError(String(reason)); }
+    finally { if (draftRef.current === recoveringDraftId) setRecovering(false); }
   }
   useEffect(() => { if (saved.draftId) void recover(); }, []);
   async function ensureDraft() {
@@ -77,7 +79,7 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
     return creating.current;
   }
   async function upload(selection: Selection) {
-    if (recoveryRequired || recovering || submitted) return;
+    if (protectedAttempt || recoveryRequired || recovering || submitted) return;
     if (!selection.local) { setError('Reselect this file from your device to retry.'); return; }
     uploadCount.current += 1;
     replace(previous => previous.map(row => row.attachment_id === selection.attachment_id ? { ...row, state: 'uploading', localError: undefined } : row));
@@ -90,7 +92,7 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
     } finally { uploadCount.current -= 1; }
   }
   async function select(selected: FileList | File[]) {
-    if (!limits?.enabled || recoveryRequired || recovering || submitted) return;
+    if (protectedAttempt || !limits?.enabled || recoveryRequired || recovering || submitted) return;
     const incoming = Array.from(selected);
     if (selections.current.length + incoming.length > limits.files_per_message) { setError(`Choose at most ${limits.files_per_message} files per message.`); return; }
     setError('');
@@ -105,7 +107,7 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
     }
   }
   async function remove(id: string) {
-    if (removing || uploadCount.current || recoveryRequired || recovering || submitted) return;
+    if (protectedAttempt || removing || uploadCount.current || recoveryRequired || recovering || submitted) return;
     setRemoving(true); setError('');
     try {
       // A failed draft may be expired. Removing it locally is safe: it cannot be
@@ -123,9 +125,10 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
     } catch (reason) { setError(String(reason)); }
     finally { setRemoving(false); }
   }
-  function clear() {
+  function clear(expectedDraftId?: string) {
+    if (arguments.length && expectedDraftId !== draftRef.current) return;
     replace(() => []); draftRef.current = undefined; setDraftId(undefined); setError('');
-    setSubmitted(false); setAcceptedTaskId(undefined); setRecoveryRequired(false);
+    setSubmitted(false); setAcceptedTaskId(undefined); setRecoveryRequired(false); setRecovering(false);
     try { sessionStorage.removeItem(storageKey); } catch { /* Optional storage. */ }
   }
   const ready = !recoveryRequired && !submitted && !recovering && !removing && files.every(file => file.state === 'ready');

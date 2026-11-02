@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from aiohttp import web
+from orchestrator.api.projections import public_workflow
 
 from orchestrator.api.projects import normalize_directory
 from orchestrator.state.store import WorkflowRunRecord
@@ -183,7 +184,7 @@ async def get_run(request):
     from orchestrator.api.attachments import public
     attachment_rows = await request.app['orch'].store.rows('SELECT * FROM attachments WHERE task_id=? ORDER BY created_at', (task['task_id'],)) if task and task['task_id'] else []
     destination = await restart_workspace(request.app['orch'], task['task_id']) if task and task['task_id'] else None
-    return web.json_response({"run": asdict(record), 'task_id': task['task_id'] if task else None,
+    return web.json_response({"run": public_workflow(asdict(record)), 'task_id': task['task_id'] if task else None,
                              'restart_workspace': {'path': destination['path'], 'kind': destination['kind']} if destination else None,
                              'attachments': [public(row) for row in attachment_rows], "continuation": {
         "available": reason is None, "reason": reason,

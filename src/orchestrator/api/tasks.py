@@ -5,6 +5,7 @@ import asyncio
 from aiohttp import web
 
 from orchestrator.api.submissions import own_task
+from orchestrator.api.projections import public_workflow
 from orchestrator.tasks import Conflict
 
 
@@ -66,7 +67,7 @@ async def detail(request):
         step = definition.get_step(plan['step_id']) if definition else None
         if isinstance(step, PlanApprovalStep):
             recover_plan(plan, variables, step.sources)
-    return web.json_response({'task': task, 'agents': agents,
+    return web.json_response(public_workflow({'task': task, 'agents': agents,
         'workflow': workflow,
         'scope_split': await presentation(orch, task, workflow),
         'steps': await orch.store.rows('SELECT * FROM step_executions WHERE task_id=? ORDER BY created_at', (tid,)),
@@ -74,7 +75,7 @@ async def detail(request):
         'messages': await orch.store.rows('SELECT m.*, (SELECT json_group_array(attachment_id) FROM (SELECT attachment_id FROM message_attachments WHERE message_id=m.message_id ORDER BY position)) AS attachment_ids_json FROM task_messages m WHERE task_id=? ORDER BY created_at', (tid,)),
         'plan_approval': plan,
         'recoveries': await orch.recovery.history(task_id=tid),
-        'pending_input': await orch.store.pending_inputs(tid)})
+        'pending_input': await orch.store.pending_inputs(tid)}))
 
 
 async def history(request):

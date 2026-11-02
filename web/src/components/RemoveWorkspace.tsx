@@ -5,7 +5,7 @@ import { useNavigation } from '../navigation';
 import type { WorkspaceRecord } from '../types';
 import { Button } from './ui/Button';
 import { AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from './ui/primitives/alert-dialog';
-interface Removal { state: 'uncertain' | 'accepted'; archiveId?: string }
+interface Removal { state: 'uncertain' | 'accepted'; archiveId?: string; receipts?: string[] }
 export function RemoveWorkspace({ workspace, disabled }: { workspace: WorkspaceRecord; disabled: boolean }) {
   const storage = `workspace-removal:${workspace.workspace_id}`;
   const navigation = useNavigation();
@@ -20,17 +20,24 @@ export function RemoveWorkspace({ workspace, disabled }: { workspace: WorkspaceR
   });
   const status = useResource<{ archive: { archive_id: string; stage: string; error?: string } }>(removal ? `/api/workspaces/${encodeURIComponent(workspace.workspace_id)}/archive` : null);
   function remember(value: Removal) {
-    setRemoval(value);
-    try { sessionStorage.setItem(storage, JSON.stringify(value)); } catch { setDurable(false); }
+    const next = { ...value, receipts: [...new Set([...(removal?.receipts || []), ...(removal?.archiveId ? [removal.archiveId] : []), ...(value.archiveId ? [value.archiveId] : [])])] };
+    setRemoval(next);
+    try { sessionStorage.setItem(storage, JSON.stringify(next)); } catch { setDurable(false); }
   }
+  const matching = removal?.archiveId && status.data?.archive.archive_id === removal.archiveId;
+  const retryable = !!matching && !status.error && status.data?.archive.stage === 'failed';
   async function remove() {
-    if (lock.current || disabled || removal) return;
+    if (lock.current || disabled || removal && !retryable) return;
     lock.current = true; setBusy(true); setError('');
     let sent = false;
     try {
+      if (removal) {
+        const check = await get<{ archive: { archive_id: string; stage: string } }>(`/api/workspaces/${encodeURIComponent(workspace.workspace_id)}/archive`);
+        if (check.archive.archive_id !== removal.archiveId || check.archive.stage !== 'failed') throw new Error('Cleanup changed. Check its status before confirming a new removal.');
+      }
       const latest = await get<{ workspaces: WorkspaceRecord[] }>('/api/navigation');
       const current = latest.workspaces.find(item => item.workspace_id === workspace.workspace_id);
-      if (!current || current.kind !== 'worktree' || current.path !== workspace.path || ['archived', 'archiving', 'merging', 'merge_recovery_required'].includes(current.status) || current.available === false) {
+      if (!current || current.kind !== 'worktree' || current.path !== workspace.path || ['archived', 'archiving', 'merging', 'merge_recovery_required'].includes(current.status) || current.available === false && !(retryable && current.status === 'archive_failed')) {
         throw new Error('Workspace eligibility changed. Refresh its status before removing it.');
       }
       // This API has no client request identity. Persist uncertainty and send only once.
@@ -45,20 +52,20 @@ export function RemoveWorkspace({ workspace, disabled }: { workspace: WorkspaceR
       navigation.refresh(); status.refresh();
     } finally { lock.current = false; setBusy(false); }
   }
-  const matching = removal?.archiveId && status.data?.archive.archive_id === removal.archiveId;
   return <section aria-label="Worktree removal">
     {!['archived', 'archiving'].includes(workspace.status) && <AlertDialog open={open} onOpenChange={setOpen}>
-      <AlertDialogTrigger render={<Button variant="danger" />} disabled={disabled || busy || !!removal}>Remove worktree</AlertDialogTrigger>
+      <AlertDialogTrigger render={<Button variant="danger" />} disabled={disabled || busy || !!removal && !retryable}>Remove worktree</AlertDialogTrigger>
       <AlertDialogContent initialFocus={cancel}>
         <AlertDialogHeader><AlertDialogTitle>Remove this worktree?</AlertDialogTitle>
-          <AlertDialogDescription>Remove the checkout at <code>{workspace.path}</code> and cancel unfinished tasks in this workspace. All attachments owned by its tasks, including archived tasks, are permanently deleted. Task history is retained. Restoring history does not restore files or recreate the checkout.</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogDescription>Remove the checkout at <code style={{ overflowWrap: 'anywhere' }}>{workspace.path}</code> and cancel unfinished tasks in this workspace. All attachments owned by its tasks, including archived tasks, are permanently deleted. Task history is retained. Restoring history does not restore files or recreate the checkout.</AlertDialogDescription></AlertDialogHeader>
         {error && <p role="alert" className="error">{error}</p>}
-        <AlertDialogFooter><AlertDialogCancel ref={cancel} disabled={busy}>Cancel</AlertDialogCancel><Button variant="danger" disabled={disabled || busy || !!removal} onClick={() => void remove()}>{busy ? 'Requesting removal…' : 'Remove checkout and files'}</Button></AlertDialogFooter>
+        <AlertDialogFooter><AlertDialogCancel ref={cancel} disabled={busy}>Cancel</AlertDialogCancel><Button variant="danger" disabled={disabled || busy || !!removal && !retryable} onClick={() => void remove()}>{busy ? 'Requesting removal…' : 'Remove checkout and files'}</Button></AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>}
     {removal && <div role="status" className="operation-warning">
       {matching ? `Removal accepted. Cleanup stage: ${status.data!.archive.stage}.` : removal.state === 'accepted' ? 'Removal accepted. Waiting for its matching cleanup record.' : 'Removal acceptance is unconfirmed. This request will not be sent again automatically.'}
       {status.data && !matching && <p>Latest workspace archive: {status.data.archive.archive_id} · {status.data.archive.stage}. This record alone does not confirm your request.</p>}
+      {!!removal.receipts?.length && <p>Accepted removal receipts: {removal.receipts.join(', ')}</p>}
       {matching && status.data?.archive.error && <p className="error">{status.data.archive.error}</p>}
       <Button onClick={() => { status.refresh(); navigation.refresh(); }}>Check workspace status</Button>
     </div>}

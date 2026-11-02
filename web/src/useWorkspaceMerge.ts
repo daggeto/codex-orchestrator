@@ -3,6 +3,7 @@ import { ApiError, get, post } from './api';
 import { useResource } from './useResource';
 import type { MergeEligibility, MergeOperation, MergeRequest } from './types';
 
+const rejectedKey = (id: string) => `workspace-merge-rejected:${id}`;
 const key = (id: string) => `workspace-merge:${id}`;
 const terminal = (operation: MergeOperation) => ['merged', 'already_integrated', 'failed'].includes(operation.state);
 function reconcile(local: MergeOperation | null | undefined, observed: MergeOperation | null | undefined) {
@@ -18,6 +19,7 @@ function reconcile(local: MergeOperation | null | undefined, observed: MergeOper
 function saved(id: string): MergeRequest | null {
   try {
     const value = JSON.parse(localStorage.getItem(key(id)) || 'null') as MergeRequest | null;
+    if (value && localStorage.getItem(rejectedKey(value.operation_id))) return null;
     return value && ['operation_id', 'source_branch', 'source_sha', 'destination_workspace_id', 'destination_path', 'destination_sha']
       .every(field => typeof value[field as keyof MergeRequest] === 'string' && value[field as keyof MergeRequest]) ? value : null;
   } catch { return null; }
@@ -36,6 +38,7 @@ export function useWorkspaceMerge(workspaceId: string) {
     setAction({ id: workspaceId, pending: saved(workspaceId), busy: false, error: '' });
     const sync = (event: StorageEvent) => {
       // Removal in another tab is not an outcome. Keep polling until reconciled.
+      if (event.key?.startsWith('workspace-merge-rejected:')) setAction(previous => previous.pending && event.key === rejectedKey(previous.pending.operation_id) ? { ...previous, pending: null, transportWarning: undefined, error: 'The saved merge snapshot was rejected. Review refreshed details before merging again.' } : previous);
       if (event.key === key(workspaceId)) setAction(previous => ({ ...previous, pending: saved(workspaceId) || previous.pending }));
     };
     window.addEventListener('storage', sync);
@@ -82,7 +85,7 @@ export function useWorkspaceMerge(workspaceId: string) {
   const uncertain = !!state.pending && !ownOperation;
   const busy = state.busy || !!unresolved || uncertain;
   const transportWarning = state.transportWarning?.operationId === state.pending?.operation_id &&
-    !pendingOutcome
+    !ownOperation && !pendingOutcome
     ? state.transportWarning?.message : '';
 
   async function merge() {
@@ -136,6 +139,29 @@ export function useWorkspaceMerge(workspaceId: string) {
       const response = await post<{ operation: MergeOperation }>(`${endpoint}/merge`, request);
       if (active()) remember(id, response.operation);
     } catch (reason) {
+      if (awaitingOutcome && request) {
+        // Acceptance lookup precedes interpreting a preflight rejection.
+        try {
+          const found = await get<{ operation: MergeOperation }>(`${endpoint}/merges/${encodeURIComponent(request.operation_id)}`);
+          if (active()) remember(id, found.operation);
+          return;
+        } catch (observation) {
+          const details = reason instanceof ApiError ? (reason.details as { details?: MergeEligibility } | undefined)?.details : undefined;
+          if (observation instanceof ApiError && observation.status === 404 && reason instanceof ApiError && reason.status === 409 && details && Array.isArray(details.blockers)) {
+            const rejectedId = request.operation_id;
+            // A structured server preflight rejection is definite. Generic 400s remain uncertain.
+            try {
+              localStorage.setItem(rejectedKey(rejectedId), JSON.stringify({ status: 'rejected' }));
+              if (saved(id)?.operation_id === rejectedId || JSON.parse(localStorage.getItem(key(id)) || 'null')?.operation_id === rejectedId) localStorage.removeItem(key(id));
+            } catch { /* In-memory settlement remains usable. */ }
+            if (active()) {
+              setAction(previous => previous.pending?.operation_id === rejectedId ? { ...previous, pending: null, transportWarning: undefined, error: `${String(reason)}. Review refreshed merge details before confirming a new snapshot.` } : previous);
+              eligibility.refresh();
+            }
+            return;
+          }
+        }
+      }
       if (active()) {
         // HTTP errors can arrive after another observer confirmed acceptance.
         // Preserve the exact snapshot until the matching operation is observed.

@@ -48,7 +48,8 @@ export function useOperation<P>(owner: string, kind: string) {
     try { const stored = localStorage.getItem(`${prefix}accepted:${attempt.id}`) || localStorage.getItem(`${prefix}receipt:${attempt.id}`); if (stored) { const incoming = JSON.parse(stored) as OperationAttempt; known = known ? reconcileAttempt(known, incoming) : incoming; } } catch { failures.add(owner); }
     const baseline = active?.id === attempt.id ? active as OperationAttempt<P> : attempt;
     const reconciled = known ? reconcileAttempt(baseline, known as OperationAttempt<P>) : baseline;
-    const receipt = settleAttempt(reconciled, attempt.id, status, result, warning);
+    const attachmentDraft = (attempt.request as { draft_id?: string } | null)?.draft_id;
+    const receipt = settleAttempt(reconciled, attempt.id, status, { ...(attachmentDraft ? { attachment_draft_id: attachmentDraft } : {}), ...result }, warning);
     // A's receipt is retained, but A cannot overwrite B's active attempt.
     if (status === 'accepted' || status === 'rejected') {
       const compact = { ...receipt, request: null, fingerprint: '' };
@@ -61,5 +62,5 @@ export function useOperation<P>(owner: string, kind: string) {
     if (!active || active.id === attempt.id) write(owner, receipt);
     return receipt;
   }
-  return { current, prepare, settle, durable: !failures.has(owner), unresolved: current?.status === 'pending' || current?.status === 'uncertain' };
+  return { current, prepare, settle, isCurrent: (attempt: OperationAttempt<P>) => read(owner)?.id === attempt.id, durable: !failures.has(owner), unresolved: current?.status === 'pending' || current?.status === 'uncertain' };
 }

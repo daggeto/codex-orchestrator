@@ -18,18 +18,20 @@ function questions(input: InputRequest): Question[] {
 }
 export function PendingInput({ input, messages = [], attachmentContext, inactive = false, disabled = false, onDismiss, onResolved }: { input: InputRequest; messages?: TaskMessage[]; attachmentContext?: AttachmentContext; inactive?: boolean; disabled?: boolean; onDismiss?: () => void; onResolved?: () => void }) {
   const draftKey = `input-response:${input.request_id}`;
-  const attachments = useAttachments(`${draftKey}:attachments`, attachmentContext);
-  const [draft] = useState<{ response?: string; answers?: Record<string, string> }>(() => { try { return JSON.parse(sessionStorage.getItem(draftKey) || '{}'); } catch { return {}; } });
+  const operation = useOperation<AttachmentSubmission & { response: unknown }>(`question:${input.request_id}`, 'question');
+  const attachments = useAttachments(`${draftKey}:attachments`, attachmentContext, operation.unresolved);
+  const [draft] = useState<{ response?: string; answers?: Record<string, string>; identity?: string }>(() => { try { return JSON.parse(sessionStorage.getItem(draftKey) || '{}'); } catch { return {}; } });
+  const draftIdentity = useRef(draft?.identity || crypto.randomUUID());
+  function edited() { draftIdentity.current = crypto.randomUUID(); }
   const [response, setResponse] = useState(draft?.response || '');
   const [answers, setAnswers] = useState<Record<string, string>>(draft?.answers || {});
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
   const [resolved, setResolved] = useState(false);
   const lock = useRef(false);
-  const operation = useOperation<AttachmentSubmission & { response: unknown }>(`question:${input.request_id}`, 'question');
   const accepted = resolved || operation.current?.status === 'accepted';
   const [durable, setDurable] = useState(true);
-  useEffect(() => { try { if (!resolved) sessionStorage.setItem(draftKey, JSON.stringify({ response, answers })); } catch { setDurable(false); } }, [draftKey, response, answers, resolved]);
+  useEffect(() => { try { if (!resolved) sessionStorage.setItem(draftKey, JSON.stringify({ response, answers, identity: draftIdentity.current })); } catch { setDurable(false); } }, [draftKey, response, answers, resolved]);
   useEffect(() => {
     const attempt = operation.current;
     if (!attempt?.request || !operation.unresolved) return;
@@ -47,16 +49,21 @@ export function PendingInput({ input, messages = [], attachmentContext, inactive
     const responseValue = items.length ? { answers: Object.fromEntries(items.map(q => [q.id, { answers: [answers[q.id]] }])) } : response;
     let attempt;
     try {
-      attempt = replay ? operation.current : operation.prepare({ response: responseValue, ...attachments.payload });
+      attempt = replay ? operation.current : operation.prepare({ response: responseValue, ...attachments.payload }, 0, undefined, draftIdentity.current);
       if (!attempt?.request) return;
       // The request-specific response endpoint deduplicates this exact content.
       await post(`/api/input-requests/${encodeURIComponent(input.request_id)}/resolve`, attempt.request);
-      operation.settle(attempt, 'accepted'); attachments.clear(); setResolved(true);
+      const receipt = operation.settle(attempt, 'accepted');
+      if (!operation.isCurrent(attempt) || receipt.status !== 'accepted') return;
+      attachments.clear(attempt.request.draft_id);
+      if (attempt.origin !== draftIdentity.current) return;
+      setResolved(true);
       try { sessionStorage.removeItem(draftKey); } catch { setDurable(false); }
       onResolved?.();
     } catch (reason) {
-      if (attempt) operation.settle(attempt, 'uncertain', undefined, String(reason));
-      setError(reason instanceof ApiError && reason.status === 409 ? 'This request expired or was answered elsewhere. Your response is retained. Check the saved response before dismissing it.' : `${String(reason)}. Acceptance is unconfirmed; your exact response is saved.`);
+      const warning = reason instanceof ApiError && reason.status === 409 ? 'This request expired or was answered elsewhere. Your response is retained. Check the saved response before dismissing it.' : `${String(reason)}. Acceptance is unconfirmed; your exact response is saved.`;
+      if (attempt) { operation.settle(attempt, 'uncertain', undefined, warning); return; }
+      setError(warning);
     } finally { lock.current = false; setPending(false); }
   }
   return <form className="pending-input" aria-busy={pending} onSubmit={event => {
@@ -65,10 +72,10 @@ export function PendingInput({ input, messages = [], attachmentContext, inactive
     {disabled && <p role="status">Task state is stale. Refresh the task before sending; your response remains editable.</p>}
     {inactive && <p role="status">This request is no longer active. It expired or was answered elsewhere. Your response is retained for reference.</p>}
     <FieldSet disabled={pending || accepted || inactive}>{items.length ? items.map(q => <FieldSet key={q.id}><legend>{q.header}{q.header && ': '}{q.question || 'Your response'}</legend>
-      <RadioGroup aria-label={q.question || q.header || 'Your response'} name={`${input.request_id}:${q.id}`} value={answers[q.id] || ''} onValueChange={value => setAnswers(previous => ({ ...previous, [q.id]: String(value) }))}>{Array.isArray(q.options) && q.options.map((option, index) => <label className="input-option" key={index}><RadioGroupItem value={option.label} /><span>{option.label}{option.description && <small>{option.description}</small>}</span></label>)}</RadioGroup>
-      <label>Write a response<Input type="text" value={answers[q.id] || ''} onChange={event => setAnswers(previous => ({ ...previous, [q.id]: event.target.value }))} /></label>
-    </FieldSet>) : <><p>{input.prompt}</p>{input.kind === 'approval' ? <label>Decision<NativeSelect required value={response} onChange={event => setResponse(event.target.value)}><option value="">Choose…</option><option value="approved">Approve</option><option value="rejected">Reject</option></NativeSelect></label> : <label>Your response<Textarea required value={response} onChange={event => setResponse(event.target.value)} /></label>}</>}
-    {attachmentContext && <AttachmentPicker controller={attachments} disabled={pending || accepted || inactive} />}
-    <Button type="submit" variant="primary" disabled={pending || accepted || inactive || disabled || operation.unresolved || !ready || !attachments.ready}>{accepted ? 'Answered' : pending ? 'Sending…' : 'Send response'}</Button></FieldSet>{operation.unresolved && <Button disabled={pending || disabled} onClick={() => void send(true)}>Check saved response</Button>}{(!durable || !operation.durable) && <p role="alert">Storage is unavailable. Your response is retained only while this page stays open.</p>}{inactive && <Button onClick={onDismiss}>Dismiss saved response</Button>}{error && <p role="alert" className="error">{error}</p>}
+      <RadioGroup aria-label={q.question || q.header || 'Your response'} name={`${input.request_id}:${q.id}`} value={answers[q.id] || ''} onValueChange={value => { edited(); setAnswers(previous => ({ ...previous, [q.id]: String(value) })); }}>{Array.isArray(q.options) && q.options.map((option, index) => <label className="input-option" key={index}><RadioGroupItem value={option.label} /><span>{option.label}{option.description && <small>{option.description}</small>}</span></label>)}</RadioGroup>
+      <label>Write a response<Input type="text" value={answers[q.id] || ''} onChange={event => { edited(); setAnswers(previous => ({ ...previous, [q.id]: event.target.value })); }} /></label>
+    </FieldSet>) : <><p>{input.prompt}</p>{input.kind === 'approval' ? <label>Decision<NativeSelect required value={response} onChange={event => { edited(); setResponse(event.target.value); }}><option value="">Choose…</option><option value="approved">Approve</option><option value="rejected">Reject</option></NativeSelect></label> : <label>Your response<Textarea required value={response} onChange={event => { edited(); setResponse(event.target.value); }} /></label>}</>}
+    {attachmentContext && <AttachmentPicker controller={attachments} disabled={pending || accepted || inactive || operation.unresolved} />}
+    <Button type="submit" variant="primary" disabled={pending || accepted || inactive || disabled || operation.unresolved || !ready || !attachments.ready}>{accepted ? 'Answered' : pending ? 'Sending…' : 'Send response'}</Button></FieldSet>{operation.unresolved && <Button disabled={pending || disabled} onClick={() => void send(true)}>Check saved response</Button>}{(!durable || !operation.durable) && <p role="alert">Storage is unavailable. Your response is retained only while this page stays open.</p>}{inactive && <Button onClick={onDismiss}>Dismiss saved response</Button>}{operation.unresolved && operation.current?.warning && <p role="alert" className="error">{operation.current.warning}</p>}{error && !accepted && <p role="alert" className="error">{error}</p>}
   </form>;
 }

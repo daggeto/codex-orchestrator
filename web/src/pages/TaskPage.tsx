@@ -28,11 +28,16 @@ function TaskContent({ taskId }: { taskId: string }) {
   const [pending, setPending] = useState('');
   const lock = useRef(false);
   const [selected, setSelected] = useState('');
-  const [retained, setRetained] = useState<InputRequest[]>([]);
+  const envelopeKey = `task:${taskId}:questions`;
+  const [envelopeDurable, setEnvelopeDurable] = useState(true);
+  const [retained, setRetained] = useState<InputRequest[]>(() => {
+    try { const saved = JSON.parse(sessionStorage.getItem(envelopeKey) || '[]'); return Array.isArray(saved) ? saved.filter(input => typeof input?.request_id === 'string') : []; } catch { return []; }
+  });
   const [dismissed, setDismissed] = useState<string[]>([]);
   useEffect(() => {
     if (data) setRetained(previous => [...previous, ...data.pending_input.filter(input => !previous.some(old => old.request_id === input.request_id))]);
   }, [data]);
+  useEffect(() => { try { sessionStorage.setItem(envelopeKey, JSON.stringify(retained)); } catch { setEnvelopeDurable(false); } }, [envelopeKey, retained]);
 
   if (!data) return <ResourceState error={!!error}>{missing ? 'Task not found.' : error || 'Loading task…'}</ResourceState>;
   const { task, agents, workflow, steps, pending_input } = data;
@@ -50,7 +55,8 @@ function TaskContent({ taskId }: { taskId: string }) {
     finally { lock.current = false; setPending(''); }
   }
   return <section className="task-page"><TaskContext task={task} />
-    {[...retained, ...pending_input.filter(input => !retained.some(old => old.request_id === input.request_id))].filter(input => !dismissed.includes(input.request_id)).map(input => <PendingInput key={input.request_id} input={input} messages={data.messages} attachmentContext={{ workspaceId: task.workspace_id, taskId }} disabled={!!error} inactive={!pending_input.some(active => active.request_id === input.request_id)} onDismiss={() => setDismissed(previous => [...previous, input.request_id])} onResolved={() => { setDismissed(previous => [...previous, input.request_id]); refresh(); }} />)}
+    {!envelopeDurable && <p role="alert">Question recovery is held only in memory. Keep this page open.</p>}
+    {[...retained, ...pending_input.filter(input => !retained.some(old => old.request_id === input.request_id))].filter(input => !dismissed.includes(input.request_id)).map(input => <PendingInput key={input.request_id} input={input} messages={data.messages} attachmentContext={{ workspaceId: task.workspace_id, taskId }} disabled={!!error} inactive={!pending_input.some(active => active.request_id === input.request_id)} onDismiss={() => { setDismissed(previous => [...previous, input.request_id]); setRetained(previous => previous.filter(item => item.request_id !== input.request_id)); }} onResolved={() => { setDismissed(previous => [...previous, input.request_id]); setRetained(previous => previous.filter(item => item.request_id !== input.request_id)); refresh(); }} />)}
     <RecoveryHistory key={taskId} incidents={data.recoveries}
       historyUrl={`/api/tasks/${encodeURIComponent(taskId)}/recoveries`}
       retryBase={!error && !task.archived_at && ['failed', 'interrupted', 'waiting_input'].includes(task.status) ? `/api/tasks/${encodeURIComponent(taskId)}/recoveries` : undefined}

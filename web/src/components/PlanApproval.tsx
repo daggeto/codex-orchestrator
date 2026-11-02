@@ -24,11 +24,16 @@ export function PlanApproval({ taskId, plan, disabled, refresh }: { taskId: stri
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
   const operation = useOperation<Record<string, unknown>>(`plan:${taskId}:${plan.id}`, 'plan-action');
-  const draftVersion = useRef(0);
+  // Independent, durable identities prevent replay after reload from clearing later edits.
+  function identity(key: string) { try { return sessionStorage.getItem(key) || crypto.randomUUID(); } catch { return crypto.randomUUID(); } }
+  const draftIdentity = useRef(identity(`${storage}:identity`));
+  const messageIdentity = useRef(identity(`${storage}:message-identity`));
+  function bump(key: string, ref: { current: string }) { ref.current = crypto.randomUUID(); try { sessionStorage.setItem(key, ref.current); } catch { setDurable(false); } }
   const [durable, setDurable] = useState(true);
+  useEffect(() => { try { sessionStorage.setItem(`${storage}:identity`, draftIdentity.current); sessionStorage.setItem(`${storage}:message-identity`, messageIdentity.current); } catch { setDurable(false); } }, [storage]);
   const conflict = editing && baseRevision !== plan.revision;
   useEffect(() => {
-    if (!editing) { setDraft(plan.markdown); setBaseRevision(plan.revision); }
+    if (!editing) { bump(`${storage}:identity`, draftIdentity); setDraft(plan.markdown); setBaseRevision(plan.revision); }
   }, [plan.markdown, plan.revision, editing]);
   useEffect(() => {
     const attempt = operation.current;
@@ -36,34 +41,35 @@ export function PlanApproval({ taskId, plan, disabled, refresh }: { taskId: stri
   }, [plan.actions, operation.current]);
   const dirty = draft !== plan.markdown && editing;
   const inactive = disabled || busy || plan.status !== 'waiting';
-  function update(value: string) { draftVersion.current += 1; setDraft(value); try { sessionStorage.setItem(storage, value); sessionStorage.setItem(`${storage}:revision`, String(baseRevision)); } catch { setDurable(false); } }
+  function update(value: string) { bump(`${storage}:identity`, draftIdentity); setDraft(value); try { sessionStorage.setItem(storage, value); sessionStorage.setItem(`${storage}:revision`, String(baseRevision)); } catch { setDurable(false); } }
   async function action(action: string, replay = false) {
     if (lock.current || (!replay && (inactive || conflict || operation.unresolved))) return;
     const payload = { action, approval_id: plan.id, revision: baseRevision, ...(action === 'save' ? { markdown: draft } : {}), ...(['chat','send_back'].includes(action) ? { message } : {}), ...(action === 'send_back' ? { target } : {}) };
     lock.current = true; setBusy(true); setError('');
     let attempt;
     try {
-      attempt = replay ? operation.current : operation.prepare(payload, draftVersion.current);
+      attempt = replay ? operation.current : operation.prepare(payload, 0, undefined, JSON.stringify({ draft: draftIdentity.current, message: messageIdentity.current }));
       if (!attempt?.request) return;
       const sent = attempt.request;
       await post(`/api/tasks/${encodeURIComponent(taskId)}/plan-approval/actions`, { ...sent, idempotency_key: attempt.id });
       const receipt = operation.settle(attempt, 'accepted');
-      if (receipt.status !== 'accepted') return;
-      if (sent.action === 'save' && attempt.draftVersion === draftVersion.current) {
+      if (receipt.status !== 'accepted' || !operation.isCurrent(attempt)) return;
+      const origin = JSON.parse(attempt.origin || '{}');
+      if (sent.action === 'save' && origin.draft === draftIdentity.current && sent.markdown === draft) {
         setEditing(false); try { sessionStorage.removeItem(storage); sessionStorage.removeItem(`${storage}:revision`); } catch { setDurable(false); }
       }
-      if (sent.action === 'chat' || sent.action === 'send_back') { setMessage(''); try { sessionStorage.removeItem(`${storage}:message`); } catch { setDurable(false); } }
+      if ((sent.action === 'chat' || sent.action === 'send_back') && origin.message === messageIdentity.current && sent.message === message) { setMessage(''); try { sessionStorage.removeItem(`${storage}:message`); } catch { setDurable(false); } }
       refresh();
     } catch (reason) {
       if (attempt) operation.settle(attempt, reason instanceof ApiError && reason.status === 409 && reason.message.startsWith('Plan revision changed') ? 'rejected' : 'uncertain', undefined, String(reason));
-      setError(String(reason)); refresh();
+      if (!attempt) setError(String(reason)); refresh();
     } finally { lock.current = false; setBusy(false); }
   }
   return <section className="plan-approval" aria-label="Developer plan approval" aria-busy={busy}>
     <header><h2>{plan.status === 'approved' ? 'Approved plan' : 'Review the plan'}</h2><p>Revision {plan.revision || 0} · {plan.author} · {plan.status}</p></header>
     <p>Scan the section summaries and expand for details. Approval sends the complete saved plan to implementers.</p>
     {plan.error && <p role="alert" className="error">{plan.error}</p>}
-    {conflict && <div role="alert" className="operation-warning"><p>The saved plan changed from revision {baseRevision} to {plan.revision}. Your edits are retained. Compare them with the current saved plan before continuing.</p><Button disabled={busy || operation.unresolved} onClick={() => { setBaseRevision(plan.revision); try { sessionStorage.setItem(`${storage}:revision`, String(plan.revision)); } catch { setDurable(false); } }}>Keep edits against revision {plan.revision}</Button><Button disabled={busy || operation.unresolved} onClick={() => { setDraft(plan.markdown); setBaseRevision(plan.revision); setEditing(false); try { sessionStorage.removeItem(storage); sessionStorage.removeItem(`${storage}:revision`); } catch { setDurable(false); } }}>Use saved plan</Button></div>}
+    {conflict && <div role="alert" className="operation-warning"><p>The saved plan changed from revision {baseRevision} to {plan.revision}. Your edits are retained. Compare them with the current saved plan before continuing.</p><Button disabled={busy || operation.unresolved} onClick={() => { setBaseRevision(plan.revision); try { sessionStorage.setItem(`${storage}:revision`, String(plan.revision)); } catch { setDurable(false); } }}>Keep edits against revision {plan.revision}</Button><Button disabled={busy || operation.unresolved} onClick={() => { bump(`${storage}:identity`, draftIdentity); setDraft(plan.markdown); setBaseRevision(plan.revision); setEditing(false); try { sessionStorage.removeItem(storage); sessionStorage.removeItem(`${storage}:revision`); } catch { setDurable(false); } }}>Use saved plan</Button></div>}
     {operation.unresolved && <p role="status">A plan action needs reconciliation. <Button disabled={busy || disabled} onClick={() => void action('', true)}>Check saved plan action</Button></p>}
     {(!durable || !operation.durable) && <p role="alert">Storage is unavailable. Keep this page open to retain your draft and request identity.</p>}
     <Disclosure key={plan.status === 'approved' ? 'approved' : 'review'} title={plan.status === 'approved' ? 'Read approved plan' : 'Saved plan'} defaultOpen={plan.status !== 'approved'}>
@@ -82,17 +88,18 @@ export function PlanApproval({ taskId, plan, disabled, refresh }: { taskId: stri
     </Disclosure>
     {editing ? <><label>Plan Markdown<Textarea className="plan-editor" rows={22} value={draft} disabled={busy} onChange={event => update(event.target.value)} /></label><details><summary>Preview edits</summary><MessageContent text={draft} /></details>
       <Button disabled={inactive || conflict || operation.unresolved || !draft.trim()} onClick={() => void action('save')}>Save plan</Button>
-      <Button disabled={busy} onClick={() => { setDraft(plan.markdown); setEditing(false); try { sessionStorage.removeItem(storage); } catch { /* Optional storage. */ } }}>Discard edits</Button>
+      <Button disabled={busy} onClick={() => { bump(`${storage}:identity`, draftIdentity); setDraft(plan.markdown); setEditing(false); try { sessionStorage.removeItem(storage); } catch { /* Optional storage. */ } }}>Discard edits</Button>
       </> : <>
-      {plan.status !== 'approved' && <Button disabled={busy} onClick={() => { setDraft(plan.markdown); setBaseRevision(plan.revision); setEditing(true); }}>Edit plan</Button>}</>}
+      {plan.status !== 'approved' && <Button disabled={busy} onClick={() => { bump(`${storage}:identity`, draftIdentity); setDraft(plan.markdown); setBaseRevision(plan.revision); setEditing(true); }}>Edit plan</Button>}</>}
     {plan.status !== 'approved' && <><p role="status">{dirty ? 'Unsaved changes. Save before discussing, sending back, or approving.' : 'Approval starts implementation of the complete saved revision, including collapsed details.'}</p>
       {!message.trim() && <p className="muted">Enter feedback to discuss the plan or send it back to a planning agent.</p>}
-      <label>Discuss the plan or describe requested changes<Textarea rows={4} value={message} disabled={busy} onChange={event => { setMessage(event.target.value); try { sessionStorage.setItem(`${storage}:message`, event.target.value); } catch { /* Optional storage. */ } }} /></label>
+      <label>Discuss the plan or describe requested changes<Textarea rows={4} value={message} disabled={busy} onChange={event => { bump(`${storage}:message-identity`, messageIdentity); setMessage(event.target.value); try { sessionStorage.setItem(`${storage}:message`, event.target.value); } catch { /* Optional storage. */ } }} /></label>
       <Button disabled={inactive || conflict || operation.unresolved || dirty || !message.trim()} onClick={() => void action('chat')}>Discuss plan</Button>
       <label>Send back to<NativeSelect value={target} disabled={busy} onChange={event => setTarget(event.target.value)}>{Object.entries(plan.targets || {}).map(([key,label]) => <option key={key} value={key}>{label}</option>)}</NativeSelect></label>
       <Button disabled={inactive || conflict || operation.unresolved || dirty || !message.trim() || !target} onClick={() => void action('send_back')}>Send back</Button>
       {!plan.snapshot && <p className="muted">Approval verifies the current checkout before implementation starts. Existing local edits are retained.</p>}
       <Button variant="primary" disabled={inactive || conflict || operation.unresolved || dirty || !plan.markdown?.trim()} onClick={() => void action('approve')}>Approve and implement</Button></>}
+    {operation.current?.warning && operation.current.status !== 'accepted' && <p role="alert" className="error">{operation.current.warning} Your draft is retained.</p>}
     {error && <p role="alert" className="error">{error} Your draft is retained.</p>}
     <details><summary>Plan discussion ({plan.messages?.length || 0})</summary>{plan.messages?.map((item,index) => <article key={index}><strong>{item.role}</strong><MessageContent text={item.text} /></article>)}</details>
     <details><summary>Revision history</summary>{plan.revisions?.map(revision => <details key={revision.revision}><summary>Revision {revision.revision} · {revision.author}</summary><MessageContent text={revision.markdown} /></details>)}</details>

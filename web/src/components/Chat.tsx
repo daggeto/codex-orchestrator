@@ -13,13 +13,14 @@ import { MessageContent } from './MessageContent';
 interface Props {
   draftKey?: string; messages: ChatMessage[]; onSubmit: (message: string, attachments: AttachmentSubmission) => Promise<void>;
   attachmentContext?: AttachmentContext;
+  attachmentLocked?: boolean; acceptedAttachmentDraft?: string;
   label: string; placeholder?: string; submitLabel?: string;
   loading?: boolean; disabled?: boolean; submitDisabled?: boolean; submitReason?: string; error?: string;
   toolbar?: ReactNode; children?: ReactNode; rows?: number; hint?: string; resetKey?: number;
 }
-export function Chat({ attachmentContext, draftKey, messages, onSubmit, label, placeholder, submitLabel = 'Send', loading = false, disabled = false, submitDisabled = false, submitReason, error, toolbar, children, resetKey, rows = 5, hint = 'Use multiple lines for context. Submit with the button below.' }: Props) {
+export function Chat({ attachmentLocked = false, acceptedAttachmentDraft, attachmentContext, draftKey, messages, onSubmit, label, placeholder, submitLabel = 'Send', loading = false, disabled = false, submitDisabled = false, submitReason, error, toolbar, children, resetKey, rows = 5, hint = 'Use multiple lines for context. Submit with the button below.' }: Props) {
   const id = useId();
-  const attachments = useAttachments(`${draftKey || id}:attachments`, attachmentContext);
+  const attachments = useAttachments(`${draftKey || id}:attachments`, attachmentContext, attachmentLocked);
   const [draft, setDraft] = useState(() => { try { return draftKey ? sessionStorage.getItem(draftKey) || '' : ''; } catch { return ''; } });
   const [sending, setSending] = useState(false);
   const [failure, setFailure] = useState('');
@@ -28,6 +29,7 @@ export function Chat({ attachmentContext, draftKey, messages, onSubmit, label, p
   const [durable, setDurable] = useState(true);
   useEffect(() => { if (resetKey !== undefined) setDraft(''); setFailure(''); }, [resetKey]);
   useEffect(() => { if (draftKey) { try { sessionStorage.setItem(draftKey, draft); } catch { setDurable(false); } } }, [draftKey, draft]);
+  useEffect(() => { if (acceptedAttachmentDraft) attachments.clear(acceptedAttachmentDraft); }, [acceptedAttachmentDraft]);
   const blocked = loading || sending || attachments.submitted;
   const cannotSubmit = disabled || submitDisabled || blocked;
   // A caller managing recovery can supply an empty error to clear transport failures.
@@ -40,15 +42,14 @@ export function Chat({ attachmentContext, draftKey, messages, onSubmit, label, p
       </article>)}
     </div>
     {attachments.acceptedTaskId && <p role="status">Your request was accepted. <Link to={`/tasks/${encodeURIComponent(attachments.acceptedTaskId)}`} onClick={() => {
-      setDraft(''); attachments.clear();
-      try { if (draftKey) sessionStorage.removeItem(draftKey); } catch { /* Optional storage. */ }
+      attachments.clear(attachments.payload.draft_id);
     }}>Open accepted task</Link> to view its progress and files.</p>}
-    <form onDragOver={event => { if (attachmentContext && event.dataTransfer.types.includes('Files')) event.preventDefault(); }} onDrop={event => { if (attachmentContext && event.dataTransfer.files.length) { event.preventDefault(); if (!blocked) void attachments.select(event.dataTransfer.files); } }} onSubmit={async event => {
+    <form onDragOver={event => { if (attachmentContext && event.dataTransfer.types.includes('Files')) event.preventDefault(); }} onDrop={event => { if (attachmentContext && event.dataTransfer.files.length) { event.preventDefault(); if (!blocked && !attachmentLocked) void attachments.select(event.dataTransfer.files); } }} onSubmit={async event => {
       event.preventDefault();
       if (cannotSubmit || lock.current || !attachments.ready || !(draft.trim() || attachments.files.length)) return;
       lock.current = true; setSending(true); setFailure('');
-      const submitted = { text: draft.trim(), files: attachments.payload, version: version.current };
-      try { await onSubmit(submitted.text, submitted.files); if (version.current === submitted.version) setDraft(''); attachments.clear(); }
+      const submitted = { text: draft.trim(), files: attachments.payload, version: version.current, draftId: attachments.payload.draft_id };
+      try { await onSubmit(submitted.text, submitted.files); if (version.current === submitted.version) setDraft(''); attachments.clear(submitted.draftId); }
       catch (reason) { setFailure(reason instanceof Error ? reason.message : 'Message failed'); }
       finally { lock.current = false; setSending(false); }
     }}>
@@ -56,7 +57,7 @@ export function Chat({ attachmentContext, draftKey, messages, onSubmit, label, p
       <label htmlFor={id}>{label}</label>
       <Textarea id={id} rows={rows} value={draft} onChange={event => { version.current += 1; setDraft(event.target.value); }}
         placeholder={placeholder} disabled={attachments.submitted} aria-describedby={hint ? `${id}-hint` : undefined} required={!attachments.files.length} />
-      {attachmentContext && <AttachmentPicker controller={attachments} disabled={blocked} />}
+      {attachmentContext && <AttachmentPicker controller={attachments} disabled={blocked || attachmentLocked} />}
       <div className="chat-actions">{hint && <small id={`${id}-hint`}>{hint}</small>}
         <Button variant="primary" type="submit" disabled={cannotSubmit || !attachments.ready || !(draft.trim() || attachments.files.length)}>{loading || sending ? 'Sending…' : submitLabel}</Button></div>
       {submitReason && <p role="status">{submitReason}</p>}

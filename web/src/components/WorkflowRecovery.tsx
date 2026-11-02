@@ -74,7 +74,7 @@ export function ContinueRun({ run, disabled }: { run: RunIdentity; disabled: boo
   const continueRun = async () => {
     if (lock.current || disabled || !operation.unresolved && !checkpoint?.available) return;
     lock.current = true; setBusy(true); setError('');
-    let attempt = operation.current;
+    let attempt = operation.unresolved ? operation.current : undefined;
     try {
       const observation = await get<{ run: WorkflowRun; continuation: NonNullable<typeof checkpoint> }>(`/api/workflows/runs/${encodeURIComponent(run.run_id)}`);
       if (attempt && operation.unresolved && Array.isArray(observation.run.state?.continuations) && observation.run.state.continuations.some(item => object(item).request_id === attempt!.id)) {
@@ -97,7 +97,7 @@ export function ContinueRun({ run, disabled }: { run: RunIdentity; disabled: boo
         if (localStorage.getItem(key) === attempt.id) localStorage.removeItem(key);
       } catch { /* Receipt remains in memory. */ }
     } catch (reason) {
-      if (attempt && attempt.status !== 'accepted') operation.settle(attempt, 'uncertain', undefined, String(reason));
+      if (attempt) { operation.settle(attempt, 'uncertain', undefined, String(reason)); return; }
       setError(`${String(reason)}. Acceptance is unconfirmed. Check the saved request before starting another continuation.`);
     } finally { lock.current = false; setBusy(false); }
   };
@@ -111,7 +111,8 @@ export function ContinueRun({ run, disabled }: { run: RunIdentity; disabled: boo
     {checkpoint?.review_refresh_required && <p>Your workspace and implementation are kept. Review rules changed, so completed work needs fresh reviewer approval before finishing. Continue also authorizes fresh final checks and up to three repair rounds.</p>}
     {checkpoint?.requires_extension && <p role="status">The {checkpoint.iteration_limit}-step budget is used up. Allow another 20 steps? The new limit will be {checkpoint.next_iteration_limit}.</p>}
     {checkpoint && !checkpoint.available && <p>{checkpoint.reason}</p>}
-    {error && <p className="error" role="alert">{error}</p>}
+    {error && !accepted && <p className="error" role="alert">{error}</p>}
+    {operation.unresolved && operation.current?.warning && <p role="alert" className="error">{operation.current.warning}. Acceptance is unconfirmed. Check the saved continuation.</p>}
     {!operation.durable && <p role="alert">Request identity is held only in memory. Keep this page open.</p>}
     {accepted ? <p role="status">Continuation accepted. This run will update as it progresses.</p> :
       <Button disabled={disabled || busy || !operation.unresolved && !checkpoint?.available} onClick={() => { void continueRun(); }}>
@@ -161,7 +162,7 @@ export function RestartRun({ run, disabled, select }: { run: RunIdentity; disabl
   const restart = async () => {
     if (lock.current || disabled || !source || !valid || !stopped || !definition || !destinationAvailable) return;
     lock.current = true; setBusy(true); setError('');
-    let attempt = restartOperation.current;
+    let attempt = restartOperation.unresolved ? restartOperation.current : undefined;
     try {
       let legacy: Record<string, unknown> | undefined;
       try { const stored = localStorage.getItem(storageKey); legacy = stored ? JSON.parse(stored) : undefined; } catch { /* Use in-memory recovery. */ }
@@ -176,16 +177,16 @@ export function RestartRun({ run, disabled, select }: { run: RunIdentity; disabl
       try {
         const found = await get<{ run: WorkflowRun; task_id?: string }>(`/api/workflows/runs/${encodeURIComponent(request.run_id)}`);
         const result = { run_id: found.run.run_id, ...(found.task_id ? { task_id: found.task_id } : {}) };
-        restartOperation.settle(attempt, 'accepted', result); setAccepted(result); return;
+        const receipt = restartOperation.settle(attempt, 'accepted', result); if (restartOperation.isCurrent(attempt) && receipt.result?.run_id) setAccepted({ run_id: receipt.result.run_id, task_id: receipt.result.task_id }); return;
       } catch (reason) { if (!(reason instanceof ApiError) || reason.status !== 404) throw reason; }
       const result = await post<{ run_id: string; task_id?: string }>(`/api/workflows/${encodeURIComponent(String(request.workflow))}/submit`, {
         run_id: request.run_id, variables: request.variables, copy_from_task_id: request.copy_from_task_id, omit_unavailable_attachments: request.omit_unavailable_attachments,
       });
-      restartOperation.settle(attempt, 'accepted', { run_id: result.run_id, ...(result.task_id ? { task_id: result.task_id } : {}) });
-      setAccepted(result);
+      const receipt = restartOperation.settle(attempt, 'accepted', { run_id: result.run_id, ...(result.task_id ? { task_id: result.task_id } : {}) });
+      if (restartOperation.isCurrent(attempt) && receipt.result?.run_id) setAccepted({ run_id: receipt.result.run_id, task_id: receipt.result.task_id });
       try { const old = JSON.parse(localStorage.getItem(storageKey) || 'null'); if (old?.run_id === request.run_id) localStorage.removeItem(storageKey); } catch { /* Receipt is retained in memory. */ }
     } catch (reason) {
-      if (attempt) restartOperation.settle(attempt, 'uncertain', undefined, String(reason));
+      if (attempt) { restartOperation.settle(attempt, 'uncertain', undefined, String(reason)); return; }
       setError(`${String(reason)}. Your exact saved inputs are retained. Check this request before starting another.`);
     } finally { lock.current = false; setBusy(false); }
   };
@@ -207,7 +208,8 @@ export function RestartRun({ run, disabled, select }: { run: RunIdentity; disabl
       {attachments.some(file => file.state !== 'ready') && <div><p>Unavailable files: {attachments.filter(file => file.state !== 'ready').map(file => file.filename).join(', ')}. Start a task from its workspace to reselect these files, or explicitly omit them here.</p><label><Checkbox checked={omitUnavailable} onCheckedChange={setOmitUnavailable} />Restart without unavailable attachments</label></div>}
       <details><summary>Saved workflow inputs</summary><pre>{JSON.stringify(variables, null, 2)}</pre></details>
     </>}
-    {error && <p className="error" role="alert">{error}</p>}
+    {error && !accepted && <p className="error" role="alert">{error}</p>}
+    {restartOperation.unresolved && restartOperation.current?.warning && <p role="alert" className="error">{restartOperation.current.warning}. Acceptance is unconfirmed. Check the saved restart.</p>}
     {!restartOperation.durable && <p role="alert">Restart recovery is held only in memory. Keep this page open.</p>}
     {accepted ? <p role="status">New run accepted: <Button onClick={() => select(accepted.run_id, accepted.task_id)}>View run {accepted.run_id.slice(0, 12)}</Button></p>
       : <Button disabled={disabled || busy || !valid || !stopped || !definition || !destinationAvailable || (attachments.some(file => file.state !== 'ready') && !omitUnavailable)} onClick={() => { void restart(); }}>

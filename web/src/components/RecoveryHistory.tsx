@@ -22,14 +22,14 @@ function RetryRecovery({ endpoint, eligible, refresh }: { endpoint: string; elig
       const result = await post<{ request_id: string; task_id?: string; operation_id?: string }>(endpoint, { request_id: attempt.id });
       operation.settle(attempt, 'accepted', { request_id: result.request_id, ...(result.operation_id ? { operation_id: result.operation_id } : {}) });
       clearSubmissionIdentity(storage, attempt.id); refresh?.();
-    } catch (reason) { if (attempt) operation.settle(attempt, 'uncertain', undefined, String(reason)); setError(`${String(reason)}. Acceptance is unconfirmed. Check the same request to recover it.`); }
+    } catch (reason) { if (attempt) operation.settle(attempt, 'uncertain', undefined, String(reason)); if (attempt) return; setError(`${String(reason)}. Acceptance is unconfirmed. Check the same request to recover it.`); }
     finally { lock.current = false; setBusy(false); }
   }
   if (!eligible && !operation.current) return null;
   return <div>{accepted ? <p role="status">Recovery accepted. Follow the task or merge status for the result.</p> :
     <Button disabled={busy || !eligible && !operation.unresolved} onClick={() => void retry()}>{busy ? 'Requesting recovery…' : operation.unresolved ? 'Check saved recovery request' : 'Retry recovery'}</Button>}
     {!operation.durable && <p role="alert">Request identity is held only in memory. Keep this page open.</p>}
-    {error && <p role="alert" className="error">{error}</p>}</div>;
+    {operation.unresolved && operation.current?.warning && <p role="alert" className="error">{operation.current.warning}. Acceptance is unconfirmed. Check the same saved request.</p>}{error && !accepted && <p role="alert" className="error">{error}</p>}</div>;
 }
 
 export function RecoveryHistory(props: {
