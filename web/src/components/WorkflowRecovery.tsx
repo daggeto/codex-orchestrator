@@ -44,6 +44,7 @@ export function ContinueRun({ run, disabled }: { run: RunIdentity; disabled: boo
   const [checkpoint, setCheckpoint] = useState<{
     available: boolean; reason: string | null; step: string | null;
     requires_extension?: boolean; iteration_limit?: number; next_iteration_limit?: number;
+    review_refresh_required?: boolean;
   }>();
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -87,6 +88,7 @@ export function ContinueRun({ run, disabled }: { run: RunIdentity; disabled: boo
     <p>Restore your allowance before continuing after a usage limit. Publication can proceed if it was enabled for this run.</p>
     {!checkpoint && !error && <p role="status">Loading checkpoint…</p>}
     {checkpoint?.step && <p>Continue from: <code>{checkpoint.step}</code></p>}
+    {checkpoint?.review_refresh_required && <p>Your workspace and implementation are kept. Review rules changed, so completed work needs fresh reviewer approval before finishing. Continue also authorizes fresh final checks and up to three repair rounds.</p>}
     {checkpoint?.requires_extension && <p role="status">The {checkpoint.iteration_limit}-step budget is used up. Allow another 20 steps? The new limit will be {checkpoint.next_iteration_limit}.</p>}
     {checkpoint && !checkpoint.available && <p>{checkpoint.reason}</p>}
     {error && <p className="error" role="alert">{error}</p>}

@@ -13,7 +13,7 @@ from urllib.parse import quote, urlparse
 from orchestrator.workflows.merge_request import (
     CreateMergeRequestStep, PrepareMergeRequestStep, _run,
 )
-from orchestrator.workflows.steps import AssignStep, ReviewStep, Step, StepResult
+from orchestrator.workflows.steps import AssignStep, ReviewStep, Step, StepResult, reviewer_criteria
 
 logger = logging.getLogger(__name__)
 
@@ -140,8 +140,9 @@ class CompletionReviewStep(ReviewStep):
             # backend error; publication needs an explicit final decision.
             assignment = AssignStep(
                 step_id=self.step_id, role=self.role, cwd="{mr_repo}", output_key="review_text",
-                message_template=self.review_template.replace("{source}", "{implementation}"),
+                message_template=self.review_template.replace("{source}", "{implementation}") + "\n{review_criteria}",
             )
+            ctx.variables['review_criteria'] = reviewer_criteria(ctx.variables)
             result = await ctx.execute_step(assignment)
             if not result.success:
                 return result
@@ -151,6 +152,7 @@ class CompletionReviewStep(ReviewStep):
                 return _blocked("Reviewer did not return an unambiguous approval or rejection", **result.output)
             approved = marker == "APPROVED"
             result.output["review_decision"] = "approved" if approved else "changes_requested"
+            result.output["review_commit"] = before
             result.next_step = "publish" if approved else "repair"
             if before != await _run(root, "git", "rev-parse", "HEAD"):
                 return _blocked("HEAD changed during review; rerun review before publication")

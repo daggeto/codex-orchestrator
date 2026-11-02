@@ -119,6 +119,7 @@ class Workflow:
     max_iterations: int = 20  # initial step budget; extensions require approval
 
     publication_policy: str = "none"
+    review_policy: str | None = None
     role_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
@@ -167,21 +168,8 @@ class Workflow:
         return hashlib.sha256(json.dumps(definition, sort_keys=True).encode()).hexdigest()
 
 
-def continuation_workflow(workflow, record):
-    """Keep saved feature runs on their original, exactly matching routing."""
-    signature = record.config.get("workflow_signature", workflow.signature)
-    if signature == workflow.signature:
-        return workflow
-    if workflow.name == "feature":
-        from orchestrator.workflows.builtins import _final_checks, _specialized_feature_workflow
-        legacy = _final_checks(_specialized_feature_workflow())
-        if signature == legacy.signature:
-            return legacy
-    raise ValueError("Workflow definition changed since this run; restart it instead")
-
-
 def continuation_checkpoint(workflow, record):
-    """Validate saved progress without executing or reserving any work."""
+    """Validate saved progress against the current workflow, allowing definition changes."""
     checkpoint = record.state.get("checkpoint")
     if checkpoint is None:
         # Old failed runs persisted outputs after each step, but not threads.
@@ -195,13 +183,41 @@ def continuation_checkpoint(workflow, record):
             raise ValueError("This older run stopped during preparation; inspect its files and restart")
         checkpoint = {"next_step": step, "variables": saved, "threads": {},
                       "iteration": max(0, record.state.get("iteration", 1) - 1)}
-    workflow = continuation_workflow(workflow, record)
     checkpoint = dict(checkpoint)
+    if not isinstance(checkpoint.get("variables"), dict):
+        raise ValueError("The saved checkpoint has no workflow variables")
+    policy_changed = workflow.review_policy and record.config.get("review_policy") != workflow.review_policy
+    if policy_changed and checkpoint.get("review_policy") != workflow.review_policy:
+        # The reviewer-only transition preserves implementation progress, but
+        # approval from an older protocol cannot authorize completion/publication.
+        if record.config.get("review_policy") is not None or workflow.review_policy != "reviewer-v1":
+            raise ValueError("No checkpoint migration is available for these review rules")
+        review = next((s for s in workflow.steps if getattr(s, "role", None) == "reviewer"
+                       and not getattr(s, "advisory", False)), None)
+        if review is None:
+            raise ValueError("The current workflow has no reviewer step for saved work")
+        saved_step = workflow.get_step(checkpoint.get("next_step"))
+        if saved_step is None and checkpoint.get("next_step") not in {
+            "review-gate", "ux-review", "ux-review-gate", "re-review-gate", "repeat-reviews", "__end__",
+        }:
+            raise ValueError("The saved step is unavailable in this workflow")
+        if saved_step is None or workflow.steps.index(saved_step) >= workflow.steps.index(review):
+            checkpoint["next_step"] = review.step_id
+        variables = dict(checkpoint["variables"])
+        for key in list(variables):
+            if key.startswith(("review_", "ux_review_")) or key in {
+                "completion_reviewed_sha", "ux-consult_commit", "architect-consult_commit",
+            }:
+                variables.pop(key)
+        checkpoint["variables"] = {**workflow.initial_variables, **variables}
+        # Keep implementation conversations; a fresh reviewer conversation uses
+        # the current protocol and saved plans rather than obsolete instructions.
+        checkpoint["threads"] = {key: value for key, value in checkpoint.get("threads", {}).items()
+                                 if not key.startswith("reviewer:")}
+        checkpoint["review_policy"] = workflow.review_policy
     step = checkpoint.get("next_step")
     if step != "__end__" and not workflow.get_step(step):
         raise ValueError("The saved step is unavailable in this workflow")
-    if not isinstance(checkpoint.get("variables"), dict):
-        raise ValueError("The saved checkpoint has no workflow variables")
     return checkpoint
 
 
@@ -247,7 +263,6 @@ class WorkflowEngine:
             if not await self._store.reserve_workflow_run(record):
                 raise ValueError("Workflow run ID already exists")
         if continuing:
-            workflow = continuation_workflow(workflow, record)
             checkpoint = continuation_checkpoint(workflow, record)
             ctx.variables = dict(checkpoint["variables"])
             ctx._threads = dict(checkpoint.get("threads", {}))
@@ -255,6 +270,7 @@ class WorkflowEngine:
             checkpoint = {"next_step": workflow.steps[0].step_id if workflow.steps else "__end__",
                           "iteration": 0, "variables": ctx.variables, "threads": {}}
         record.config["workflow_signature"] = workflow.signature
+        record.config["review_policy"] = workflow.review_policy
         record.state["checkpoint"] = checkpoint
         record.status = "running"
         record.completed_at = None

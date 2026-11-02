@@ -47,6 +47,23 @@ async def task_snapshot(ctx: WorkflowContext) -> str | None:
     return await _run(root, "git", "rev-parse", "HEAD")
 
 
+def reviewer_criteria(variables) -> str:
+    """Every reviewer receives the same planning evidence, including repair reviews."""
+    sections = [
+        "You own source approval. Verify the complete implementation against the user's request "
+        "and every applicable UX and architecture acceptance criterion. Identify omissions and "
+        "unapproved deviations with file/line evidence and concrete required fixes. Send those "
+        "findings directly to the implementer; approve when they are resolved. Specialists advise "
+        "on plans and tradeoffs; they do not grant approval. Do not invent missing planning stages."
+    ]
+    for key, label in (("ux_assessment", "UX plan"), ("plan", "Architecture plan"),
+                       ("investigation", "Bug investigation"), ("ux_consultation", "UX advice"),
+                       ("architecture_consultation", "Architecture advice")):
+        if variables.get(key):
+            sections.append(label + ":\n" + str(variables[key]))
+    return "\n\n" + "\n\n".join(sections)
+
+
 class AssignStep(Step):
     """Assign a task to an agent and collect the response."""
 
@@ -117,6 +134,12 @@ class AssignStep(Step):
             except (OSError, RuntimeError, ValueError) as exc:
                 return StepResult(success=False, error=f"Invalid task worktree: {exc}")
 
+        if (self.role == "implementer" and identity.get("task_commit")
+                and ctx.variables.get("review_decision") == "changes_requested"
+                and identity["task_commit"] == ctx.variables.get("review_commit")):
+            return StepResult(success=False, output={**identity, self.output_key: result.full_text},
+                              error="Revision produced no new commit for the review findings. Inspect the implementer report before continuing.")
+
         return StepResult(
             success=result.ok,
             output={
@@ -170,6 +193,8 @@ class ReviewStep(Step):
 
         source = ctx.variables.get(self.source_key, "")
         message = self.review_template.format(**{**ctx.variables, "source": source})
+        if self.role == "reviewer":
+            message += reviewer_criteria(ctx.variables)
 
         thread = await ctx.acquire_thread(agent, getattr(self, 'thread_key', None) or self.step_id, cwd=ctx.variables.get("cwd"))
 
@@ -215,13 +240,18 @@ class ReviewStep(Step):
             rejected = markers == {self.reject_keyword.upper()} and final == self.reject_keyword.upper()
 
         decision = "approved" if approved and not rejected else "changes_requested" if rejected else "unclear"
+        output = {
+            **(reviewed if decision == "approved" or self.strict_decision else {}),
+            f"{self.output_namespace}_decision": decision,
+            f"{self.output_namespace}_text": result.full_text,
+        }
+        final = result.full_text.strip().splitlines()[-1] if result.full_text.strip() else ""
+        if decision == "unclear" and final not in getattr(self, "consultation_routes", {}):
+            return StepResult(success=False, output=output,
+                              error="Reviewer returned no clear decision. End with APPROVED or CHANGES_REQUESTED; no implementation revision was requested.")
         return StepResult(
             success=True,
-            output={
-                **(reviewed if decision == "approved" or self.strict_decision else {}),
-                f"{self.output_namespace}_decision": decision,
-                f"{self.output_namespace}_text": result.full_text,
-            },
+            output=output,
             next_step=self.on_approve if decision == "approved" else self.on_reject,
         )
 

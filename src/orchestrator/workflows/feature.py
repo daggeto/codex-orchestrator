@@ -19,13 +19,15 @@ class UXPlanStep(AssignStep):
 class FeatureReviewStep(ReviewStep):
     """Consult specialists for material deviations, never for routine corrections."""
 
+    consultation_routes = {"CONSULT_UX": "ux-consult", "CONSULT_ARCHITECT": "architect-consult"}
+
     async def execute(self, ctx):
         result = await super().execute(ctx)
         if not result.success:
             return result
         text = result.output["review_text"]
         final = text.strip().splitlines()[-1] if text.strip() else ""
-        routes = {"CONSULT_UX": "ux-consult", "CONSULT_ARCHITECT": "architect-consult"}
+        routes = self.consultation_routes
         if final in routes:
             # Decisions and consultation requests are mutually exclusive.
             if any(has_marker(text, marker) for marker in ("APPROVED", "CHANGES_REQUESTED")):

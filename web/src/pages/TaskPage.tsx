@@ -14,6 +14,7 @@ import { ParticipantStrip, TaskContext } from '../components/TaskContext';
 import { Button } from '../components/ui/Button';
 import { ResourceState } from '../components/ui/ResourceState';
 import { MessageContent } from '../components/MessageContent';
+import { ScopeSuggestions } from '../components/ScopeSuggestions';
 export function TaskPage() {
   const { taskId } = useParams();
   return <TaskContent key={taskId} taskId={taskId || ''} />;
@@ -50,6 +51,8 @@ function TaskContent({ taskId }: { taskId: string }) {
   return <section className="task-page"><TaskContext task={task} />
     {error && <p className="error" role="alert">{error} · Showing saved task state.</p>}
     {report && <details open className="execution-details"><summary>Implementation report and follow-up work</summary><MessageContent text={report} /></details>}
+    {data.scope_split && <ScopeSuggestions taskId={taskId} split={data.scope_split} disabled={!!error || !!pending}
+      onStarted={() => { refresh(); navigation.refresh(); }} />}
     {workflow && ['interrupted', 'failed', 'cancelled', 'paused'].includes(workflow.status) && <section aria-label="Workflow recovery">
       <ValidationRecovery state={workflow.state} />
       <ContinueRun key={`continue:${workflow.run_id}:${workflow.updated_at}`} run={workflow} disabled={!!error || !!pending} />

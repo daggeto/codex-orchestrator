@@ -147,7 +147,7 @@ orch skill run investigate-bug architect -v bug_description="OOM on large upload
 | architect | codex | read-only | Designs, plans, reviews architecture |
 | implementer | codex | workspace-write | Writes code, runs commands, commits |
 | senior-ux-designer | codex | read-only | Assesses source before planning and reviews implementation UX |
-| reviewer | codex | read-only | Code review; must produce APPROVED or CHANGES_REQUESTED |
+| reviewer | codex | read-only | Source approval against UX and architecture criteria; must produce APPROVED or CHANGES_REQUESTED |
 | qa | codex | workspace-write | Runs tests, verifies fixes, checks regressions |
 | planner | claude | read-only | Decomposes tasks into work items with priorities |
 
@@ -157,7 +157,7 @@ Edit `roles/*.toml` to change models, sandbox, token budgets, system prompts.
 
 Built-in pipelines:
 
-- **small-change** (task and web default): prepare checkout → implement → combined review → at most one revision and verification → recorded summary. No publication.
+- **small-change** (task and web default): prepare checkout → implement → combined review → up to 10 revision rounds with verification → recorded summary. No publication.
 - **feature**: prepare task branch → UX plan → technical plan → implementation ⇄ code review → optional final advisory UX report → completion report → optional draft PR/MR and CI/deployment verification
 - **bugfix**: architect investigates, implementer fixes, qa verifies
 - **review**: send code to reviewer
@@ -166,18 +166,36 @@ Built-in pipelines:
   PR/MR, poll CI, repair failures, review and push again until green
 
 Use `small-change` for routine changes to existing behavior. Implementer and
-reviewer use medium reasoning effort and reuse their conversations for the single
-revision cycle. There is no separate UX assessment, architecture plan, or model
+reviewer use medium reasoning effort and reuse their conversations across up to 10 source
+revision rounds. There is no separate UX assessment, architecture plan, or model
 summary. The full task diff is still reviewed after a revision.
 
+Small tasks have one clear outcome, straightforward acceptance criteria, a localized
+change using existing patterns and contracts, and a diff one reviewer can assess
+comfortably. More than five implementation files across the full task diff is a
+scope checkpoint, not a hard limit: the implementer explains why the work remains
+small and continues if those conditions hold. File count alone does not trigger escalation.
+
 Before editing, the implementer must stop if the change needs a schema migration,
-new background service or recovery system, substantial public contract changes,
-or more than five implementation files. It reports the blocker, smallest safe
+new background service or recovery system, substantial public contract or architectural
+changes, or broader dependencies or separate design decisions that break those
+small-task conditions. It reports the blocker, smallest safe
 alternative, and larger proposal with `SCOPE_ESCALATION`. The workflow routes
 that marker to a saved failed checkpoint without invoking review or expanding
-scope. Unresolved or unclear review after the one revision also stops there.
-Inspect the report and submit a narrower task or explicitly select `feature`.
-Continuing a stopped checkpoint does not grant another repair cycle.
+scope. Unresolved review after 10 source revisions also stops there. An unclear decision stops immediately without requesting an implementation revision.
+The blocking reviewer explains the remaining defects, impact, required fixes, and
+why they remain unresolved based on the available revision history. Its final
+feedback appears in the saved report and failure message.
+Scope reports include proposed standalone prompts, context, required inputs, and
+recommended workflows. The task page separates work that fits the requested workflow
+from broader follow-up work. Fill in any required answers and choose **Start this task**
+for each proposal you want to run. Each starts a separate task in an isolated worktree
+from repository Main, with publication disabled and independent copies of source
+attachments. Unavailable attachments block creation. Source worktree changes are not
+automatically copied. The page displays a link to each accepted task and retains it
+after reload; retries recover the same task rather than creating a duplicate.
+Old reports without a structured split must be reviewed and submitted manually.
+Continuing a stopped checkpoint does not reset the source revision count.
 
 The `small-change` recipe offers the same scope guidance in an implementer agent
 conversation. It does not enforce the workflow's review or revision limit.
@@ -189,8 +207,10 @@ spending limits, and interruption during a turn remain separate work.
 
 Manual acceptance, when requested: submit a small UI change with the default
 workflow and confirm only implementer/reviewer participate; request a schema
-migration and confirm escalation stops before editing; inspect a rejected
-revision and confirm no second repair runs. Check that `feature` remains
+migration and confirm escalation stops before editing; confirm a rejected
+revision returns to implementation until approval or the tenth revision. After
+the tenth rejected revision, confirm no eleventh repair runs and the saved report
+identifies the blocking reviewer and includes its explanation. Check that `feature` remains
 selectable for larger work and publication.
 
 Use `pr-completion` for finishing committed work or repairing an existing PR's
@@ -241,8 +261,8 @@ ownership before resuming. Existing workspace leases serialize orchestrator task
 external tools must not edit the task checkout during review. Explicit task workspace
 selection takes precedence over generic role worktree instructions.
 
-The existing step budget and pause behavior remain in place. Older feature runs
-with a different workflow signature must restart under the checkpoint rules.
+The existing step budget and pause behavior remain in place. Runs predating reviewer-only approval can continue with their workspace, implementation, plans, and implementation conversations preserved. Old review gates and later stages resume at a fresh reviewer approval; unfinished preparation or implementation continues from its saved step. Saved approvals are invalidated, and Continue authorizes fresh final checks and a bounded repair cycle.
+Other definition changes can continue when the saved step still exists.
 
 The feature workflow creates a draft GitHub PR (`gh`) or GitLab MR (`glab`) after
 code approval for the current clean commit when Git confirms committed changes.
@@ -259,7 +279,7 @@ orch workflow run feature -v task_description="Improve transaction linking" --cw
 
 Start with a clean checkout. Existing PR/MR branches and feature branches with
 committed work are reused. Otherwise the workflow creates `orch/feature-<run_id>`
-before implementation and leaves it checked out for inspection. Both reviewers
+before implementation and leaves it checked out for inspection. The reviewer and any final advisory UX report
 inspect the entire proposed PR/MR diff, including existing branch commits.
 Approved commits are pushed without force, then the workflow uses the existing
 request or creates a draft. No request is created when there is no diff against
@@ -556,8 +576,13 @@ Existing limit-failed runs with saved checkpoints can use the same action. API
 clients must send `additional_steps: 20` with the continuation request when the
 budget is exhausted. Pausing preserves the next step and conversation history.
 
-Continuation rejects changed workflow definitions,
-missing workspaces, and changed task branches. Saved Codex threads are resumed;
+Continuation uses the current workflow definition even if it changed since the run
+started, provided the saved step still exists or has a supported review migration.
+Runs predating reviewer-only approval keep completed implementation and plans;
+old review gates and later stages return to fresh reviewer approval before completion
+or publication. Continue authorizes fresh final checks while retaining earlier QA evidence.
+It rejects unknown review policies, missing saved steps without a migration, missing workspaces, and
+changed task branches. Saved Codex threads are resumed;
 if unavailable, the step fails visibly rather than dropping conversation history.
 Other backends require their saved conversation to remain in the running agent.
 Older failed runs may continue at their recorded failed step using saved outputs,
@@ -739,12 +764,26 @@ Manual acceptance (not performed during implementation):
 
 ### Small UI and backend tasks
 
+The reviewer owns source approval in every implementation workflow, including
+bugfix and PR completion. It compares the complete diff with the request and all
+supplied UX and architecture acceptance criteria. Required improvements go back
+to the implementer, then directly to the reviewer. QA validates the approved
+commit; UX and architecture specialists provide plans and advice.
+
 Select `ui-small` for a component refactor, quick UX fix, or small section using
 existing patterns. Its team is senior-ux-designer, implementer, reviewer, and QA.
-A brief UX assessment guides implementation. UX and code feedback are collected
-before one combined revision; unresolved findings stop the task. Scope limits
-match small-change: no migrations, new services, substantial contract changes,
-or more than five implementation files. Publication is disabled.
+A brief UX plan guides implementation. The reviewer verifies the implementation
+against that plan and the request, then sends required improvements directly to
+the implementer until approval, with up to 10 source revisions. UX can provide
+scoped advice and one final advisory report; it is not an approval gate. If findings
+remain after the tenth revision, the reviewer's explanation appears in the saved
+report and failure message. Scope limits
+match small-change: one clear outcome, straightforward acceptance criteria, a localized
+change using existing patterns, and a comfortably reviewable diff. More than five
+implementation files requires an explanation, not an automatic stop. Migrations,
+new background services or recovery systems, substantial contract or architectural
+changes, and dependencies or design decisions that break those conditions require
+escalation. Publication is disabled.
 
 Select `backend-feature` for architecture planning, implementation, code review,
 and final QA without dedicated UX stages. Necessary UI changes are allowed but
@@ -760,13 +799,17 @@ The matching implementer recipes are available in agent conversations. Recipes
 provide guidance; independent reviews and revision limits belong to workflows.
 
 All implementation workflows now defer tests, typecheck, and lint to final QA
-following source approvals. QA uses repository-defined commands and avoids
+following reviewer approval. QA uses repository-defined commands and avoids
 combined-command duplication. Task and repository prohibitions take precedence;
 policy skips and unavailable commands are reported separately from passes.
 QA sends source and test failures to the implementer, including stale test doubles.
 When a command also hits environment restrictions, QA reports the failures and
 blockers separately so the implementer can still repair the failures. Each repair
-is committed and source-reviewed before a fresh QA pass. A cycle allows up to
+is committed and reviewed against the original plans. Requested source changes
+cycle through implementer and reviewer until approved, within the source revision
+limit, before a fresh QA pass. Unclear decisions stop without requesting changes,
+and a revision that returns the same rejected commit stops with the implementer
+report instead of repeating reviews. A cycle allows up to
 three repairs and stops earlier when the same failures persist across three QA
 passes or a repair produces no new commit. For sandbox permission errors such as
 local test-server socket binding, QA requests approval through its execution tool
@@ -783,7 +826,7 @@ Continue to authorize fresh QA and another bounded repair cycle. Previous report
 are retained. Provider CI and deployment checks remain separate gates.
 
 Manual acceptance: submit a quick UX fix and confirm the brief reaches the
-implementer and both reviews run before a revision. Submit a backend-only task,
+implementer and reviewer cycle until approval; UX is never an approval gate. Confirm a malformed reviewer decision and a revision with no new commit stop with a specific explanation. Confirm an older paused run at a removed review gate can Continue with its implementation intact, fresh reviewer approval, and an explicit 20-step extension when its budget is exhausted. Submit a backend-only task,
 then one requiring UI edits, and inspect the disclosure. Exercise passing checks,
 policy skips, missing tools, mixed failures and blockers, successful repairs, and
 repeated failures. Confirm the task page explains each stop and how to continue,

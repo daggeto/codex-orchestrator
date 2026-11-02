@@ -56,8 +56,11 @@ async def detail(request):
     for agent in agents:
         runtime = orch.registry.get_agent(agent['agent_id'])
         agent['activity'] = runtime.activity if runtime else {'state': 'idle', 'threads': [], 'error': None}
+    from orchestrator.api.scope import presentation
+    workflow = await orch.store.one('SELECT * FROM workflow_runs WHERE task_id=? ORDER BY created_at DESC LIMIT 1', (tid,))
     return web.json_response({'task': task, 'agents': agents,
-        'workflow': await orch.store.one('SELECT * FROM workflow_runs WHERE task_id=?', (tid,)),
+        'workflow': workflow,
+        'scope_split': await presentation(orch, task, workflow),
         'steps': await orch.store.rows('SELECT * FROM step_executions WHERE task_id=? ORDER BY created_at', (tid,)),
         'attachments': [public(row) for row in await orch.store.rows('SELECT * FROM attachments WHERE task_id=? ORDER BY created_at,attachment_id', (tid,))],
         'messages': await orch.store.rows('SELECT m.*, (SELECT json_group_array(attachment_id) FROM (SELECT attachment_id FROM message_attachments WHERE message_id=m.message_id ORDER BY position)) AS attachment_ids_json FROM task_messages m WHERE task_id=? ORDER BY created_at', (tid,)),
@@ -131,6 +134,7 @@ async def events(request):
 
 
 def register(app):
+    from orchestrator.api.scope import start as start_scope_task
     app.router.add_get('/api/tasks', listing)
     app.router.add_post('/api/tasks', submit)
     app.router.add_post('/api/tasks/{task_id}/archive', archive)
@@ -138,6 +142,7 @@ def register(app):
     app.router.add_post('/api/tasks/{task_id}/messages', message)
     app.router.add_post('/api/tasks/{task_id}/complete', complete)
     app.router.add_post('/api/tasks/{task_id}/cancel', cancel)
+    app.router.add_post('/api/tasks/{task_id}/scope-suggestions/{suggestion_id}/start', start_scope_task)
     app.router.add_get('/api/workspaces/{workspace_id}/tasks', history)
     app.router.add_post('/api/input-requests/{request_id}/resolve', resolve)
     app.router.add_get('/api/agents/{agent_id}/events', events)

@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from orchestrator.workflows.steps import AssignStep, Step, StepResult
 from orchestrator.workflows.merge_request import _run
+from orchestrator.workflows.small_change import MAX_SOURCE_REVISIONS, source_revision_failure
 
 DEFER_CHECKS = (
     "\n\nWorkflow validation policy: source stages must not run tests, typecheck, or lint. "
@@ -36,9 +37,10 @@ def validation_report(text):
 
 
 class FinalValidationStep(Step):
-    def __init__(self, reviews, **kwargs):
+    def __init__(self, reviews, consultations=None, **kwargs):
         super().__init__(**kwargs)
         self.reviews = reviews
+        self.consultations = consultations or {}
         self.sub_steps = [AssignStep(
             step_id='validation-qa', role='qa', output_key='validation_report',
             message_template=(
@@ -58,9 +60,16 @@ class FinalValidationStep(Step):
                 message_template=(
                     'Make one focused repair for final validation failures, then commit. '
                     'Do not run checks or publish. Preserve task scope; stop with SCOPE_ESCALATION if it must expand. '
-                    'For small-change and ui-small preserve the five implementation file limit, no migrations, '
-                    'new services or substantial public contract changes. Disclose UI changes and pending UX review. '
+                    'For small-change and ui-small keep one clear outcome, straightforward acceptance criteria, '
+                    'a localized change using existing patterns and contracts, and a comfortably reviewable diff. '
+                    'Above five implementation files across the full task diff, explain why it remains small; '
+                    'file count alone must not trigger escalation. Stop for migrations, new background services '
+                    'or recovery systems, substantial public contract or architectural changes, or broader '
+                    'dependencies or separate design decisions that break those conditions. '
+                    'Disclose UI changes and pending UX review. '
                     '\nRequest: {task_description}\n'
+                    'UX plan: {ux_assessment}\nArchitecture plan: {plan}\n'
+                    'Reviewer findings: {review_text}\n'
                     'Validation results: {validation_report}' + DEFER_CHECKS
                 )), *reviews]
 
@@ -239,13 +248,45 @@ class FinalValidationStep(Step):
                     return await stop('no_progress', 'The repair produced no new committed changes.',
                                       ['Inspect the implementer response and failing checks; provide a concrete repair before continuing.'], checks)
                 for review in self.reviews:
-                    v[review.source_key] = v['implementation']
-                    v[f'{review.source_key}_files'] = v.get('implementation_files', [])
-                    reviewed = await ctx.execute_step(review)
-                    v.update(reviewed.output)
-                    if not reviewed.success or v.get(f'{review.output_namespace}_decision') != 'approved':
-                        return await stop('review', 'Validation repair did not pass source review.',
-                                          ['Address the source review findings and obtain approval before continuing.'], checks)
+                    while True:
+                        v[review.source_key] = v['implementation']
+                        v[f'{review.source_key}_files'] = v.get('implementation_files', [])
+                        reviewed = await ctx.execute_step(review)
+                        v.update(reviewed.output)
+                        decision = v.get(f'{review.output_namespace}_decision')
+                        if reviewed.success and decision == 'consultation_required':
+                            consultation = self.consultations.get(reviewed.next_step)
+                            if consultation:
+                                advice = await ctx.execute_step(consultation)
+                                v.update(advice.output)
+                                if advice.success:
+                                    continue
+                                return await stop('review', advice.error or 'Specialist consultation failed.',
+                                                  ['Resolve the consultation blocker before continuing.'], checks)
+                        if not reviewed.success or decision not in {'approved', 'changes_requested'}:
+                            return await stop('review', reviewed.error or 'Reviewer must return an approval decision for the validation repair.',
+                                              ['Resolve the reviewer response before continuing.'], checks)
+                        if decision == 'approved':
+                            break
+                        count = v.get('source_revision_count', 0)
+                        if count >= MAX_SOURCE_REVISIONS:
+                            failure = source_revision_failure(ctx, [f'{review.output_namespace}_decision'])
+                            v.update(failure.output)
+                            return await stop('review', failure.error,
+                                              ['Inspect the remaining reviewer findings and clarify or split the task.'], checks)
+                        v['source_revision_count'] = count + 1
+                        await ctx.persist()
+                        revised = await ctx.execute_step(AssignStep(
+                            step_id='validation-source-revision', role='implementer', output_key='implementation',
+                            message_template=repair_step.message_template + (
+                                '\nResolve the reviewer findings above against the UX and architecture plans. '
+                                'Commit the changes and return directly to the reviewer. Do not run checks or publish.'
+                            ),
+                        ))
+                        v.update(revised.output)
+                        if not revised.success or 'SCOPE_ESCALATION' in v.get('implementation', ''):
+                            return await stop('review', revised.error or 'Source revision requires a scope decision.',
+                                              ['Inspect the implementer report and resolve its blocker before continuing.'], checks)
                 await ctx.persist()
         except (ValueError, KeyError, TypeError, OSError, RuntimeError) as exc:
             return await stop('validation', f'Final validation blocked: {exc}',

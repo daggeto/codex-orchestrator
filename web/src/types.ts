@@ -71,6 +71,18 @@ export interface TaskView {
   task: TaskRecord; agents: OwnedAgent[]; workflow: (Pick<WorkflowRun, 'run_id' | 'workflow_name' | 'status' | 'updated_at'> & { state?: JsonObject }) | null;
   steps: StepExecution[]; pending_input: InputRequest[];
   attachments: Attachment[]; messages: TaskMessage[];
+  scope_split?: ScopeSplit | null;
+}
+
+export interface ScopeSuggestion {
+  id: string; title: string; disposition: 'keep' | 'separate'; workflow: string;
+  reason: string; prompt: string; context: string; required_inputs: string[];
+  task_id: string | null; available: boolean;
+}
+export interface ScopeSplit {
+  run_id: string; suggestions: ScopeSuggestion[]; error: string;
+  source_path: string | null; source_branch: string | null; source_commit: string | null;
+  destination_path: string | null; can_start: boolean;
 }
 
 export type MergeState = 'accepted' | 'running' | 'merged' | 'already_integrated' | 'failed' | 'recovery_required';

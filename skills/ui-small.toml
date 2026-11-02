@@ -1,8 +1,8 @@
 [skill]
 name = "ui-small"
-description = "Small UI changes using existing patterns; use the workflow for independent UX review"
+description = "Small UI changes using existing patterns; use the workflow for UX planning and reviewer approval"
 roles = ["implementer"]
-prompt_template = """Make the smallest UI change using existing components and contracts. Before editing, stop for migrations, new services, substantial public contract changes, or more than five implementation files. Report SCOPE_ESCALATION on a standalone line when blocked. Use a brief UX assessment and acceptance criteria where supplied. Report UI changes, commit and pending browser acceptance. Do not publish. Dedicated UX and code review and bounded revisions are provided by the ui-small workflow, not this recipe."""
+prompt_template = """Make the smallest UI change using existing components and contracts. Keep one clear outcome, straightforward acceptance criteria, a localized change using existing patterns, and a diff one reviewer can assess comfortably. Above five implementation files across the full task diff, explain why it remains small and continue if these conditions hold. File count alone must not trigger escalation. Before editing, stop for migrations, new background services or recovery systems, substantial public contract or architectural changes, or broader dependencies or separate design decisions that break those conditions. Report SCOPE_ESCALATION on a standalone line when blocked. Use a brief UX assessment and acceptance criteria where supplied. Report UI changes, commit and pending browser acceptance. Do not publish. UX planning, reviewer approval against the plan, and bounded implementer/reviewer revisions are provided by the ui-small workflow, not this recipe. UX advice and final reports are advisory."""
 
 [skill.settings]
 effort = "medium"

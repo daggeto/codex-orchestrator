@@ -62,12 +62,16 @@ COMMANDS = (
             "starts task-owned workflow agents, waits for the result, and prints the run ID. "
             "Uses the service's project directory unless --cwd is supplied. --workflow selects a workflow "
             "(small-change by default); --api-url selects another service port. Repeat --var/-v KEY=VALUE for inputs. "
-            "small-change uses implementer and reviewer at medium effort, one combined review, and at most one revision. "
+            "small-change uses implementer and reviewer at medium effort, combined review, and up to 10 source revision rounds. The reviewer explains unresolved findings in the saved stop report. "
+            "Small tasks have one clear outcome, straightforward acceptance criteria, a localized change using existing patterns and contracts, "
+            "and a comfortably reviewable diff. Above five implementation files, explain why it remains small; file count alone does not stop work. "
+            "Migrations, new background services or recovery systems, substantial contract or architectural changes, "
+            "or dependencies or design decisions that break those conditions require escalation. "
             "Scope escalation or unresolved review stops with a saved report for an explicit follow-up task; it never publishes. "
             "Existing worktrees are reused without switching branches; Main tasks create one when isolation is needed. "
             "All workflow roles share the resolved checkout and a workspace lease. "
             "Continuing a stopped workflow retains task-owned agents and the workspace lease, and updates the task when execution ends. "
-            "Saved feature runs retain their original routing when its exact definition is supported. "
+            "Saved runs predating reviewer-only approval retain their workspace, implementation, plans, and budget; continuation obtains fresh reviewer approval before completion or publication. "
             "Continuing final validation authorizes fresh QA and up to three repair rounds with source review; repeated failures stop early. QA may request scoped execution approval and retry a sandbox-restricted command once per pass without consuming a repair round, subject to task/repository restrictions and approval decisions. Attempt- and commit-bound evidence is retained. Task pages show unresolved environment blockers, stopped repairs, and recovery actions. "
             "Continuation atomically queues its unarchived task, preventing archive until execution ends. "
             "Legacy workflow runs without an owning task must restart as workspace tasks. "
@@ -114,18 +118,29 @@ COMMANDS = (
             "Requires AGENT_ID MESSAGE. Starts the selected saved non-task agent on demand inside a leased task in a Git checkout. Records task participation and retains continuation settings after interruption. Use --thread/-t to resume a thread and --cwd to set its working directory.",
             ("""make agent-send ARGS='design-agent "Continue the design" --thread THREAD_ID --cwd /path/to/repo'""",)),
     Command("workflow-list", "List workflows and their step counts.", "orch", ("workflow", "list"),
-            "Built-ins are small-change, feature, bugfix, review, research, and pr-completion.",
+            "Built-ins are small-change, ui-small, backend-feature, feature, bugfix, review, research, and pr-completion.",
             ("make workflow-list",)),
     Command("workflow-run", "Run a named workflow with variables and a target directory.", "orch", ("workflow", "run"),
             "Requires NAME. Repeat --var/-v KEY=VALUE for workflow inputs. --cwd sets the target repository; "
             "--roles-dir selects role definitions independently. Required roles are started within the owning task. "
-            "small-change implements directly, combines correctness and usability review, permits one revision, "
-            "and generates its summary without another model call. It never publishes. Scope escalation or "
-            "unresolved findings stop at a saved failed checkpoint; inspect the report and submit a narrower task "
-            "or explicitly select feature. Continuing that checkpoint does not authorize additional implementation. "
+            "small-change implements directly, combines correctness and usability review, permits up to 10 source revisions, "
+            "and generates its summary without another model call. It never publishes. small-change and ui-small "
+            "require one clear outcome, straightforward acceptance criteria, a localized change using existing patterns and contracts, "
+            "and a comfortably reviewable diff. Above five implementation files, explain why it remains small and continue if those conditions hold. "
+            "Migrations, new background services or recovery systems, substantial contract or architectural changes, "
+            "or dependencies or design decisions that break those conditions require escalation. Scope escalation or "
+            "unresolved findings after 10 source revisions stop with the reviewer's explanations at a saved failed checkpoint. Scope reports propose standalone prompts, context, "
+            "required inputs and recommended workflows for retained and separate tasks. The task page can start each "
+            "proposal explicitly in a new worktree from repository Main, with copied attachments and publication disabled, "
+            "and shows a durable task link. Retries recover the same task. Old unstructured reports need manual submission. "
+            "Continuing that checkpoint does not authorize additional implementation. "
             "pr-completion starts implementer and reviewer, publishes committed changes, "
             "and monitors/repairs CI. feature runs UX planning, technical planning, then implementation and code review. "
-            "Revisions return directly to code review; only material decisions trigger a scoped UX or architecture consultation. "
+            "In every implementation flow the reviewer owns source approval and checks the request against all supplied UX and architecture criteria. "
+            "Revisions, including source revisions after QA repairs, return directly to the reviewer until approval, subject to revision and step limits. "
+            "Unclear decisions stop without requesting implementation; unchanged rejected commits stop with the implementer report. "
+            "ui-small uses a brief UX plan and reviewer approval; backend-feature uses architecture planning and reviewer approval; bugfix uses investigation and reviewer approval. "
+            "Only material decisions trigger a scoped UX or architecture consultation. "
             "Substantial UI work can receive one final advisory UX report: violations remain unresolved follow-up work "
             "without another revision cycle. Completion compiles saved reports without another architect assignment. "
             "Source inspection does not establish visual/usability validation. Optional feature publication "
@@ -135,7 +150,7 @@ COMMANDS = (
             "Existing PR/MR source and target branches are resolved before isolation and preserved when publishing from the task checkout. "
             "Worktrees and session history survive shutdown. Web deletion verifies a private archive before removal; "
             "failed captures retain the checkout. After checkout removal, managed attachments for all tasks owned by that worktree are permanently purged; purge failures remain retryable and history cannot restore files. Completing or archiving a task retains attachments; restarting independently copies available files. Codex backends require lsof and verify listener ownership before connecting. "
-            "In the web monitor, Continue workflow retries the unfinished step using saved outputs and threads; Restart run starts over. After checkout removal, Restart offers the repository's active Main workspace with normal task isolation and requires explicit omission of unavailable attachments. At its step budget the run pauses; Continue workflow can explicitly approve 20 more steps, including for older limit-failed runs with checkpoints. Continuation may publish when publication was enabled in the original inputs. "
+            "In the web monitor, Continue workflow retries the unfinished step using saved outputs and threads with the current workflow definition when the saved step exists or has a supported review migration; older review gates migrate to fresh reviewer approval while retaining completed implementation, and continuation authorizes fresh final validation; Restart run starts over. After checkout removal, Restart offers the repository's active Main workspace with normal task isolation and requires explicit omission of unavailable attachments. At its step budget the run pauses; Continue workflow can explicitly approve 20 more steps, including for older limit-failed runs with checkpoints. Continuation may publish when publication was enabled in the original inputs. "
             "See docs/pr-completion.md for its inputs.",
             ("""make workflow-run ARGS='feature -v task_description="Add OAuth login" --cwd /path/to/repo -v mr_base=main'""",
              """make workflow-run ARGS='pr-completion --cwd /path/to/repo --roles-dir ./roles -v required_checks=Vercel'""")),
@@ -173,7 +188,9 @@ COMMANDS = (
             "Runs Vite in web/ with compact task navigation, a reversible task Archive, and task-scoped participant history. "
             "Worktree removal remains a separate confirmed operation. Start make start in another terminal for the API on port 8420. "
             "The development server proxies /api and /health to that API. Task home defaults to small-change "
-            "with local commits and no publication. ui-small adds brief UX assessment and review; backend-feature omits UX stages and discloses UI edits. Implementation workflows finish with applicable QA checks and up to three validation repairs per accepted cycle. QA may request scoped execution approval and retry a sandbox-restricted command once per pass, subject to task/repository restrictions and approval decisions. Failed checks reach the implementer even alongside environment blockers; repeated failures or unresolved blockers stop with task-page recovery guidance. Publication is opt-in for feature/backend-feature and "
+            "with local commits and no publication. Scope stops show suggested task splits with standalone prompts, recommended workflows, "
+            "required inputs, explicit start buttons and persistent links to accepted tasks. "
+            "ui-small adds a brief UX plan, reviewer-owned approval, optional advisory UX reporting, and up to 10 source revision rounds; backend-feature omits UX stages and discloses UI edits. Implementation workflows finish with applicable QA checks and up to three validation repairs per accepted cycle. QA may request scoped execution approval and retry a sandbox-restricted command once per pass, subject to task/repository restrictions and approval decisions. Failed checks reach the implementer even alongside environment blockers; repeated failures or unresolved blockers stop with task-page recovery guidance. Publication is opt-in for feature/backend-feature and "
             "required for pr-completion. The monitor remains read-only.",
             ("make dev", 'make dev ARGS="--port 5174"')),
     Command("preview", "Serve the production web build locally.", "npm", ("run", "preview"),

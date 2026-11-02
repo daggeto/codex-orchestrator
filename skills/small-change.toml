@@ -4,10 +4,15 @@ description = "Make a narrowly scoped local change and stop before substantial e
 roles = ["implementer"]
 tags = ["implementation", "scoped"]
 prompt_template = """Implement the user's request using the smallest safe change and existing patterns.
-Inspect direct dependencies with targeted reads. Before editing, stop and explain
-the smallest safe alternative if this requires a schema migration, a new background
-service or recovery system, a substantial public contract change, or more than five
-implementation files. End an escalation with a standalone SCOPE_ESCALATION line.
+Inspect direct dependencies with targeted reads. Keep one clear outcome, straightforward
+acceptance criteria, a localized change using existing patterns and contracts, and a
+diff one reviewer can assess comfortably. Above five implementation files across the
+full task diff, explain why it remains small and continue if these conditions hold.
+File count alone must not trigger escalation. Before editing, stop and explain the
+smallest safe alternative if this requires a schema migration, a new background
+service or recovery system, a substantial public contract or architectural change,
+or broader dependencies or separate design decisions that break those conditions.
+End an escalation with a standalone SCOPE_ESCALATION line.
 Do not silently expand scope, refactor unrelated code, push, publish, or merge.
 Follow repository validation policy. Add or run tests only when authorized. Report
 the commit, affected files, checks actually run, and pending manual acceptance.

@@ -15,6 +15,7 @@ from orchestrator.state.store import AgentRecord, StateStore, WorkflowRunRecord
 from orchestrator.tasks import Conflict, TaskService
 from orchestrator.workspaces import WorkspaceService
 from orchestrator.workflows.engine import Workflow, WorkflowEngine
+from orchestrator.workflows.builtins import ui_small_workflow
 from orchestrator.workflows.steps import Step, StepResult
 
 
@@ -114,6 +115,32 @@ class WorkflowContinuationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(before, await self.store.get_workflow_run('run'))
         self.orch.spawn_team.assert_not_awaited()
 
+    async def test_changed_definition_continues_saved_step_with_current_routing(self):
+        after = AsyncMock()
+        self.workflow.add_step(ProbeStep('after', after))
+        self.assertNotEqual(self.record.config['workflow_signature'], self.workflow.signature)
+        info = json.loads((await get_run(self.request)).text)
+        self.assertTrue(info['continuation']['available'])
+        self.assertEqual(202, (await accept_continuation(self.request)).status)
+        await self.finish_job()
+        self.first.assert_not_awaited()
+        self.resumed.assert_awaited_once()
+        after.assert_awaited_once()
+        record = await self.store.get_workflow_run('run')
+        self.assertEqual('completed', record.status)
+        self.assertEqual(self.workflow.signature, record.config['workflow_signature'])
+
+    async def test_removed_saved_step_still_rejects_before_claiming_run(self):
+        self.workflow.steps = [self.workflow.steps[0]]
+        before = await self.store.get_workflow_run('run')
+        info = json.loads((await get_run(self.request)).text)
+        self.assertFalse(info['continuation']['available'])
+        response = await accept_continuation(self.request)
+        self.assertEqual(409, response.status)
+        self.assertIn('saved step is unavailable', json.loads(response.text)['error'])
+        self.assertEqual(before, await self.store.get_workflow_run('run'))
+        self.orch.spawn_team.assert_not_awaited()
+
     async def test_reservation_racing_with_acceptance_cannot_change_run(self):
         before = await self.store.get_workflow_run('run')
         claim = self.store.claim_workflow_continuation
@@ -132,6 +159,34 @@ class WorkflowContinuationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(202, (await accept_continuation(self.request)).status)
         await self.finish_job()
         self.orch.spawn_team.assert_awaited_once()
+
+    async def test_old_review_gate_previews_and_accepts_fresh_review_with_budget_extension(self):
+        workflow = ui_small_workflow()
+        self.orch.workflows['ui-small'] = workflow
+        self.record.workflow_name = 'ui-small'
+        self.record.status = 'paused'
+        self.record.config['iteration_limit'] = 40
+        self.record.state['checkpoint'].update(next_step='review-gate', iteration=40)
+        self.record.state['checkpoint']['variables'].update(implementation='Saved work', review_decision='approved')
+        await self.store.save_workflow_run(self.record)
+        info = json.loads((await get_run(self.request)).text)['continuation']
+        self.assertTrue(info['available'])
+        self.assertTrue(info['review_refresh_required'])
+        self.assertTrue(info['requires_extension'])
+        self.assertEqual(info['step'], 'review')
+        self.assertEqual(409, (await accept_continuation(self.request)).status)
+        self.request.json.return_value = {'request_id': 'retry', 'additional_steps': 20}
+        with patch.object(self.orch.tasks, 'schedule') as schedule:
+            self.assertEqual(202, (await accept_continuation(self.request)).status)
+        schedule.call_args.args[1].close()
+        saved = await self.store.get_workflow_run('run')
+        self.assertEqual(saved.config['iteration_limit'], 60)
+        self.assertEqual(saved.state['checkpoint']['iteration'], 40)
+        self.assertEqual(saved.state['checkpoint']['next_step'], 'review')
+        self.assertEqual(saved.state['checkpoint']['variables']['implementation'], 'Saved work')
+        self.assertNotIn('review_decision', saved.state['checkpoint']['variables'])
+        self.assertEqual(saved.state['checkpoint']['variables']['validation_resume_request'], 'retry')
+        self.orch.spawn_team.assert_not_awaited()
 
     async def test_accepted_continuation_blocks_archive_before_execution_starts(self):
         with patch.object(self.orch.tasks, 'schedule') as schedule:

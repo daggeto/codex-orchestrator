@@ -162,6 +162,7 @@ async def get_run(request):
                 'created_at': task['created_at'], 'updated_at': task['updated_at'], 'completed_at': task['completed_at']}})
         return web.json_response({"error": "Workflow run not found"}, status=404)
     workflow = request.app["orch"].workflows.get(record.workflow_name)
+    checkpoint = record.state.get("checkpoint", {})
     reason = None
     if record.status not in {"failed", "interrupted", "cancelled", "paused"}:
         reason = "Only stopped runs can continue"
@@ -172,11 +173,10 @@ async def get_run(request):
     else:
         from orchestrator.workflows.engine import continuation_checkpoint
         try:
-            continuation_checkpoint(workflow, record)
+            checkpoint = continuation_checkpoint(workflow, record)
         except ValueError as exc:
             reason = str(exc)
     iteration_limit = record.config.get("iteration_limit", workflow.max_iterations if workflow else 20)
-    checkpoint = record.state.get("checkpoint", {})
     requires_extension = (checkpoint.get("next_step") != "__end__"
                           and checkpoint.get("iteration", 0) >= iteration_limit)
     task = await request.app['orch'].store.one('SELECT task_id FROM workflow_runs WHERE run_id=?', (record.run_id,))
@@ -189,7 +189,10 @@ async def get_run(request):
         "available": reason is None, "reason": reason,
         "requires_extension": requires_extension,
         "iteration_limit": iteration_limit, "next_iteration_limit": iteration_limit + 20,
-        "step": record.state.get("checkpoint", {}).get("next_step", record.state.get("current_step")),
+        "step": checkpoint.get("next_step", record.state.get("current_step")),
+        "review_refresh_required": bool(workflow and workflow.review_policy
+                                       and record.config.get("review_policy") != workflow.review_policy
+                                       and reason is None),
     }})
 
 
@@ -260,7 +263,9 @@ async def _accept_continuation(request):
             if await _run(root, "git", "branch", "--show-current") != variables.get("task_branch"):
                 raise ValueError("The saved worktree is on a different branch")
             await _run(root, "git", "merge-base", "--is-ancestor", variables["task_baseline"], "HEAD")
-        if checkpoint["next_step"] == "validate":
+        if checkpoint["next_step"] == "validate" or (
+            workflow.review_policy and record.config.get("review_policy") != workflow.review_policy
+        ):
             # Only an explicitly accepted Continue authorizes another QA pass.
             variables["validation_resume_request"] = token
         record.state["continuations"] = [*attempts, {

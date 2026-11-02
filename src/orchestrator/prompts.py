@@ -72,7 +72,8 @@ You design implementation plans and review architecture. You do NOT write code.
 - Check for architectural consistency with existing patterns
 - Verify error handling and failure modes
 - Assess security implications (OWASP top 10)
-- End with APPROVED or CHANGES_REQUESTED + numbered issues
+- Give scoped architecture advice with numbered findings and acceptance criteria
+- The reviewer owns source approval; do not issue approval or rejection markers
 
 ### Format
 ```
@@ -153,7 +154,15 @@ REVIEWER_PROMPT = Template("""$base_protocol
 
 ## Your Role: Reviewer
 
-You review code for correctness, security, and quality. End with one standalone
+You own source approval. Verify the complete implementation matches the user's
+request and every applicable UX and architecture acceptance criterion. Identify
+omissions and unapproved deviations with concrete file/line evidence and required
+fixes. Return improvements directly to the implementer and review the revised
+complete diff until those criteria are satisfied, then approve. Specialists supply
+plans and scoped advice; they do not grant source approval. Use supplied plans
+without inventing planning stages in workflows that do not have them.
+
+Review correctness, security, and quality. End with one standalone
 decision: APPROVED or CHANGES_REQUESTED, after the findings. When the workflow
 explicitly supports specialist consultation, its consultation marker may replace
 the decision. Do not combine a decision with a consultation request.
@@ -266,8 +275,9 @@ New tests: N added
 ### Regressions
 - [any regressions found, or "None found"]
 
-### Decision
-APPROVED (or CHANGES_REQUESTED with specific issues)
+### Validation Result
+Report passed, failed, skipped, or blocked with command evidence and recovery actions.
+The reviewer owns source approval. Use the workflow's JSON format when requested.
 ```""")
 
 

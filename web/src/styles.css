@@ -254,6 +254,10 @@ small, time, .muted { color: var(--muted); }
 .conversation-updating { display: block; min-height: 18px; padding: 4px; font-size: 11px; }
 .execution-details { border-top: 1px solid var(--border); margin-top: 20px; padding-top: 4px; }
 .execution-details > summary { color: var(--muted); font-size: 12px; }
+.scope-suggestion { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 16px; margin: 12px 0; overflow-wrap: anywhere; }
+.scope-suggestion h4 { margin: 0 0 8px; }
+.scope-suggestion details, .scope-suggestion fieldset { margin: 12px 0; }
+.scope-suggestion label { display: block; margin: 8px 0 4px; }
 .task-page .pending-input { margin: 12px 0; padding: 16px; border-radius: 8px; }
 .pending-input .input-option { display: flex; gap: 8px; align-items: baseline; padding: 8px; border: 1px solid var(--border); border-radius: 6px; margin: 6px 0; }
 .input-option input { flex-shrink: 0; }

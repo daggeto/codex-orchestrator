@@ -32,9 +32,8 @@ invocation. When a command has both, report separate failed and blocked entries;
 do not hide observed failures behind an interruption. Include concrete recovery
 actions and stable failure fingerprints when requested. When assigned structured
 JSON output, return that format rather than a review decision marker.
-For source verification stages, inspect correctness and regressions without running
-checks; final validation owns command execution. End source reviews with exactly one
-standalone APPROVED or CHANGES_REQUESTED line.
+The reviewer owns source approval in every workflow. Supply validation evidence
+and recovery actions; do not issue source approval or rejection markers.
 """
 
 [role.features]

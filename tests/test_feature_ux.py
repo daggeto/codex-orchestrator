@@ -50,7 +50,7 @@ class FeatureUXTests(unittest.IsolatedAsyncioTestCase):
         result, ctx, agent = await self.review('Required fix\nCHANGES_REQUESTED')
         self.assertEqual(result.next_step, 'revise')
         ctx.variables.update(result.output)
-        with patch('orchestrator.workflows.steps.task_snapshot', AsyncMock(return_value='head')), \
+        with patch('orchestrator.workflows.steps.task_snapshot', AsyncMock(return_value='revised-head')), \
              patch('orchestrator.workflows.merge_request._run', AsyncMock(return_value='')):
             revised = await workflow.get_step('revise').execute(ctx)
         self.assertEqual(revised.next_step, 'review')
@@ -93,7 +93,7 @@ class FeatureUXTests(unittest.IsolatedAsyncioTestCase):
         text = 'P1 form.tsx:12: keyboard flow broken. Follow-up: restore focus.\nCHANGES_REQUESTED'
         result, ctx, _ = await self.review(text, 'ux-report')
         self.assertTrue(result.success)
-        self.assertEqual(result.next_step, 'done')
+        self.assertEqual(result.next_step, 'validate')
         self.assertEqual(result.output['ux_report_text'], text)
         self.assertEqual(result.output['ux_report_status'], 'reported')
         self.assertNotIn('ux_review_decision', result.output)
@@ -114,7 +114,7 @@ class FeatureUXTests(unittest.IsolatedAsyncioTestCase):
         ctx.variables.update(assessment.output)
         self.assertEqual((await workflow.get_step('final-ux-gate').execute(ctx)).next_step, 'ux-report')
         ctx.variables['ux_final_required'] = False
-        self.assertEqual((await workflow.get_step('final-ux-gate').execute(ctx)).next_step, 'done')
+        self.assertEqual((await workflow.get_step('final-ux-gate').execute(ctx)).next_step, 'validate')
         reviewer, _, _ = await self.review('FINAL_UX_REVIEW_REQUIRED\nAPPROVED')
         self.assertTrue(reviewer.output['ux_final_required'])
         self.assertEqual(reviewer.next_step, 'final-ux-gate')
