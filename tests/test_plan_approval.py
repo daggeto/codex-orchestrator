@@ -8,11 +8,12 @@ from orchestrator.workflows.plan_approval import PlanApprovalStep
 
 class PlanApprovalTests(unittest.IsolatedAsyncioTestCase):
     def context(self):
-        return SimpleNamespace(variables={'task_description': 'Use a design system', 'ux_assessment': 'UX criteria', 'plan': '# Plan\nUse components'})
+        return SimpleNamespace(registry=SimpleNamespace(workflow_recovery=None), variables={'task_description': 'Use a design system', 'ux_assessment': 'UX criteria', 'plan': '# Plan\nUse components'})
 
     async def execute(self, ctx):
         step = feature_workflow().get_step('plan-approval')
-        with patch('orchestrator.workflows.plan_approval.task_snapshot', AsyncMock(return_value='head')):
+        with patch('orchestrator.workflows.plan_approval.task_snapshot', AsyncMock(return_value='head')), \
+             patch('orchestrator.recovery.checkout_evidence', AsyncMock(return_value={'head': 'head'})):
             result = await step.execute(ctx)
         ctx.variables.update(result.output)
         return result
@@ -70,7 +71,8 @@ class PlanApprovalTests(unittest.IsolatedAsyncioTestCase):
         workflow = Workflow('custom', steps=[Placeholder('research'), step, Placeholder('build')])
         self.assertEqual(workflow.required_roles, ['researcher'])
         ctx = SimpleNamespace(variables={'proposal': '# Research proposal'})
-        with patch('orchestrator.workflows.plan_approval.task_snapshot', AsyncMock(return_value='head')):
+        with patch('orchestrator.workflows.plan_approval.task_snapshot', AsyncMock(return_value='head')), \
+             patch('orchestrator.recovery.checkout_evidence', AsyncMock(return_value={'head': 'head'})):
             result = await step.execute(ctx)
         self.assertEqual(result.output['plan_approval']['targets'], {'research': 'Research'})
         self.assertEqual(result.pause_reason, 'waiting_for_plan_approval')

@@ -110,6 +110,7 @@ class WorktreeTests(unittest.IsolatedAsyncioTestCase):
 
         self.ctx.variables['create_mr'] = True
         with patch('orchestrator.workflows.merge_request._run', run), \
+             patch('orchestrator.workflows.merge_request.task_worktree_name', return_value='task-test'), \
              patch('orchestrator.workflows.merge_request.shutil.which', return_value='/bin/gh'), \
              patch('orchestrator.workflows.merge_request._open_requests', AsyncMock(return_value=[
                  {'url': 'https://github.com/example/repo/pull/1', 'base': 'release', 'branch': 'main'}])):

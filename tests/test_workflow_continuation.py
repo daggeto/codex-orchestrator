@@ -136,7 +136,7 @@ class WorkflowContinuationTests(unittest.IsolatedAsyncioTestCase):
         info = json.loads((await get_run(self.request)).text)
         self.assertFalse(info['continuation']['available'])
         response = await accept_continuation(self.request)
-        self.assertEqual(409, response.status)
+        self.assertEqual(400, response.status)
         self.assertIn('saved step is unavailable', json.loads(response.text)['error'])
         self.assertEqual(before, await self.store.get_workflow_run('run'))
         self.orch.spawn_team.assert_not_awaited()

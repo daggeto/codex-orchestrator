@@ -22,7 +22,8 @@ class FeatureUXTests(unittest.IsolatedAsyncioTestCase):
                          plan='Technical plan', implementation='Changes',
                          implementation_files=['form.tsx'], mr_status='prepared', mr_url='',
                          mr_branch='feature', mr_base='main', review_decision='approved',
-                         review_commit='head')
+                         review_commit='head', plan_approval={'status': 'approved'},
+                         approved_plan='Technical plan\nPreserve labels')
         return SimpleNamespace(variables=variables, get_agent_for_role=lambda role: agent,
                                acquire_thread=AsyncMock(return_value='thread'),
                                persist_step_thread=AsyncMock()), agent
@@ -53,6 +54,7 @@ class FeatureUXTests(unittest.IsolatedAsyncioTestCase):
         with patch('orchestrator.workflows.steps.task_snapshot', AsyncMock(return_value='revised-head')), \
              patch('orchestrator.workflows.merge_request._run', AsyncMock(return_value='')):
             revised = await workflow.get_step('revise').execute(ctx)
+        self.assertTrue(revised.success, revised.error)
         self.assertEqual(revised.next_step, 'review')
         prompt = agent.send_message.call_args.args[1]
         for text in ('Required fix', 'Preserve labels', 'Technical plan'):
@@ -137,13 +139,22 @@ class FeatureUXTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.success)
         self.assertIn('changed during review', result.error)
 
+    async def test_implementation_still_requires_explicit_plan_approval(self):
+        ctx, agent = self.context()
+        ctx.variables['plan_approval'] = {'status': 'waiting'}
+        ctx.variables.pop('approved_plan')
+        result = await feature_workflow().get_step('implement').execute(ctx)
+        self.assertFalse(result.success)
+        self.assertIn('Developer plan approval is required', result.error)
+        agent.send_message.assert_not_awaited()
+
     async def test_both_plans_reach_implementation_and_reviewer(self):
         workflow = feature_workflow()
         ctx, agent = self.context()
         ctx.variables.pop('task_worktree')
         for step_id in ('plan', 'implement', 'review'):
             result = await workflow.get_step(step_id).execute(ctx)
-            self.assertTrue(result.success)
+            self.assertTrue(result.success, result.error)
             self.assertIn('Preserve labels', agent.send_message.call_args.args[1])
         self.assertIn('tradeoffs', workflow.get_step('plan').message_template)
         self.assertIn('backend-only', workflow.get_step('ux-assess').message_template)

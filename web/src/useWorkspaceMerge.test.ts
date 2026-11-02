@@ -134,7 +134,7 @@ describe('saved merge reconciliation', () => {
     (['before', 'after'] as const).map(timing => ({ state, timing }))))(
     'removes obsolete timeout guidance when POST fails $timing polling confirms $state', async ({ state, timing }) => {
       let reject!: (reason: Error) => void;
-      harness.get.mockResolvedValue(eligibility);
+      harness.get.mockResolvedValueOnce(eligibility).mockRejectedValue(new Error('Status lookup unavailable'));
       harness.post.mockReturnValue(new Promise((_resolve, fail) => { reject = fail; }));
       vi.spyOn(crypto, 'randomUUID').mockReturnValue(operationId);
       const submission = render().merge();
