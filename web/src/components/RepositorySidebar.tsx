@@ -1,3 +1,4 @@
+import { taskListUrl } from '../taskUrls';
 import { Button } from './ui/Button';
 import { Link, useLocation } from 'react-router';
 import { useNavigation } from '../navigation';
@@ -8,9 +9,12 @@ export function RepositorySidebar() {
   const { pathname, search } = useLocation();
   const tasks = [...(data?.tasks || [])];
   if (selectedId && selected.data?.task.task_id === selectedId && !tasks.some(t => t.task_id === selectedId)) tasks.unshift(selected.data.task);
+  const selectedTask = tasks.find(task => task.task_id === selectedId);
+  const contextWorkspace = data?.workspaces.find(workspace => workspace.workspace_id === selectedTask?.workspace_id || pathname === `/workspaces/${workspace.workspace_id}`);
+  const repositoryId = pathname.startsWith('/repositories/') ? pathname.slice('/repositories/'.length) : contextWorkspace?.repository_id || new URLSearchParams(search).get('repository_id');
   const waiting = tasks.filter(task => task.status === 'waiting_input' && !task.archived_at);
   return <aside className="repository-sidebar"><Link className="brand" to="/"><span className="brand-mark" aria-hidden="true">O</span>Orchestrator</Link><nav aria-label="Task navigation">
-    <div className="task-tabs"><Link to="/tasks" aria-current={pathname === '/tasks' && !search.includes('archive') ? 'page' : undefined}>Tasks</Link><Link to="/tasks?tab=archive" aria-current={search.includes('tab=archive') ? 'page' : undefined}>Archive</Link></div>
+    <div className="task-tabs"><Link to={taskListUrl(repositoryId)} aria-current={pathname === '/tasks' && !search.includes('archive') ? 'page' : undefined}>Tasks</Link><Link to={taskListUrl(repositoryId, true)} aria-current={search.includes('tab=archive') ? 'page' : undefined}>Archive</Link></div>
     {!!waiting.length && <section aria-label="Waiting for you"><h2>Waiting for you</h2>{waiting.map(task => <TaskRow key={task.task_id} task={task} selected={task.task_id === selectedId} compact />)}</section>}
     {!data && !error && <p role="status">Loading repositories…</p>}
     {data?.repositories.length === 0 && <p>No repositories yet.</p>}

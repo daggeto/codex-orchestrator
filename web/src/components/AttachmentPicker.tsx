@@ -19,7 +19,7 @@ export function AttachmentPicker({ controller: a, disabled = false }: { controll
   const drop = (event: DragEvent) => { event.preventDefault(); event.stopPropagation(); if (!blocked) void a.select(event.dataTransfer.files); };
   return <div className="attachment-picker" onDragOver={event => event.preventDefault()} onDrop={drop}>
     <input ref={picker} type="file" multiple hidden disabled={blocked} aria-label="Choose attachments" onChange={event => { if (event.target.files) void a.select(event.target.files); event.target.value = ''; }} />
-    <button type="button" className="button secondary" ref={button} disabled={blocked} onClick={() => picker.current?.click()}>Attach files</button>
+    <Button type="button" ref={button} disabled={blocked} onClick={() => picker.current?.click()}>Attach files</Button>
     <small>{a.limits?.enabled ? `Drop files here or use Attach files. Up to ${a.limits.files_per_message} files, ${a.limits.max_file_bytes / 1024 / 1024} MiB each.` : 'Attachments become available after source approval and service configuration.'}</small>
     <ul className="attachment-list">{a.files.map(file => <li key={file.attachment_id}>
       <LocalPreview file={file} /><span className="attachment-name">{file.filename}<small>{(file.byte_count / 1024).toFixed(1)} KiB · {file.state}{file.localError || file.error ? ` · ${file.localError || file.error}` : ''}</small></span>
@@ -28,6 +28,7 @@ export function AttachmentPicker({ controller: a, disabled = false }: { controll
     </li>)}</ul>
     {(!!a.files.length || a.recoveryRequired) && <Button disabled={disabled || a.recovering} onClick={() => void a.recover()}>{a.recoveryRequired ? 'Retry file recovery' : 'Recover uploaded files'}</Button>}
     <p role="status" aria-live="polite">{a.recovering ? 'Recovering uploads…' : a.recoveryRequired ? 'Files must be recovered before sending. Retry file recovery.' : a.files.length ? `${a.files.filter(file => file.state === 'ready').length} of ${a.files.length} files ready` : ''}</p>
+    {!a.durable && <p role="alert">File selections are held only in memory. Keep this page open or reselect files after reloading.</p>}
     {a.error && <p className="error" role="alert">{a.error}</p>}
   </div>;
 }

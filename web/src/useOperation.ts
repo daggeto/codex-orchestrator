@@ -3,16 +3,18 @@ import { prepareAttempt, reconcileAttempt, settleAttempt } from './operationStat
 import type { OperationAttempt } from './operationState';
 
 const records = new Map<string, OperationAttempt>();
+const receipts = new Map<string, OperationAttempt>();
 const listeners = new Set<() => void>();
 const failures = new Set<string>();
 const prefix = 'orchestrator.operation.v1:';
 function notify() { listeners.forEach(listener => listener()); }
 function read(owner: string) {
+  if (failures.has(owner)) return records.get(owner);
   try {
     const raw = localStorage.getItem(prefix + owner);
     const saved = raw ? JSON.parse(raw) as OperationAttempt : undefined;
     if (saved && saved.owner === owner && typeof saved.id === 'string' && ['pending','uncertain','accepted','rejected'].includes(saved.status)) {
-      const receipt = localStorage.getItem(`${prefix}receipt:${saved.id}`);
+      const receipt = localStorage.getItem(`${prefix}accepted:${saved.id}`) || localStorage.getItem(`${prefix}receipt:${saved.id}`);
       const observed = receipt ? reconcileAttempt(saved, JSON.parse(receipt)) : saved;
       const previous = records.get(owner);
       const next = previous?.id === observed.id ? reconcileAttempt(previous, observed) : observed;
@@ -42,11 +44,19 @@ export function useOperation<P>(owner: string, kind: string) {
   }
   function settle(attempt: OperationAttempt<P>, status: OperationAttempt['status'], result?: Record<string, string>, warning?: string) {
     const active = read(owner);
-    const receipt = settleAttempt(active?.id === attempt.id ? active as OperationAttempt<P> : attempt, attempt.id, status, result, warning);
+    let known = receipts.get(attempt.id);
+    try { const stored = localStorage.getItem(`${prefix}accepted:${attempt.id}`) || localStorage.getItem(`${prefix}receipt:${attempt.id}`); if (stored) { const incoming = JSON.parse(stored) as OperationAttempt; known = known ? reconcileAttempt(known, incoming) : incoming; } } catch { failures.add(owner); }
+    const baseline = active?.id === attempt.id ? active as OperationAttempt<P> : attempt;
+    const reconciled = known ? reconcileAttempt(baseline, known as OperationAttempt<P>) : baseline;
+    const receipt = settleAttempt(reconciled, attempt.id, status, result, warning);
     // A's receipt is retained, but A cannot overwrite B's active attempt.
     if (status === 'accepted' || status === 'rejected') {
       const compact = { ...receipt, request: null, fingerprint: '' };
-      try { localStorage.setItem(`${prefix}receipt:${attempt.id}`, JSON.stringify(compact)); } catch { failures.add(owner); }
+      receipts.set(attempt.id, compact);
+      try {
+        if (receipt.status === 'accepted') localStorage.setItem(`${prefix}accepted:${attempt.id}`, JSON.stringify(compact));
+        localStorage.setItem(`${prefix}receipt:${attempt.id}`, JSON.stringify(compact));
+      } catch { failures.add(owner); }
     }
     if (!active || active.id === attempt.id) write(owner, receipt);
     return receipt;

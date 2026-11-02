@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
-import { post, submissionIdentity, clearSubmissionIdentity } from '../api';
+import { post } from '../api';
 import { useNavigation } from '../navigation';
-import { useResource } from '../useResource';
-import type { InputRequest, TaskView } from '../types';
+import type { InputRequest } from '../types';
 import { ContinueRun, RestartRun, ValidationRecovery } from '../components/WorkflowRecovery';
 import { WorkflowTimeline } from '../components/WorkflowTimeline';
 import { AgentHistory } from '../components/AgentConversation';
-import { Chat } from '../components/Chat';
+import { TaskReply } from '../components/TaskReply';
 import { AttachmentList } from '../components/AttachmentList';
 import { PendingInput } from '../components/PendingInput';
 import { ParticipantStrip, TaskContext } from '../components/TaskContext';
@@ -22,8 +21,8 @@ export function TaskPage() {
   return <TaskContent key={taskId} taskId={taskId || ''} />;
 }
 function TaskContent({ taskId }: { taskId: string }) {
-  const { data, error, refresh } = useResource<TaskView>(`/api/tasks/${encodeURIComponent(taskId)}`);
   const navigation = useNavigation();
+  const { data, error, missing, refresh } = navigation.selected;
   const navigate = useNavigate();
   const [failure, setFailure] = useState('');
   const [pending, setPending] = useState('');
@@ -35,7 +34,7 @@ function TaskContent({ taskId }: { taskId: string }) {
     if (data) setRetained(previous => [...previous, ...data.pending_input.filter(input => !previous.some(old => old.request_id === input.request_id))]);
   }, [data]);
 
-  if (!data) return <ResourceState error={!!error}>{error || 'Loading task…'}</ResourceState>;
+  if (!data) return <ResourceState error={!!error}>{missing ? 'Task not found.' : error || 'Loading task…'}</ResourceState>;
   const { task, agents, workflow, steps, pending_input } = data;
   const variables = workflow?.state?.final_variables ?? workflow?.state?.variables;
   const report = variables && typeof variables === 'object' && 'summary' in variables
@@ -44,39 +43,40 @@ function TaskContent({ taskId }: { taskId: string }) {
   const busy = ['queued','waiting_input'].includes(task.status) || task.phase === 'Agent running' || task.phase === 'Starting agents';
   const participant = agents.find(a => a.agent_id === selected) || agents[0];
   async function action(name: string, body = {}) {
-    if (lock.current) return;
+    if (lock.current || error) return;
     lock.current = true; setPending(name); setFailure('');
     try { await post(`/api/tasks/${encodeURIComponent(taskId)}/${name}`, body); refresh(); navigation.refresh(); }
-    catch (reason) { setFailure(String(reason)); }
+    catch (reason) { setFailure(`${String(reason)}. Acceptance is unconfirmed. Refresh the task before deciding whether to try again.`); refresh(); navigation.refresh(); }
     finally { lock.current = false; setPending(''); }
   }
   return <section className="task-page"><TaskContext task={task} />
+    {[...retained, ...pending_input.filter(input => !retained.some(old => old.request_id === input.request_id))].filter(input => !dismissed.includes(input.request_id)).map(input => <PendingInput key={input.request_id} input={input} messages={data.messages} attachmentContext={{ workspaceId: task.workspace_id, taskId }} disabled={!!error} inactive={!pending_input.some(active => active.request_id === input.request_id)} onDismiss={() => setDismissed(previous => [...previous, input.request_id])} onResolved={() => { setDismissed(previous => [...previous, input.request_id]); refresh(); }} />)}
     <RecoveryHistory key={taskId} incidents={data.recoveries}
       historyUrl={`/api/tasks/${encodeURIComponent(taskId)}/recoveries`}
-      retryBase={!task.archived_at && ['failed', 'interrupted', 'waiting_input'].includes(task.status) ? `/api/tasks/${encodeURIComponent(taskId)}/recoveries` : undefined}
+      retryBase={!error && !task.archived_at && ['failed', 'interrupted', 'waiting_input'].includes(task.status) ? `/api/tasks/${encodeURIComponent(taskId)}/recoveries` : undefined}
       refresh={() => { refresh(); navigation.refresh(); }} />
-    {error && <p className="error" role="alert">{error} · Showing saved task state.</p>}
-    {data.plan_approval && <PlanApproval key={`${data.plan_approval.id}:${data.plan_approval.revision}`} taskId={taskId} plan={data.plan_approval} disabled={!!error || closed} refresh={() => { refresh(); navigation.refresh(); }} />}
-    {report && <details open className="execution-details"><summary>Implementation report and follow-up work</summary><MessageContent text={report} /></details>}
+    {error && <p className="error" role="alert">{error} · Showing saved task state. <Button onClick={refresh}>Retry task</Button></p>}
+    {data.plan_approval?.status !== 'approved' && data.plan_approval && <details className="execution-details"><summary>Original request for this plan</summary><MessageContent text={task.prompt} /></details>}
+    {data.plan_approval && <PlanApproval key={`${taskId}:${data.plan_approval.id}`} taskId={taskId} plan={data.plan_approval} disabled={!!error || closed} refresh={() => { refresh(); navigation.refresh(); }} />}
     {data.scope_split && <ScopeSuggestions taskId={taskId} split={data.scope_split} disabled={!!error || !!pending}
       onStarted={() => { refresh(); navigation.refresh(); }} />}
     {workflow && workflow.state?.phase !== 'waiting_for_plan_approval' && ['interrupted', 'failed', 'cancelled', 'paused'].includes(workflow.status) && <section aria-label="Workflow recovery">
       <ValidationRecovery state={workflow.state} />
-      <ContinueRun key={`continue:${workflow.run_id}:${workflow.updated_at}`} run={workflow} disabled={!!error || !!pending} />
+      <ContinueRun key={`continue:${workflow.run_id}`} run={workflow} disabled={!!error || !!pending} />
       <RestartRun key={`restart:${workflow.run_id}`} run={workflow} disabled={!!error || !!pending}
         select={(_runId, newTaskId) => navigate(newTaskId ? `/tasks/${encodeURIComponent(newTaskId)}` : '/monitor')} />
     </section>}
+    <ParticipantStrip agents={agents} taskId={task.task_id} selected={participant?.agent_id} onSelect={setSelected} />
+    <section className="conversation-panel" aria-label="Task conversation">{participant ? <AgentHistory key={`${task.task_id}:${participant.agent_id}`} agentId={participant.agent_id} taskId={task.task_id} attachments={data.attachments} label={participant.role} /> : <ResourceState>{closed ? 'No recorded agent conversation.' : 'Waiting for an agent to join…'}</ResourceState>}
+      {task.kind === 'agent' && <TaskReply taskId={taskId} workspaceId={task.workspace_id} messages={data.messages} disabled={!!error} unavailable={closed || busy || !!pending} refresh={refresh} />}
+    </section>
+    {report && <details open className="execution-details"><summary>Implementation report and follow-up work</summary><MessageContent text={report} /></details>}
     {!!data.attachments?.length && <section aria-label="Task attachments"><h2>Task files</h2><p>Available to every task role. Removing this worktree permanently deletes these files.</p><AttachmentList taskId={taskId} attachments={data.attachments} />
       <details><summary>Files by message</summary>{data.messages?.filter(message => message.attachment_ids.length).map(message => <article key={message.message_id}><strong>{message.origin === 'initial' ? 'Original request' : message.origin === 'input_response' ? 'Question response' : 'Follow-up'}</strong><MessageContent text={message.text} /><AttachmentList taskId={taskId} attachments={data.attachments.filter(file => message.attachment_ids.includes(file.attachment_id))} /></article>)}</details></section>}
-    <ParticipantStrip agents={agents} taskId={task.task_id} selected={participant?.agent_id} onSelect={setSelected} />
-    {[...retained, ...pending_input.filter(input => !retained.some(old => old.request_id === input.request_id))].filter(input => !dismissed.includes(input.request_id)).map(input => <PendingInput key={input.request_id} input={input} attachmentContext={{ workspaceId: task.workspace_id, taskId }} inactive={!pending_input.some(active => active.request_id === input.request_id)} onDismiss={() => setDismissed(previous => [...previous, input.request_id])} onResolved={() => { setDismissed(previous => [...previous, input.request_id]); refresh(); }} />)}
-    <section className="conversation-panel" aria-label="Task conversation">{participant ? <AgentHistory key={`${task.task_id}:${participant.agent_id}`} agentId={participant.agent_id} taskId={task.task_id} attachments={data.attachments} label={participant.role} /> : <ResourceState>{closed ? 'No recorded agent conversation.' : 'Waiting for an agent to join…'}</ResourceState>}
-      {task.kind === 'agent' && !closed && <Chat label="Continue conversation" rows={3} draftKey={`task:${task.task_id}`} messages={[]} attachmentContext={{ workspaceId: task.workspace_id, taskId }} disabled={busy || !!pending} onSubmit={async (message, attachments) => { const payload = { message, ...attachments }; await post(`/api/tasks/${encodeURIComponent(task.task_id)}/messages`, { ...payload, idempotency_key: submissionIdentity(`task:${taskId}:submission`, payload) }); clearSubmissionIdentity(`task:${taskId}:submission`); refresh(); }} />}
-    </section>
     <div className="task-controls">
-      {task.kind === 'agent' && (!closed || task.status === 'cancelled') && <Button disabled={busy || !!pending} onClick={() => void action('complete')}>{pending === 'complete' ? 'Completing…' : 'Mark complete'}</Button>}
-      {!closed && <Button variant="danger" disabled={!!pending} onClick={() => void action('cancel')}>{pending === 'cancel' ? 'Cancelling…' : 'Cancel execution'}</Button>}
-      <Button disabled={!closed || !!pending} onClick={() => void action('archive', { archived: !task.archived_at })}>{pending === 'archive' ? 'Saving…' : task.archived_at ? 'Restore task' : 'Archive task'}</Button>
+      {task.kind === 'agent' && (!closed || task.status === 'cancelled') && <Button disabled={!!error || busy || !!pending} onClick={() => void action('complete')}>{pending === 'complete' ? 'Completing…' : 'Mark complete'}</Button>}
+      {!closed && <Button variant="danger" disabled={!!error || !!pending} onClick={() => void action('cancel')}>{pending === 'cancel' ? 'Cancelling…' : 'Cancel execution'}</Button>}
+      <Button disabled={!!error || !closed || !!pending} onClick={() => void action('archive', { archived: !task.archived_at })}>{pending === 'archive' ? 'Saving…' : task.archived_at ? 'Restore task' : 'Archive task'}</Button>
       {!closed && <small>Complete or cancel this task before archiving.</small>}
     </div>
     {failure && <p role="alert" className="error">{failure}</p>}

@@ -1,3 +1,4 @@
+import { Checkbox } from './components/ui/primitives/checkbox';
 import { useEffect, useRef, useState } from 'react';
 import { agentStatus, ApiError, branchDiff, taskDetail, taskRelationships } from './api';
 import type { JsonObject, MonitorEvent, TaskDetail, WorkflowRun, Workspace } from './types';
@@ -50,7 +51,7 @@ function Events({ events, gap }: { events: MonitorEvent[]; gap: boolean }) {
   const panel = useRef<HTMLDivElement>(null);
   useEffect(() => { if (follow && panel.current) panel.current.scrollTop = panel.current.scrollHeight; }, [events, follow]);
   return <Card>
-    <div className="section-title"><h2>Live events</h2><label><input type="checkbox" checked={follow} onChange={e => setFollow(e.target.checked)} /> Follow</label></div>
+    <div className="section-title"><h2>Live events</h2><label><Checkbox checked={follow} onCheckedChange={setFollow} /> Follow</label></div>
     <p className="muted">Latest 1,000 events. Events have no replay and may be dropped.</p>
     {gap && <ResourceState>Connection interrupted; logs may have a gap.</ResourceState>}
     <div className="events" ref={panel} tabIndex={0} aria-label="Live event stream">
@@ -94,10 +95,11 @@ export function Monitor() {
       actions={<Badge role="status" className={`connection ${monitor.connection}`}>{connectionLabels[monitor.connection]}{monitor.stale && ' · Data stale'}</Badge>} />
     {monitor.stale && <ResourceState>{monitor.updatedAt ? 'Data stale. Showing the last available snapshot.' : 'Waiting for the first snapshot.'} Workflow continuation and restart are disabled until fresh data is available.</ResourceState>}
     {monitor.error && <p className="error" role="alert">{monitor.error}. Previous data is retained. Check that the orchestrator API is running.</p>}
+    {!monitor.hasSnapshot && <ResourceState>Loading agents, tasks, runs, and workspaces…</ResourceState>}
     <div className="monitor-layout">
       <aside>
-        <Card><h2>Agents ({data.agents.length})</h2>
-          {!data.agents.length && <ResourceState>No agents reported.</ResourceState>}
+        <Card><h2>Agents ({monitor.hasSnapshot ? data.agents.length : '…'})</h2>
+          {monitor.hasSnapshot && !data.agents.length && <ResourceState>No agents reported.</ResourceState>}
           {data.agents.map(agent => {
             const currentTasks = data.tasks.filter(t => active(t.status) && (t.assigned_agent === agent.agent_id ||
               taskRelationships(t, data.workspaces).agentId === agent.agent_id));
@@ -109,22 +111,22 @@ export function Monitor() {
             </Button>;
           })}
         </Card>
-        <Card><h2>Tasks ({tasks.length})</h2>{!tasks.length && <ResourceState>No tasks recorded.</ResourceState>}
+        <Card><h2>Tasks ({monitor.hasSnapshot ? tasks.length : '…'})</h2>{monitor.hasSnapshot && !tasks.length && <ResourceState>No tasks recorded.</ResourceState>}
           {tasks.map(item => <Button className={`row ${selected('task', item.item_id) ? 'selected' : ''}`} key={item.item_id} aria-pressed={selected('task', item.item_id)} onClick={() => select({ kind: 'task', id: item.item_id })}>
             <strong>{item.title}</strong><span><Badge>{item.status}</Badge> · Priority {item.priority}</span><small>{item.updated_at}</small>
           </Button>)}
         </Card>
-        <Card><h2>Workflow runs ({runs.length})</h2>{!runs.length && <ResourceState>No workflow runs recorded.</ResourceState>}
+        <Card><h2>Workflow runs ({monitor.hasSnapshot ? runs.length : '…'})</h2>{monitor.hasSnapshot && !runs.length && <ResourceState>No workflow runs recorded.</ResourceState>}
           {runs.map(run => <div className="workflow-run" key={run.run_id}><Button className={`row ${selected('run', run.run_id) ? 'selected' : ''}`} aria-pressed={selected('run', run.run_id)} onClick={() => select({ kind: 'run', id: run.run_id })}>
             <strong>{run.workflow_name}</strong><span><Badge>{run.status}</Badge> · {run.run_id.slice(0, 12)}</span><small>{run.updated_at}</small>
           </Button>
             {['interrupted', 'failed', 'cancelled', 'paused'].includes(run.status) && <>
-              <ContinueRun key={`${run.run_id}:${run.updated_at}`} run={run} disabled={monitor.stale} />
+              <ContinueRun key={run.run_id} run={run} disabled={monitor.stale} />
               <RestartRun run={run} disabled={monitor.stale} select={id => select({ kind: 'run', id })} />
             </>}
           </div>)}
         </Card>
-        <Card><h2>Workspaces ({data.workspaces.length})</h2>{!data.workspaces.length && <ResourceState>No registered workspaces.</ResourceState>}
+        <Card><h2>Workspaces ({monitor.hasSnapshot ? data.workspaces.length : '…'})</h2>{monitor.hasSnapshot && !data.workspaces.length && <ResourceState>No registered workspaces.</ResourceState>}
           {data.workspaces.map(w => <Button className={`row ${selected('workspace', w.worktree_id) ? 'selected' : ''}`} key={w.worktree_id} aria-pressed={selected('workspace', w.worktree_id)} onClick={() => select({ kind: 'workspace', id: w.worktree_id })}>
             <strong>{w.branch}</strong><span><Badge>{w.status}</Badge></span><small>{w.path}</small>
           </Button>)}

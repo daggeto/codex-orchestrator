@@ -8,6 +8,7 @@ export function prepareAttempt<P>(current: OperationAttempt<P> | undefined, inpu
   owner: string; kind: string; request: P; draftVersion?: number; id?: string;
 }): OperationAttempt<P> {
   const fingerprint = JSON.stringify(input.request);
+  if (current && (current.owner !== input.owner || current.kind !== input.kind)) throw new Error('Operation identity belongs to another action.');
   if (current && (current.status === 'pending' || current.status === 'uncertain')) {
     if (current.fingerprint !== fingerprint) throw new Error('A saved request still needs reconciliation. Check the saved attempt before submitting changed content.');
     return current;
@@ -19,6 +20,7 @@ export function reconcileAttempt<P>(current: OperationAttempt<P>, observation: O
   if (current.status === 'accepted') return current;
   if (observation.status === 'accepted') return { ...observation, request: null, fingerprint: '', warning: undefined };
   if (current.status === 'rejected') return current;
+  if (observation.status === 'rejected') return { ...observation, request: null, fingerprint: '' };
   return observation;
 }
 export function settleAttempt<P>(current: OperationAttempt<P>, id: string, status: OperationAttempt['status'], result?: Record<string, string>, warning?: string) {

@@ -3,6 +3,8 @@
   font-size: 14px;
   --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px;
   --radius: .5rem;
+  --radius-sm: .25rem; --radius-md: .375rem; --radius-lg: .5rem; --radius-xl: .75rem;
+  --font-heading: 'Segoe UI', system-ui, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
   --task-row-height: 40px; --task-icon-size: 16px; --task-gap: 8px; --conversation-width: 960px;
   color-scheme: dark;

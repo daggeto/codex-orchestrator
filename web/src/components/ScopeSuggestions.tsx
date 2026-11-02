@@ -1,4 +1,7 @@
-import { useId, useRef, useState } from 'react';
+import { useOperation } from '../useOperation';
+import { Textarea } from './ui/primitives/textarea';
+import { FieldSet } from './ui/primitives/field';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Link } from 'react-router';
 import { post } from '../api';
 import type { ScopeSplit, ScopeSuggestion } from '../types';
@@ -31,22 +34,28 @@ function Suggestion({ taskId, runId, item, disabled, onStarted }: {
   taskId: string; runId: string; item: ScopeSuggestion; disabled: boolean; onStarted: () => void;
 }) {
   const prefix = useId();
-  const [answers, setAnswers] = useState<string[]>(() => item.required_inputs.map(() => ''));
+  const draftKey = `scope-answers:${taskId}:${runId}:${item.id}`;
+  const [answers, setAnswers] = useState<string[]>(() => { try { const saved = JSON.parse(sessionStorage.getItem(draftKey) || 'null'); return Array.isArray(saved) && saved.length === item.required_inputs.length && saved.every(value => typeof value === 'string') ? saved : item.required_inputs.map(() => ''); } catch { return item.required_inputs.map(() => ''); } });
+  const operation = useOperation<{ run_id: string; answers: string[] }>(`scope:${taskId}:${runId}:${item.id}`, 'scope-suggestion');
+  const [durable, setDurable] = useState(true);
+  useEffect(() => { try { sessionStorage.setItem(draftKey, JSON.stringify(answers)); } catch { setDurable(false); } }, [draftKey, answers]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [accepted, setAccepted] = useState<string | null>(null);
   const [uncertain, setUncertain] = useState(false);
   const lock = useRef(false);
-  const created = item.task_id || accepted;
+  const created = item.task_id || accepted || (operation.current?.status === 'accepted' ? operation.current.result?.task_id : null);
   async function start() {
     if (lock.current || disabled || created) return;
     lock.current = true; setBusy(true); setError('');
+    const attempt = operation.unresolved ? operation.current! : operation.prepare({ run_id: runId, answers });
     try {
       const result = await post<{ task_id: string }>(
-        `/api/tasks/${encodeURIComponent(taskId)}/scope-suggestions/${item.id}/start`, { run_id: runId, answers });
+        `/api/tasks/${encodeURIComponent(taskId)}/scope-suggestions/${item.id}/start`, attempt.request);
       if (!result.task_id) throw new Error('The service did not return the new task link.');
-      setAccepted(result.task_id); setUncertain(false); onStarted();
+      operation.settle(attempt, 'accepted', { task_id: result.task_id }); setAccepted(result.task_id); setUncertain(false); onStarted();
     } catch (reason) {
+      operation.settle(attempt, 'uncertain', undefined, String(reason));
       setError(`${reason instanceof Error ? reason.message : 'Unable to start this task'}. Retry to recover the same task if it was accepted.`);
       setUncertain(true);
     } finally { lock.current = false; setBusy(false); }
@@ -57,19 +66,20 @@ function Suggestion({ taskId, runId, item, disabled, onStarted }: {
     <p>{item.reason}</p>
     <details open><summary>Proposed prompt</summary><MessageContent text={item.prompt} /></details>
     <details><summary>Context and dependencies</summary><MessageContent text={item.context} /></details>
-    {!!item.required_inputs.length && <fieldset disabled={busy || !!created}>
+    {!!item.required_inputs.length && <FieldSet disabled={busy || !!created}>
       <legend>Information needed before starting</legend>
       {item.required_inputs.map((question, index) => <div key={index}>
         <label htmlFor={`${prefix}-${index}`}>{question}</label>
-        <textarea id={`${prefix}-${index}`} rows={3} maxLength={16000} required value={answers[index]}
+        <Textarea id={`${prefix}-${index}`} rows={3} maxLength={16000} required value={answers[index]}
           onChange={event => setAnswers(previous => previous.map((answer, position) => position === index ? event.target.value : answer))} />
       </div>)}
-    </fieldset>}
+    </FieldSet>}
     {!item.required_inputs.length && <p>No additional information is required.</p>}
     {!item.available && !created && <p>The suggested workflow is currently unavailable.</p>}
+    {(!durable || !operation.durable) && <p role="alert">Draft and request recovery are held only in memory. Keep this page open.</p>}
     {error && !created && <p role="alert" className="error">{error}</p>}
     {created ? <p role="status">Task created. <Link to={`/tasks/${encodeURIComponent(created)}`}>Open {item.title}</Link></p> :
       <Button variant="primary" disabled={disabled || busy || !item.available || answers.some(answer => !answer.trim())}
-        onClick={() => void start()}>{busy ? 'Starting…' : uncertain ? 'Retry task creation' : 'Start this task'}</Button>}
+        onClick={() => void start()}>{busy ? 'Starting…' : uncertain || operation.unresolved ? 'Check saved task creation' : 'Start this task'}</Button>}
   </article>;
 }

@@ -1,3 +1,5 @@
+import { Input } from './ui/primitives/input';
+import { Button } from './ui/Button';
 import { useEffect, useId, useState } from 'react';
 import { get, post } from '../api';
 import type { Project } from '../types';
@@ -34,20 +36,20 @@ export function ProjectPicker({ value, onChange, disabled }: { value: string; on
     </summary>
     <div className="project-panel">
       <label htmlFor={id}>Server project directory</label>
-      <input id={id} type="search" value={query} disabled={disabled || busy} placeholder="Search projects or enter /absolute/path"
+      <Input id={id} type="search" value={query} disabled={disabled || busy} placeholder="Search projects or enter /absolute/path"
         onChange={event => setQuery(event.target.value)}
         onKeyDown={event => { if (event.key === 'Enter') event.preventDefault(); }} aria-describedby={`${id}-help`} />
       <p className="muted" id={`${id}-help`}>Paths refer to the machine running Orchestrator.</p>
       <div className="project-options" aria-label="Registered projects">
-        {projects.map(project => <button type="button" className={`project-option ${value === project.path ? 'selected' : ''}`}
+        {projects.map(project => <Button type="button" className={`project-option ${value === project.path ? 'selected' : ''}`}
           key={project.path} disabled={disabled || busy || !project.available} aria-pressed={value === project.path} onClick={() => onChange(project.path)}>
           <strong>{project.name}</strong><small>{project.path}{!project.available && ' · unavailable'}</small>
-        </button>)}
+        </Button>)}
         {!projects.length && <p className="muted">No matching registered projects.</p>}
       </div>
       <p>Selected: <code>{value || 'Choose a project'}</code></p>
-      {query.trim() && <div><button type="button" disabled={disabled || busy} onClick={() => { void register(false); }}>Register existing folder</button>
-        <button type="button" disabled={disabled || busy} onClick={() => { void register(true); }}>Create folder and register</button>
+      {query.trim() && <div><Button type="button" disabled={disabled || busy} onClick={() => { void register(false); }}>Register existing folder</Button>
+        <Button type="button" disabled={disabled || busy} onClick={() => { void register(true); }}>Create folder and register</Button>
         <small>Creating a folder also creates missing parent directories.</small></div>}
       {busy && <p role="status">Registering project…</p>}
       {error && <p className="error" role="alert">{error}</p>}

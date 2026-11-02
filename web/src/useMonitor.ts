@@ -4,6 +4,7 @@ import type { MonitorEvent, Selection, Snapshot } from './types';
 
 const empty: Snapshot = { agents: [], tasks: [], runs: [], workspaces: [] };
 export function useMonitor() {
+  const [hasSnapshot, setHasSnapshot] = useState(false);
   const [data, setData] = useState(empty);
   const [selection, select] = useState<Selection>(null);
   const [events, setEvents] = useState<MonitorEvent[]>([]);
@@ -29,7 +30,7 @@ export function useMonitor() {
         if (!disposed) setReachable(true);
         const next = await snapshot(controller.signal);
         if (!disposed) {
-          setData(next); setStale(false); setError(''); setUpdatedAt(new Date().toLocaleTimeString());
+          setData(next); setHasSnapshot(true); setStale(false); setError(''); setUpdatedAt(new Date().toLocaleTimeString());
         }
       } catch (err) {
         if (!disposed) {
@@ -60,5 +61,5 @@ export function useMonitor() {
       disposed = true; controller.abort(); stream.close(); clearInterval(interval); clearTimeout(debounce);
     };
   }, []);
-  return { data, selection, select, events, connection: connectionState(reachable, streamOpen), stale, error, gap, updatedAt };
+  return { data, hasSnapshot, selection, select, events, connection: connectionState(reachable, streamOpen), stale, error, gap, updatedAt };
 }

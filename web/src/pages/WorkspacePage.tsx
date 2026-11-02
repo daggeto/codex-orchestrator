@@ -1,3 +1,4 @@
+import { RemoveWorkspace } from '../components/RemoveWorkspace';
 import { workspaceLabel } from '../workspaceLabel';
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router';
@@ -29,12 +30,10 @@ function WorkspaceDetails({ workspaceId }: { workspaceId: string }) {
   const [before, setBefore] = useState('');
   useEffect(() => { setBefore(''); }, [workspaceId]);
   const history = useResource<{ tasks: TaskRecord[]; next_cursor: string | null }>(`/api/workspaces/${workspaceId}/tasks${before ? `?before=${encodeURIComponent(before)}` : ''}`);
-  const [failure, setFailure] = useState('');
-  const [busy, setBusy] = useState(false);
   if (!workspace) return <ResourceState error={!!error}>{error || (data ? 'Workspace not found' : 'Loading workspace…')}</ResourceState>;
   return <><PageHeader eyebrow={<Link to={`/repositories/${workspace.repository_id}`}>Repository</Link>} title={workspaceLabel(workspace)} description={<code>{workspace.path}</code>} actions={<Badge>{workspace.status}</Badge>} />
     {error && <ResourceState error>{error} · Navigation may be stale.</ResourceState>}
-    {workspace.status === 'active' && <TaskComposer key={workspace.workspace_id} workspace={workspace} />}
+    {workspace.status === 'active' && <TaskComposer key={workspace.workspace_id} workspace={workspace} stale={!!error} />}
     <Card><h2>Workspace details</h2><p>Branch: <code>{workspace.branch || 'Detached HEAD'}</code></p><p className="muted">Checkout: {workspace.kind === 'main' ? 'Main' : 'Worktree'}</p>
     {workspace.kind === 'worktree' && workspace.status !== 'archived' && <div className="workspace-merge">
       <p>Source: <code>{merge.eligibility.data?.source_branch || workspace.branch}</code>{' '}
@@ -44,7 +43,7 @@ function WorkspaceDetails({ workspaceId }: { workspaceId: string }) {
         <br /><code>{merge.eligibility.data?.destination_path || 'No verified main checkout'}</code></p>
       {merge.eligibility.data?.already_integrated && !merge.busy
         ? <p className="muted" role="status">Already merged into local main. No new changes to merge.</p>
-        : <Button disabled={merge.submitting || (!merge.uncertain && (merge.busy || !(merge.eligibility.data?.eligible || merge.eligibility.data?.can_commit))) || busy}
+        : <Button disabled={!!merge.eligibility.error || !!error || merge.submitting || (!merge.uncertain && (merge.busy || !(merge.eligibility.data?.eligible || merge.eligibility.data?.can_commit)))}
         onClick={() => void merge.merge()}>{merge.submitting || ['accepted', 'running'].includes(merge.operation?.state || '')
           ? merge.operation?.phase === 'committing' ? 'Committing changes…' : 'Merging…'
           : merge.uncertain ? 'Check saved merge attempt' : merge.eligibility.data?.can_commit ? 'Commit and merge' : 'Merge to main'}</Button>}
@@ -62,7 +61,7 @@ function WorkspaceDetails({ workspaceId }: { workspaceId: string }) {
       {merge.uncertain && <ResourceState>Checking the saved merge attempt. Reconcile it before retrying or archiving.</ResourceState>}
       <RecoveryHistory key={merge.operation?.operation_id} incidents={recoveryHistory.data?.operation.recoveries ?? merge.operation?.recoveries}
         workspace historyUrl={merge.operation ? `/api/workspaces/${encodeURIComponent(workspaceId)}/merges/${encodeURIComponent(merge.operation.operation_id)}` : undefined}
-        retryBase={merge.operation?.state === 'failed' ? `/api/workspaces/${encodeURIComponent(workspaceId)}/recoveries` : undefined}
+        retryBase={!error && merge.operation?.source_workspace_id === workspaceId && merge.operation?.state === 'failed' ? `/api/workspaces/${encodeURIComponent(workspaceId)}/recoveries` : undefined}
         refresh={() => { recoveryHistory.refresh(); merge.eligibility.refresh(); }} />
       {merge.operation && <ResourceState error={['failed', 'recovery_required'].includes(merge.operation.state)}>
         {['accepted', 'running'].includes(merge.operation.state) ? merge.operation.phase === 'committing' ? 'Generating commit messages and committing changes…' : 'Merging…' :
@@ -76,23 +75,15 @@ function WorkspaceDetails({ workspaceId }: { workspaceId: string }) {
       </ResourceState>}
     </div>}
     {workspace.archive && <p>Archive: {workspace.archive.stage} {workspace.archive.path} {workspace.archive.error}</p>}
-    {workspace.kind === 'worktree' && !['archived','archiving'].includes(workspace.status) && <Button variant="danger" disabled={busy || merge.busy || ['merging', 'merge_recovery_required'].includes(workspace.status)} onClick={async () => {
-      if (busy || !window.confirm(`Remove worktree ${workspace.path}? This cancels unfinished tasks in this workspace and removes its checkout. Task history is retained. All attachments for tasks owned by this worktree are permanently deleted, including archived tasks. Restoring history does not restore these files or recreate the checkout.`)) return;
-      setBusy(true); setFailure('');
-      try {
-        const response = await fetch(`/api/workspaces/${workspace.workspace_id}`, { method: 'DELETE' });
-        if (!response.ok) { const result = await response.json(); throw new Error(result.error || 'Archive failed'); }
-      } catch (reason) { setFailure(String(reason)); } finally { setBusy(false); }
-    }}>{busy ? 'Saving archive…' : 'Remove worktree'}</Button>}
-    {failure && <p className="error" role="alert">{failure}</p>}
+    {workspace.kind === 'worktree' && <RemoveWorkspace workspace={workspace} disabled={!!error || merge.busy || ['merging', 'merge_recovery_required'].includes(workspace.status)} />}
     </Card>
     <Card><h2>Task history</h2>
     {!history.data && !history.error && <ResourceState>Loading task history…</ResourceState>}
     {history.data?.tasks.length === 0 && <ResourceState>No tasks in this workspace yet.</ResourceState>}
     <ul className="resource-list">{history.data?.tasks.map(task => <li key={task.task_id}><Link to={`/tasks/${encodeURIComponent(task.task_id)}`}>{task.title}</Link><Badge>{task.status}</Badge></li>)}</ul>
     {history.error && <p className="error">{history.error}</p>}
-    {before && <button onClick={() => setBefore('')}>Newest tasks</button>}
-    {history.data?.next_cursor && <button onClick={() => setBefore(history.data!.next_cursor || '')}>Older tasks</button>}
+    {before && <Button onClick={() => setBefore('')}>Newest tasks</Button>}
+    {history.data?.next_cursor && <Button onClick={() => setBefore(history.data!.next_cursor || '')}>Older tasks</Button>}
     </Card>
   </>;
 }

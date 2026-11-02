@@ -24,6 +24,7 @@ function saved(id: string): MergeRequest | null {
 }
 
 export function useWorkspaceMerge(workspaceId: string) {
+  const sending = useRef(false);
   const current = useRef(workspaceId);
   const mounted = useRef(true);
   current.current = workspaceId;
@@ -86,7 +87,8 @@ export function useWorkspaceMerge(workspaceId: string) {
 
   async function merge() {
     const id = workspaceId;
-    if (state.busy) return;
+    if (state.busy || sending.current) return;
+    sending.current = true;
     const active = () => mounted.current && current.current === id;
     setAction(previous => ({ ...previous, busy: true, error: '', transportWarning: undefined }));
     let request = state.pending;
@@ -135,11 +137,9 @@ export function useWorkspaceMerge(workspaceId: string) {
       if (active()) remember(id, response.operation);
     } catch (reason) {
       if (active()) {
-        // Explicit rejection means no operation was accepted. Transport errors remain pending.
-        if (reason instanceof ApiError && [400, 404, 409].includes(reason.status)) {
-          try { localStorage.removeItem(key(id)); } catch { /* The saved ID is still safe to reconcile. */ }
-          setAction({ id, pending: null, busy: false, error: String(reason) });
-        } else if (awaitingOutcome && request) {
+        // HTTP errors can arrive after another observer confirmed acceptance.
+        // Preserve the exact snapshot until the matching operation is observed.
+        if (awaitingOutcome && request) {
           const operationId = request.operation_id;
           // Completion clears pending. Ignore failures arriving after reconciliation
           // or after another operation has replaced this request.
@@ -149,7 +149,8 @@ export function useWorkspaceMerge(workspaceId: string) {
         } else setAction(previous => ({ ...previous, error: String(reason) }));
       }
     } finally {
-      if (active()) setAction(previous => ({ ...previous, busy: false }));
+      sending.current = false;
+      if (active()) setAction(previous => request && previous.pending && previous.pending.operation_id !== request.operation_id ? previous : { ...previous, busy: false });
     }
   }
   return { eligibility, operation, busy, submitting: state.busy, uncertain,

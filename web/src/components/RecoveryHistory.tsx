@@ -1,30 +1,42 @@
+import { useOperation } from '../useOperation';
+import { Disclosure } from './ui/Disclosure';
 import { Link } from 'react-router';
 import { useEffect, useRef, useState } from 'react';
 import { clearSubmissionIdentity, get, post, submissionIdentity } from '../api';
 import { Button } from './ui/Button';
 import type { RecoveryIncident } from '../types';
 
-function RetryRecovery({ endpoint, refresh }: { endpoint: string; refresh?: () => void }) {
+function RetryRecovery({ endpoint, eligible, refresh }: { endpoint: string; eligible: boolean; refresh?: () => void }) {
   const lock = useRef(false);
   const [busy, setBusy] = useState(false);
-  const [accepted, setAccepted] = useState(false);
+  const operation = useOperation<{ endpoint: string }>(`recovery:${endpoint}`, 'recovery-retry');
+  const accepted = operation.current?.status === 'accepted';
   const [error, setError] = useState('');
   async function retry() {
-    if (lock.current || accepted) return;
+    if (lock.current || accepted || !eligible && !operation.unresolved) return;
     lock.current = true; setBusy(true); setError('');
     const storage = `recovery:${endpoint}`;
+    const attempt = operation.prepare({ endpoint }, 0, submissionIdentity(storage, { endpoint }));
     try {
-      await post(endpoint, { request_id: submissionIdentity(storage, { endpoint }) });
-      clearSubmissionIdentity(storage); setAccepted(true); refresh?.();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+      const result = await post<{ request_id: string; task_id?: string; operation_id?: string }>(endpoint, { request_id: attempt.id });
+      operation.settle(attempt, 'accepted', { request_id: result.request_id, ...(result.operation_id ? { operation_id: result.operation_id } : {}) });
+      clearSubmissionIdentity(storage, attempt.id); refresh?.();
+    } catch (reason) { operation.settle(attempt, 'uncertain', undefined, String(reason)); setError(`${String(reason)}. Acceptance is unconfirmed. Check the same request to recover it.`); }
     finally { lock.current = false; setBusy(false); }
   }
+  if (!eligible && !operation.current) return null;
   return <div>{accepted ? <p role="status">Recovery accepted. Follow the task or merge status for the result.</p> :
-    <Button disabled={busy} onClick={() => void retry()}>{busy ? 'Requesting recovery…' : 'Retry recovery'}</Button>}
+    <Button disabled={busy || !eligible && !operation.unresolved} onClick={() => void retry()}>{busy ? 'Requesting recovery…' : operation.unresolved ? 'Check saved recovery request' : 'Retry recovery'}</Button>}
+    {!operation.durable && <p role="alert">Request identity is held only in memory. Keep this page open.</p>}
     {error && <p role="alert" className="error">{error}</p>}</div>;
 }
 
-export function RecoveryHistory({ incidents, retryBase, historyUrl, workspace = false, refresh }: {
+export function RecoveryHistory(props: {
+  incidents?: RecoveryIncident[]; retryBase?: string; historyUrl?: string; workspace?: boolean; refresh?: () => void;
+}) {
+  return <RecoveryHistoryContent key={props.historyUrl || props.retryBase || 'history'} {...props} />;
+}
+function RecoveryHistoryContent({ incidents, retryBase, historyUrl, workspace = false, refresh }: {
   incidents?: RecoveryIncident[]; retryBase?: string; historyUrl?: string; workspace?: boolean; refresh?: () => void;
 }) {
   const [older, setOlder] = useState<RecoveryIncident[]>([]);
@@ -32,6 +44,8 @@ export function RecoveryHistory({ incidents, retryBase, historyUrl, workspace = 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const lock = useRef(false);
+  const controller = useRef<AbortController | null>(null);
+  useEffect(() => () => { controller.current?.abort(); }, []);
   useEffect(() => {
     // Keep rows that move out of the live first page while older pages are open.
     if (incidents?.length) setOlder(previous => {
@@ -46,33 +60,34 @@ export function RecoveryHistory({ incidents, retryBase, historyUrl, workspace = 
   async function loadOlder() {
     if (lock.current || !historyUrl || !visible.length) return;
     lock.current = true; setBusy(true); setError('');
+    const request = new AbortController(); controller.current = request;
     try {
       const separator = historyUrl.includes('?') ? '&' : '?';
       const page = await get<{ recoveries?: RecoveryIncident[]; operation?: { recoveries?: RecoveryIncident[] } }>(
-        `${historyUrl}${separator}before=${encodeURIComponent(visible[visible.length - 1].incident_id)}&limit=20`);
+        `${historyUrl}${separator}before=${encodeURIComponent(visible[visible.length - 1].incident_id)}&limit=20`, request.signal);
+      if (request.signal.aborted) return;
       const rows = page.recoveries ?? page.operation?.recoveries ?? [];
       setOlder(previous => [...previous, ...rows.filter(row => !previous.some(old => old.incident_id === row.incident_id))]);
       setExhausted(rows.length < 20);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
-    finally { lock.current = false; setBusy(false); }
+    } catch (reason) { if (!request.signal.aborted) setError(String(reason)); }
+    finally { if (!request.signal.aborted) { lock.current = false; setBusy(false); } }
   }
-  if (!incidents?.length) return null;
+  if (!visible.length) return null;
   return <section className="execution-details" aria-label="Workflow assistant">
     <h2>Workflow assistant</h2>
-    {visible.map(incident => <details key={incident.incident_id} open={incident.status === 'working' || incident.status === 'needs_input'}>
-      <summary>{incident.issue} · {incident.status === 'working' ? 'Assistant working' : incident.status === 'needs_input' ? 'Needs your input' : incident.status === 'recovered' ? 'Recovered' : incident.status === 'repair_applied' ? 'Review pending' : incident.status === 'replanning' ? 'Refreshing plan' : incident.status === 'awaiting_approval' ? 'Plan ready for approval' : incident.status === 'superseded' ? 'New recovery cycle started' : 'Assessment complete'}</summary>
+    {visible.map(incident => <Disclosure key={incident.incident_id} defaultOpen={['working', 'needs_input', 'awaiting_approval'].includes(incident.status)} title={<>{incident.issue} · {incident.status === 'working' ? 'Assistant working' : incident.status === 'needs_input' ? 'Needs your input' : incident.status === 'recovered' ? 'Recovered' : incident.status === 'repair_applied' ? 'Review pending' : incident.status === 'replanning' ? 'Refreshing plan' : incident.status === 'awaiting_approval' ? 'Plan ready for approval' : incident.status === 'superseded' ? 'New recovery cycle started' : 'Assessment complete'}</>}>
       <p>{incident.result.summary}</p><p>Next step: {incident.result.next_action}</p>
       <small>{incident.step_id} · {incident.attempts} attempt(s) · <time dateTime={incident.created_at}>{incident.created_at}</time></small>
       {incident.agent_id && <p><Link to={`/agents/${encodeURIComponent(incident.agent_id)}`}>View agent history</Link></p>}
-      {retryBase && incident.status === 'needs_input' && (!!incident.operation_id === workspace) &&
-        <RetryRecovery endpoint={`${retryBase}/${encodeURIComponent(incident.incident_id)}/retry`} refresh={refresh} />}
+      {(retryBase || !workspace && historyUrl) && (!!incident.operation_id === workspace) &&
+        <RetryRecovery key={incident.incident_id} eligible={!!retryBase && incident.status === 'needs_input'} endpoint={`${retryBase || historyUrl}/${encodeURIComponent(incident.incident_id)}/retry`} refresh={refresh} />}
       {incident.attempt_history?.map(attempt => <details key={attempt.attempt}>
         <summary>Attempt {attempt.attempt}: {attempt.action} · {attempt.status}</summary>
         {attempt.agent_id && <p><Link to={`/agents/${encodeURIComponent(attempt.agent_id)}`}>View this attempt’s agent</Link></p>}
         <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{attempt.report}</pre>
       </details>)}
-    </details>)}
-    {historyUrl && !exhausted && incidents.length >= 20 && <Button disabled={busy} onClick={() => void loadOlder()}>{busy ? 'Loading history…' : 'Older recovery history'}</Button>}
+    </Disclosure>)}
+    {historyUrl && !exhausted && (incidents?.length || older.length) >= 20 && <Button disabled={busy} onClick={() => void loadOlder()}>{busy ? 'Loading history…' : 'Older recovery history'}</Button>}
     {error && <p role="alert" className="error">{error}</p>}
   </section>;
 }

@@ -1,3 +1,4 @@
+import { Button } from './components/ui/Button';
 import { useEffect, useRef, useState } from 'react';
 import { get } from './api';
 import type { ChatMessage, Role, WorkflowDefinition } from './types';
@@ -61,13 +62,13 @@ export function Home() {
               ...(selected.publication_policy === 'optional' ? { create_mr: publish } : {}) } });
         }}>
         {metadataError && <div><p className="error" role="alert">{metadataError}</p>
-          <button type="button" onClick={() => setRevision(value => value + 1)}>Reload workflow metadata</button></div>}
+          <Button type="button" onClick={() => setRevision(value => value + 1)}>Reload workflow metadata</Button></div>}
         {task.submission && <>
           <p className="submission-note">{task.run ? 'Accepted task' : task.rejected ? 'Submission rejected' : 'Saved request · acceptance unconfirmed'}</p>
           <RunStatus submission={task.submission} run={task.run} error={task.error} rejected={task.rejected} />
           <div className="recovery-actions">
-            {!task.run && !task.rejected && <button type="button" disabled={task.busy} onClick={() => { if (task.submission) void task.send(task.submission).catch(() => {}); }}>Retry same submission</button>}
-            {canReset && <button type="button" disabled={task.busy} onClick={task.reset}>Start another task</button>}
+            {!task.run && !task.rejected && <Button type="button" disabled={task.busy} onClick={() => { if (task.submission) void task.send(task.submission).catch(() => {}); }}>Retry same submission</Button>}
+            {canReset && <Button type="button" disabled={task.busy} onClick={task.reset}>Start another task</Button>}
           </div>
         </>}
         {(task.submission?.variables.cwd || cwd) && <details className="conversation-panel"><summary>Agent conversations</summary>

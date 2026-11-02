@@ -1,3 +1,4 @@
+import { EmptyState } from '../components/ui/EmptyState';
 import { Link, useNavigate } from 'react-router';
 import { useNavigation } from '../navigation';
 import { DirectoryPicker } from '../components/DirectoryPicker';
@@ -12,7 +13,7 @@ export function RepositoriesPage() {
   return <><PageHeader eyebrow="Your workspace" title="Repositories" description="Choose a repository to start a task or pick up where you left off." />
     {error && <ResourceState error>{error}{data && ' · Navigation may be stale.'}</ResourceState>}
     {!data && !error && <ResourceState>Loading repositories…</ResourceState>}
-    {data && !data.repositories.length && <ResourceState>No repositories yet. Add a Git folder below to get started.</ResourceState>}
+    {data && !data.repositories.length && <EmptyState title="No repositories yet">Add a Git folder below to get started.</EmptyState>}
     <div className="resource-grid">{data?.repositories.map(repository => <Card key={repository.repository_id} className="repository-card">
       <span className="resource-icon" aria-hidden="true">⌘</span><h2><Link to={`/repositories/${repository.repository_id}`}>{repository.name}</Link></h2>
       <p className="resource-path">{repository.main_path}</p><Badge>{data.workspaces.filter(workspace => workspace.repository_id === repository.repository_id).length} workspaces</Badge>

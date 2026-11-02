@@ -15,7 +15,7 @@ export function RepositoryPage() {
   if (!repository) return <ResourceState error={!!error}>{error || (data ? 'Repository not found' : 'Loading repository…')}</ResourceState>;
   return <><PageHeader eyebrow={<Link to="/">Repositories</Link>} title={repository.name} description={<code>{repository.main_path}</code>} />
     {error && <ResourceState error>{error} · Navigation may be stale.</ResourceState>}
-    {main && <TaskComposer key={main.workspace_id} workspace={main} />}
+    {main && <TaskComposer key={main.workspace_id} workspace={main} stale={!!error} />}
     <Card><h2>Worktrees</h2><ul className="resource-list">{data?.workspaces.filter(item => item.repository_id === repositoryId).map(item => <li key={item.workspace_id}><Link to={`/workspaces/${item.workspace_id}`}>{workspaceLabel(item)}</Link><Badge>{item.status}</Badge></li>)}</ul></Card>
   </>;
 }

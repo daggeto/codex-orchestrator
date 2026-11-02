@@ -14,6 +14,7 @@ export function DirectoryPicker({ onAdded }: { onAdded: (repository: RepositoryR
   const [busy, setBusy] = useState(false);
   const { data, error, refresh } = useResource<Listing>(`/api/filesystem/directories?path=${encodeURIComponent(path)}`, 0);
   return <Card className="directory-picker" aria-label="Add repository"><h2>Add repository</h2><p>Choose a Git folder on the service machine.</p>
+    {path && !data && <p>Selected folder: <code>{path}</code></p>}
     {!data && !error && <ResourceState>Loading folders…</ResourceState>}
     {data && <><NativeSelect aria-label="Browse root" value={data.roots.find(root => data.path.startsWith(root)) || ''} onChange={event => setPath(event.target.value)}>
       {data.roots.map(root => <option key={root}>{root}</option>)}</NativeSelect>

@@ -12,6 +12,7 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
   const [draftId, setDraftId] = useState(saved.draftId);
   const [limits, setLimits] = useState<AttachmentLimits>();
   const [error, setError] = useState('');
+  const [durable, setDurable] = useState(true);
   const [recovering, setRecovering] = useState(!!saved.draftId);
   const [recoveryRequired, setRecoveryRequired] = useState(!!saved.draftId);
   const [submitted, setSubmitted] = useState(false);
@@ -25,7 +26,7 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
     selections.current = update(selections.current); setFiles(selections.current);
   };
   useEffect(() => {
-    try { sessionStorage.setItem(storageKey, JSON.stringify({ draftId, files: files.map(({ local: _file, ...row }) => row) })); } catch { /* Retain memory state. */ }
+    try { sessionStorage.setItem(storageKey, JSON.stringify({ draftId, files: files.map(({ local: _file, ...row }) => row) })); } catch { setDurable(false); }
   }, [storageKey, files, draftId]);
   useEffect(() => {
     if (!context) return;
@@ -129,6 +130,6 @@ export function useAttachments(storageKey: string, context?: AttachmentContext) 
   }
   const ready = !recoveryRequired && !submitted && !recovering && !removing && files.every(file => file.state === 'ready');
   const payload: AttachmentSubmission = { ...(draftId ? { draft_id: draftId } : {}), attachment_ids: files.map(file => file.attachment_id) };
-  return { files, limits, error, ready, recovering, recoveryRequired, removing, submitted, acceptedTaskId, select, upload, remove, recover, clear, payload };
+  return { files, limits, error, durable, ready, recovering, recoveryRequired, removing, submitted, acceptedTaskId, select, upload, remove, recover, clear, payload };
 }
 export type AttachmentController = ReturnType<typeof useAttachments>;
