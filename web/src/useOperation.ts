@@ -38,8 +38,8 @@ function subscribe(listener: () => void) {
 /** Storage observations only update evidence. They never issue requests. */
 export function useOperation<P>(owner: string, kind: string) {
   const current = useSyncExternalStore(subscribe, useCallback(() => read(owner), [owner])) as OperationAttempt<P> | undefined;
-  function prepare(request: P, draftVersion = 0, legacyId?: string) {
-    const attempt = prepareAttempt(read(owner) as OperationAttempt<P> | undefined, { owner, kind, request, draftVersion, id: legacyId });
+  function prepare(request: P, draftVersion = 0, legacyId?: string, origin?: string) {
+    const attempt = prepareAttempt(read(owner) as OperationAttempt<P> | undefined, { owner, kind, request, draftVersion, id: legacyId, origin });
     write(owner, attempt); return attempt;
   }
   function settle(attempt: OperationAttempt<P>, status: OperationAttempt['status'], result?: Record<string, string>, warning?: string) {

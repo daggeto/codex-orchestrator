@@ -388,17 +388,29 @@ unfinished work. `#/tasks?tab=archive` shows archived tasks with Restore control
 Participant chips inside each task select one agent conversation at a time; agent
 links include explicit task context. Hash routes support reload and back navigation. The service monitor is available at `#/monitor`.
 
-The interface uses Horizon UI Free's rounded cards and purple accents, adapted
-within the existing app. **Light mode** / **Dark mode** in the top bar changes
-appearance. Dark is the default. The browser remembers the choice under
-`orchestrator.ui.theme.v1`; invalid or unavailable storage falls back to dark.
-On narrow screens, **Open navigation** opens task navigation. Close it with
-**Close navigation**, Escape, or by selecting a destination. Horizon attribution
-and its MIT license are included in `web/public/third-party-notices.txt`.
+The interface uses shadcn/ui's Base UI primitives and Nova style, with neutral
+surfaces and compact task navigation. **Light mode** / **Dark mode** in the top
+bar changes appearance. Dark is the default. The browser remembers the choice
+under `orchestrator.ui.theme.v1` and observes changes in other tabs. If storage
+fails, the current theme stays available in memory.
+
+On narrow screens, **Open navigation** opens a Base UI Sheet. **Close navigation**
+and Escape return focus to its trigger; choosing a destination focuses its page.
+Worktree removal uses an Alert Dialog with Cancel focused first. Removal
+acceptance and cleanup progress are shown separately. shadcn attribution and its
+MIT license are included in `web/public/third-party-notices.txt`.
+
+Metadata failures offer Retry for each settings resource. Stale task data blocks
+submissions while keeping drafts editable. Saved request recovery uses the same
+identity and payload; checking a task, message, plan action, continuation, restart,
+or recovery request is an explicit action. Reload and storage events do not start
+work. Storage warnings identify recovery that is available only in memory.
+Plan summaries are a reading aid: save and approval still use the complete saved
+Markdown revision. Revision conflicts retain edits and require reconciliation.
 
 Manual acceptance checklist (also see `docs/plans/web-ux-refactor.md`):
 
-- At 360px and desktop in both themes, check long titles, multiple participants,
+- At 320px, 200% zoom, and desktop in both themes, check long titles, multiple participants,
   approvals, failed tools, archived task restore, and clear Working / Ready /
   Waiting for me / Finished states. Read earlier history during updates and use
   New messages to return to the bottom. Check contrast and screen-reader status
@@ -430,7 +442,7 @@ Manual acceptance checklist (also see `docs/plans/web-ux-refactor.md`):
   request identifiers. Review the continuation/restart explanations before
   exercising either action on a disposable run.
 
-Implementation mapping and validation gates are in [docs/ui-refresh.md](docs/ui-refresh.md).
+The sixteen technical criteria, fourteen UX criteria, deviations, and validation gates are mapped in [docs/ui-refresh.md](docs/ui-refresh.md).
 Source review, automated tests/typecheck/build, manual acceptance, and provider
 CI are separate gates. The appearance implementation has not run automated or
 browser acceptance checks; the checklist above is for the reviewer to execute.

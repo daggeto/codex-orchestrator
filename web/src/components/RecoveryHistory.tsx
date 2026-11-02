@@ -16,12 +16,13 @@ function RetryRecovery({ endpoint, eligible, refresh }: { endpoint: string; elig
     if (lock.current || accepted || !eligible && !operation.unresolved) return;
     lock.current = true; setBusy(true); setError('');
     const storage = `recovery:${endpoint}`;
-    const attempt = operation.prepare({ endpoint }, 0, submissionIdentity(storage, { endpoint }));
+    let attempt;
     try {
+      attempt = operation.prepare({ endpoint }, 0, submissionIdentity(storage, { endpoint }));
       const result = await post<{ request_id: string; task_id?: string; operation_id?: string }>(endpoint, { request_id: attempt.id });
       operation.settle(attempt, 'accepted', { request_id: result.request_id, ...(result.operation_id ? { operation_id: result.operation_id } : {}) });
       clearSubmissionIdentity(storage, attempt.id); refresh?.();
-    } catch (reason) { operation.settle(attempt, 'uncertain', undefined, String(reason)); setError(`${String(reason)}. Acceptance is unconfirmed. Check the same request to recover it.`); }
+    } catch (reason) { if (attempt) operation.settle(attempt, 'uncertain', undefined, String(reason)); setError(`${String(reason)}. Acceptance is unconfirmed. Check the same request to recover it.`); }
     finally { lock.current = false; setBusy(false); }
   }
   if (!eligible && !operation.current) return null;

@@ -48,14 +48,15 @@ function Suggestion({ taskId, runId, item, disabled, onStarted }: {
   async function start() {
     if (lock.current || disabled || created) return;
     lock.current = true; setBusy(true); setError('');
-    const attempt = operation.unresolved ? operation.current! : operation.prepare({ run_id: runId, answers });
+    let attempt;
     try {
+      attempt = operation.unresolved ? operation.current! : operation.prepare({ run_id: runId, answers });
       const result = await post<{ task_id: string }>(
         `/api/tasks/${encodeURIComponent(taskId)}/scope-suggestions/${item.id}/start`, attempt.request);
       if (!result.task_id) throw new Error('The service did not return the new task link.');
       operation.settle(attempt, 'accepted', { task_id: result.task_id }); setAccepted(result.task_id); setUncertain(false); onStarted();
     } catch (reason) {
-      operation.settle(attempt, 'uncertain', undefined, String(reason));
+      if (attempt) operation.settle(attempt, 'uncertain', undefined, String(reason));
       setError(`${reason instanceof Error ? reason.message : 'Unable to start this task'}. Retry to recover the same task if it was accepted.`);
       setUncertain(true);
     } finally { lock.current = false; setBusy(false); }

@@ -1,11 +1,11 @@
 /** Acceptance is a receipt, independent of the mutable task/run outcome. */
 export interface OperationAttempt<P = unknown> {
   id: string; owner: string; kind: string; request: P | null; fingerprint: string;
-  draftVersion: number; status: 'pending' | 'uncertain' | 'accepted' | 'rejected';
+  origin?: string; draftVersion: number; status: 'pending' | 'uncertain' | 'accepted' | 'rejected';
   result?: Record<string, string>; warning?: string;
 }
 export function prepareAttempt<P>(current: OperationAttempt<P> | undefined, input: {
-  owner: string; kind: string; request: P; draftVersion?: number; id?: string;
+  owner: string; kind: string; request: P; draftVersion?: number; id?: string; origin?: string;
 }): OperationAttempt<P> {
   const fingerprint = JSON.stringify(input.request);
   if (current && (current.owner !== input.owner || current.kind !== input.kind)) throw new Error('Operation identity belongs to another action.');

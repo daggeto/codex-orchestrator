@@ -1,14 +1,19 @@
-Horizon UI Free Tailwind React
-https://github.com/horizon-ui/horizon-tailwind-react
-Upstream revision: 8f17779f2b45419112f32541bb555817dabc5b7c
+shadcn/ui, Base UI component family / Nova style
+https://github.com/shadcn-ui/ui
+Registry revision: 4aaea19d9cff3e0908e12a8c1d504b8c5ec34610
 
-The shared Card adapts src/components/card/index.jsx to TypeScript and semantic
-theme tokens. Sidebar, rounded surfaces, and purple accents follow its design.
-No template router, demo pages, fonts, or runtime assets are bundled.
+web/src/components/ui/primitives contains the selected Base UI registry source
+and its required primitive dependencies. web/src/styles/nova.css contains the
+complete upstream Nova style. Registry aliases and cn imports are resolved to
+local application paths; icon placeholders are resolved to lucide-react icons.
+The Sidebar omits upstream cookie persistence and global keyboard shortcuts,
+and uses the application's 1000px breakpoint. No Horizon implementation remains.
+Application adapters retain existing domain props and compact layout.
+Runtime dependency licenses are distributed with their npm packages.
 
 MIT License
 
-Copyright (c) 2023 Horizon UI
+Copyright (c) 2023 shadcn
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

@@ -66,7 +66,7 @@ export function ContinueRun({ run, disabled }: { run: RunIdentity; disabled: boo
         setCheckpoint(result.continuation); setError('');
         const saved = operation.current;
         const attempts = result.run.state?.continuations;
-        if (saved && operation.unresolved && Array.isArray(attempts) && attempts.some(item => object(item).request_id === saved.id)) operation.settle(saved, 'accepted', { checkpoint: saved.result?.checkpoint || run.updated_at });
+        if (saved && operation.unresolved && Array.isArray(attempts) && attempts.some(item => object(item).request_id === saved.id)) operation.settle(saved, 'accepted', { checkpoint: saved.origin || saved.result?.checkpoint || run.updated_at });
       })
       .catch(reason => { if (!controller.signal.aborted) setError(String(reason)); });
     return () => controller.abort();
@@ -78,7 +78,7 @@ export function ContinueRun({ run, disabled }: { run: RunIdentity; disabled: boo
     try {
       const observation = await get<{ run: WorkflowRun; continuation: NonNullable<typeof checkpoint> }>(`/api/workflows/runs/${encodeURIComponent(run.run_id)}`);
       if (attempt && operation.unresolved && Array.isArray(observation.run.state?.continuations) && observation.run.state.continuations.some(item => object(item).request_id === attempt!.id)) {
-        operation.settle(attempt, 'accepted', { checkpoint: attempt.result?.checkpoint || run.updated_at }); return;
+        operation.settle(attempt, 'accepted', { checkpoint: attempt.origin || attempt.result?.checkpoint || run.updated_at }); return;
       }
       if (!operation.unresolved) {
         if (!observation.continuation.available) throw new Error(observation.continuation.reason || 'Continuation is unavailable');
@@ -87,11 +87,11 @@ export function ContinueRun({ run, disabled }: { run: RunIdentity; disabled: boo
         }
         let legacyId: string | undefined;
         try { legacyId = localStorage.getItem(`orchestrator.continue.v1:${run.run_id}:${run.updated_at}`) || undefined; } catch { /* New identities remain available in memory. */ }
-        attempt = operation.prepare({ additional_steps: checkpoint?.requires_extension ? 20 : 0 }, 0, legacyId);
+        attempt = operation.prepare({ additional_steps: checkpoint?.requires_extension ? 20 : 0 }, 0, legacyId, run.updated_at);
       }
       if (!attempt?.request) return;
       await post(`/api/workflows/runs/${encodeURIComponent(run.run_id)}/continue`, { request_id: attempt.id, ...attempt.request });
-      operation.settle(attempt, 'accepted', { checkpoint: run.updated_at });
+      operation.settle(attempt, 'accepted', { checkpoint: attempt.origin || run.updated_at });
       try {
         const key = `orchestrator.continue.v1:${run.run_id}:${run.updated_at}`;
         if (localStorage.getItem(key) === attempt.id) localStorage.removeItem(key);
