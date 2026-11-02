@@ -284,3 +284,11 @@ small, time, .muted { color: var(--muted); }
 .attachment-name small { display: block; }
 .attachment-preview { display: block; width: 5rem; height: 5rem; object-fit: contain; border-radius: .25rem; }
 .attachment-list .button { white-space: normal; overflow-wrap: anywhere; }
+
+.workspace-group { margin: 8px 0 12px 12px; padding-left: 6px; border-left: 1px solid var(--border); min-width: 0; }
+.workspace-group-heading a { flex: 1; min-width: 0; }
+.workspace-group-heading a span, .workspace-group-heading small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-group-heading small { color: var(--muted); font-size: 11px; font-weight: 400; }
+.workspace-empty { margin: 6px 0 6px 32px; color: var(--muted); font-size: 12px; }
+.repository-sidebar .workspace-group .task-row { margin-left: 18px; }
+.task-context, .resource-list li, .page-header { overflow-wrap: anywhere; }

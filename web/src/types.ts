@@ -47,6 +47,7 @@ export interface RepositoryRecord {
 export interface WorkspaceRecord {
   workspace_id: string; repository_id: string; kind: 'main' | 'worktree'; path: string;
   branch: string; status: string; available?: boolean;
+  originating_task_title?: string | null;
   archive?: { stage: string; path: string | null; error: string | null };
 }
 export interface TaskRecord {

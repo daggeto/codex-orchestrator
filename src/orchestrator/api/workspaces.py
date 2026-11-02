@@ -57,7 +57,12 @@ async def archive_status(request):
 
 async def navigation(request):
     store = request.app['orch'].store
-    workspaces = await store.rows('SELECT * FROM workspaces ORDER BY kind,path')
+    # Task history is retained on archival. Use its earliest task independently
+    # of the capped, nonarchived preview so legacy worktree labels stay stable.
+    workspaces = await store.rows('''SELECT w.*, (
+        SELECT t.title FROM tasks t WHERE t.workspace_id=w.workspace_id
+        ORDER BY t.created_at,t.task_id LIMIT 1
+    ) AS originating_task_title FROM workspaces w ORDER BY w.kind,w.path''')
     for workspace in workspaces:
         workspace['archive'] = await store.one('SELECT * FROM archives WHERE workspace_id=? ORDER BY created_at DESC LIMIT 1', (workspace['workspace_id'],))
     return web.json_response({'repositories': await store.repositories(), 'workspaces': workspaces,

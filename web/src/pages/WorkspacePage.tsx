@@ -1,3 +1,4 @@
+import { workspaceLabel } from '../workspaceLabel';
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router';
 import { TaskComposer } from '../components/TaskComposer';
@@ -26,10 +27,10 @@ function WorkspaceDetails({ workspaceId }: { workspaceId: string }) {
   const [failure, setFailure] = useState('');
   const [busy, setBusy] = useState(false);
   if (!workspace) return <ResourceState error={!!error}>{error || (data ? 'Workspace not found' : 'Loading workspace…')}</ResourceState>;
-  return <><PageHeader eyebrow={<Link to={`/repositories/${workspace.repository_id}`}>Repository</Link>} title={workspace.kind === 'main' ? 'Main' : workspace.branch || 'Worktree'} description={<code>{workspace.path}</code>} actions={<Badge>{workspace.status}</Badge>} />
+  return <><PageHeader eyebrow={<Link to={`/repositories/${workspace.repository_id}`}>Repository</Link>} title={workspaceLabel(workspace)} description={<code>{workspace.path}</code>} actions={<Badge>{workspace.status}</Badge>} />
     {error && <ResourceState error>{error} · Navigation may be stale.</ResourceState>}
     {workspace.status === 'active' && <TaskComposer key={workspace.workspace_id} workspace={workspace} />}
-    <Card><h2>Workspace details</h2><p className="muted">Checkout: {workspace.kind === 'main' ? 'Main' : 'Worktree'}</p>
+    <Card><h2>Workspace details</h2><p>Branch: <code>{workspace.branch || 'Detached HEAD'}</code></p><p className="muted">Checkout: {workspace.kind === 'main' ? 'Main' : 'Worktree'}</p>
     {workspace.kind === 'worktree' && workspace.status !== 'archived' && <div className="workspace-merge">
       <p>Source: <code>{merge.eligibility.data?.source_branch || workspace.branch}</code>{' '}
         {merge.eligibility.data?.source_sha && <code>{merge.eligibility.data.source_sha}</code>}</p>
