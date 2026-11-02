@@ -860,3 +860,7 @@ PNG, JPEG and WebP still images are validated for preview and native image input
 Other files are downloadable resources for agent tools. Files are not extracted,
 converted or executed automatically. Backend transcripts, user downloads, and
 agent-created copies or derived outputs are outside managed deletion guarantees.
+
+Feature workflows require [developer plan approval](docs/plan-approval.md) in the
+web task page after UX and architecture planning. Discuss or edit the saved plan,
+send feedback back to a planning agent, or approve the revision to start implementation.

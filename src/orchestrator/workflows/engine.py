@@ -126,10 +126,16 @@ class Workflow:
     def required_roles(self) -> list[str]:
         """Collect roles from assignments, reviews, and nested steps."""
         roles: list[str] = []
+        from orchestrator.workflows.plan_approval import PlanApprovalStep
+        for index, step in enumerate(self.steps):
+            if isinstance(step, PlanApprovalStep):
+                earlier = {s.step_id for s in self.steps[:index]}
+                if not step.sources or not set(step.targets).issubset(earlier) or step.next_step not in {s.step_id for s in self.steps[index + 1:]}:
+                    raise ValueError('Invalid plan approval sources or routing targets')
 
         def collect(steps):
             for step in steps:
-                role = getattr(step, "role", None)
+                role = getattr(step, "role", None) or getattr(step, "author_role", None)
                 if role and role not in roles:
                     roles.append(role)
                 collect(getattr(step, "sub_steps", []))
@@ -171,6 +177,8 @@ class Workflow:
 def continuation_checkpoint(workflow, record):
     """Validate saved progress against the current workflow, allowing definition changes."""
     checkpoint = record.state.get("checkpoint")
+    if workflow.name == "feature" and not record.config.get("plan_approval_policy"):
+        raise ValueError("Older feature run requires restart for developer plan approval")
     if checkpoint is None:
         # Old failed runs persisted outputs after each step, but not threads.
         # Interrupted old runs have no authoritative last successful boundary.
@@ -269,6 +277,8 @@ class WorkflowEngine:
         else:
             checkpoint = {"next_step": workflow.steps[0].step_id if workflow.steps else "__end__",
                           "iteration": 0, "variables": ctx.variables, "threads": {}}
+        if not continuing and workflow.name == "feature":
+            record.config["plan_approval_policy"] = 1
         record.config["workflow_signature"] = workflow.signature
         record.config["review_policy"] = workflow.review_policy
         record.state["checkpoint"] = checkpoint
@@ -281,6 +291,7 @@ class WorkflowEngine:
         step_results: list[tuple[str, StepResult]] = []
         error: str | None = None
         paused = False
+        pause_reason = None
         iteration_limit = record.config.setdefault("iteration_limit", workflow.max_iterations)
 
         try:
@@ -328,7 +339,7 @@ class WorkflowEngine:
                 record.state.update(current_step=step.step_id, iteration=iterations,
                                     variables=ctx.variables)
                 record.state["checkpoint"].update(
-                    next_step=(step.step_id if error else
+                    next_step=(step.step_id if error or result.pause_reason else
                                workflow.steps[current_idx].step_id if current_idx < len(workflow.steps) else "__end__"),
                     iteration=iterations - 1 if error else iterations,
                     variables=ctx.variables, threads=ctx._threads,
@@ -338,11 +349,15 @@ class WorkflowEngine:
                     "run_id": rid, "step_id": step.step_id,
                     "success": result.success, "output_keys": list(result.output.keys()),
                 }, source="engine")
+                if result.pause_reason:
+                    paused = True
+                    pause_reason = result.pause_reason
+                    break
                 if error:
                     logger.error("Workflow %s: %s", rid[:8], error)
                     break
 
-            if not error and iterations >= iteration_limit and current_idx < len(workflow.steps):
+            if not paused and not error and iterations >= iteration_limit and current_idx < len(workflow.steps):
                 paused = True
                 error = (f"Step budget reached ({iteration_limit}). "
                          "Allow 20 more steps to continue from the saved checkpoint.")
@@ -367,7 +382,7 @@ class WorkflowEngine:
         await ctx.persist()
         record = await self._store.get_workflow_run(rid) or record
         record.status = "paused" if paused else "completed" if success else "failed"
-        record.state.update(phase="waiting_for_step_budget" if paused else record.status, error=error)
+        record.state.update(phase=(pause_reason or "waiting_for_step_budget") if paused else record.status, error=error)
         record.completed_at = None if paused else datetime.now(timezone.utc).isoformat()
         record.state["final_variables"] = ctx.variables
         await self._store.save_workflow_run(record)

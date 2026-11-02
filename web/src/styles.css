@@ -292,3 +292,10 @@ small, time, .muted { color: var(--muted); }
 .workspace-empty { margin: 6px 0 6px 32px; color: var(--muted); font-size: 12px; }
 .repository-sidebar .workspace-group .task-row { margin-left: 18px; }
 .task-context, .resource-list li, .page-header { overflow-wrap: anywhere; }
+
+.plan-approval { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); padding: clamp(16px, 3vw, 32px); margin: 20px 0; min-width: 0; }
+.plan-approval > .message-content { max-width: 85ch; line-height: 1.7; overflow-wrap: anywhere; }
+.plan-editor { font-family: var(--font-mono); width: 100%; }
+.plan-approval pre, .plan-approval table { display: block; max-width: 100%; overflow-x: auto; }
+.plan-approval th, .plan-approval td { padding: 8px 12px; border: 1px solid var(--border); }
+.plan-approval label { display: block; margin-top: 16px; }

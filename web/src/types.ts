@@ -69,6 +69,7 @@ export interface InputRequest {
   request_id: string; kind: string; prompt: string; options: unknown[];
 }
 export interface TaskView {
+  plan_approval?: import('./components/PlanApproval').PlanApprovalState | null;
   task: TaskRecord; agents: OwnedAgent[]; workflow: (Pick<WorkflowRun, 'run_id' | 'workflow_name' | 'status' | 'updated_at'> & { state?: JsonObject }) | null;
   steps: StepExecution[]; pending_input: InputRequest[];
   attachments: Attachment[]; messages: TaskMessage[];

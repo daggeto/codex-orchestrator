@@ -64,6 +64,7 @@ async def detail(request):
         'steps': await orch.store.rows('SELECT * FROM step_executions WHERE task_id=? ORDER BY created_at', (tid,)),
         'attachments': [public(row) for row in await orch.store.rows('SELECT * FROM attachments WHERE task_id=? ORDER BY created_at,attachment_id', (tid,))],
         'messages': await orch.store.rows('SELECT m.*, (SELECT json_group_array(attachment_id) FROM (SELECT attachment_id FROM message_attachments WHERE message_id=m.message_id ORDER BY position)) AS attachment_ids_json FROM task_messages m WHERE task_id=? ORDER BY created_at', (tid,)),
+        'plan_approval': (workflow['state'].get('checkpoint', {}).get('variables', {}).get('plan_approval') if workflow else None),
         'pending_input': await orch.store.pending_inputs(tid)})
 
 
@@ -134,6 +135,8 @@ async def events(request):
 
 
 def register(app):
+    from orchestrator.workflows.plan_approval import action as plan_action
+    app.router.add_post('/api/tasks/{task_id}/plan-approval/actions', plan_action)
     from orchestrator.api.scope import start as start_scope_task
     app.router.add_get('/api/tasks', listing)
     app.router.add_post('/api/tasks', submit)

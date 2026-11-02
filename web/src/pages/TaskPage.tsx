@@ -14,6 +14,7 @@ import { ParticipantStrip, TaskContext } from '../components/TaskContext';
 import { Button } from '../components/ui/Button';
 import { ResourceState } from '../components/ui/ResourceState';
 import { MessageContent } from '../components/MessageContent';
+import { PlanApproval } from '../components/PlanApproval';
 import { ScopeSuggestions } from '../components/ScopeSuggestions';
 export function TaskPage() {
   const { taskId } = useParams();
@@ -50,10 +51,11 @@ function TaskContent({ taskId }: { taskId: string }) {
   }
   return <section className="task-page"><TaskContext task={task} />
     {error && <p className="error" role="alert">{error} · Showing saved task state.</p>}
+    {data.plan_approval && <PlanApproval key={`${data.plan_approval.id}:${data.plan_approval.revision}`} taskId={taskId} plan={data.plan_approval} disabled={!!error || closed} refresh={() => { refresh(); navigation.refresh(); }} />}
     {report && <details open className="execution-details"><summary>Implementation report and follow-up work</summary><MessageContent text={report} /></details>}
     {data.scope_split && <ScopeSuggestions taskId={taskId} split={data.scope_split} disabled={!!error || !!pending}
       onStarted={() => { refresh(); navigation.refresh(); }} />}
-    {workflow && ['interrupted', 'failed', 'cancelled', 'paused'].includes(workflow.status) && <section aria-label="Workflow recovery">
+    {workflow && workflow.state?.phase !== 'waiting_for_plan_approval' && ['interrupted', 'failed', 'cancelled', 'paused'].includes(workflow.status) && <section aria-label="Workflow recovery">
       <ValidationRecovery state={workflow.state} />
       <ContinueRun key={`continue:${workflow.run_id}:${workflow.updated_at}`} run={workflow} disabled={!!error || !!pending} />
       <RestartRun key={`restart:${workflow.run_id}`} run={workflow} disabled={!!error || !!pending}

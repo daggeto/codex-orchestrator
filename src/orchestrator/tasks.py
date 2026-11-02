@@ -309,6 +309,11 @@ class TaskService:
                     await self.store.reserve_workflow_run(run)
                 await self.store.write('UPDATE workflow_runs SET task_id=? WHERE run_id=?', (task_id, run.run_id))
                 result = await self.orch.engine.run(self.orch.workflows[settings['workflow']], variables, run.run_id, accepted=True, continuing=continuation is not None)
+                saved_run = await self.store.get_workflow_run(run.run_id)
+                if saved_run.state.get('phase') == 'waiting_for_plan_approval':
+                    await self.store.task_status(task_id, 'waiting_input', 'Plan approval needed')
+                    await self.store.write('UPDATE tasks SET owner_pid=NULL,owner_started=NULL WHERE task_id=?', (task_id,))
+                    return
                 await self.store.task_status(task_id, 'completed' if result.success else 'failed', 'Completed' if result.success else result.error or 'Workflow failed', expected=('active','waiting_input'))
             else:
                 agents = await self.store.rows('SELECT * FROM agents WHERE task_id=? ORDER BY created_at', (task_id,))

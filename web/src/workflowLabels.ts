@@ -1,6 +1,7 @@
 const labels: Record<string, string> = {
   'ux-assess': 'UX planning',
   plan: 'Technical planning',
+  'plan-approval': 'Developer plan approval',
   implement: 'Implementation',
   review: 'Code review',
   revise: 'Implementation revision',

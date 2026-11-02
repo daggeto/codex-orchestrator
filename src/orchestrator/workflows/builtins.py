@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from orchestrator.workflows.engine import Workflow
+from orchestrator.workflows.plan_approval import PlanApprovalStep
 from orchestrator.workflows.feature import FeatureReviewStep, FeatureSummaryStep, UXPlanStep
 from orchestrator.workflows.merge_request import CreateMergeRequestStep, PrepareMergeRequestStep, PrepareWorktreeStep, VerifyMergeRequestStep
 from orchestrator.workflows.pr_completion import (
@@ -91,7 +92,7 @@ def _feature_workflow() -> Workflow:
                            "ux_consultation": "No UX consultation requested.",
                            "architecture_consultation": "No architecture consultation requested.",
                            "ux_final_required": False},
-        description="Feature: UX plan → technical plan → implement ⇄ code review → optional final UX report → optional publication",
+        description="Feature: UX plan → technical plan → developer approval → implement ⇄ code review → optional final UX report → optional publication",
         steps=[
             PrepareMergeRequestStep(step_id="prepare-mr", name="Prepare Task Branch"),
             UXPlanStep(
@@ -123,6 +124,8 @@ def _feature_workflow() -> Workflow:
                     "from installed schemas or authoritative documentation before relying on them. "
                     "For async operations, define operation identity and monotonic terminal outcomes "
                     "across delayed success/failure, reloads, multiple tabs, and different operation IDs. "
+                    "Produce a consolidated Markdown plan including UX decisions, outcome, scope, numbered acceptance criteria, "
+                    "assumptions and explicit deviations from the original request. Do not edit repository files. "
                     "Resolve feasibility conflicts before implementation and explain tradeoffs or "
                     "UX recommendations you do not adopt. Do not independently redesign the experience."
                 ), cwd="{cwd}", output_key="plan",
@@ -421,7 +424,13 @@ def small_change_workflow():
 
 
 def feature_workflow():
-    return _final_checks(_feature_workflow())
+    workflow = _feature_workflow()
+    workflow.initial_variables['_requires_plan_approval'] = True
+    index = next(i for i, step in enumerate(workflow.steps) if step.step_id == 'implement')
+    workflow.steps.insert(index, PlanApprovalStep(step_id='plan-approval', name='Developer Plan Approval',
+        author_role='architect', sources=['ux_assessment', 'plan'],
+        targets={'ux-assess': 'UX planning', 'plan': 'Architect'}, next_step='implement'))
+    return _final_checks(workflow)
 
 
 def bugfix_workflow():

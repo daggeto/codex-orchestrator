@@ -290,6 +290,11 @@ async def _workflow_run(obj, name, variables):
             await orch.bus.subscribe("workflow.started", show_progress)
             await orch.bus.subscribe("workflow.mr.ci", show_progress)
         result = await orch.run_workflow(name, variables=variables)
+        saved = await orch.store.get_workflow_run(result.run_id)
+        if saved and saved.state.get("phase") == "waiting_for_plan_approval":
+            row = await orch.store.one("SELECT task_id FROM workflow_runs WHERE run_id=?", (result.run_id,))
+            click.echo(f"Plan approval needed: open the web task page #/tasks/{row['task_id']}")
+            return
         click.echo(f"\nWorkflow '{name}' completed (run_id={result.run_id})")
         click.echo(f"Success: {result.success}")
         if result.error:

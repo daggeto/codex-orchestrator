@@ -20,6 +20,7 @@ class StepResult:
     output: dict[str, Any] = field(default_factory=dict)
     next_step: str | None = None  # override the default next step
     error: str | None = None
+    pause_reason: str | None = None
 
 
 class Step(ABC):
@@ -61,6 +62,8 @@ def reviewer_criteria(variables) -> str:
                        ("architecture_consultation", "Architecture advice")):
         if variables.get(key):
             sections.append(label + ":\n" + str(variables[key]))
+    if variables.get("approved_plan"):
+        sections.append("Developer-approved plan (supersedes historical drafts):\n" + variables["approved_plan"])
     return "\n\n" + "\n\n".join(sections)
 
 
@@ -92,11 +95,19 @@ class AssignStep(Step):
             self.thread_key = thread_key
 
     async def execute(self, ctx: WorkflowContext) -> StepResult:
+        if self.role == 'implementer' and ctx.variables.get('_requires_plan_approval'):
+            approval = ctx.variables.get('plan_approval') or {}
+            if approval.get('status') != 'approved' or not ctx.variables.get('approved_plan'):
+                return StepResult(False, error='Developer plan approval is required before implementation')
         agent = ctx.get_agent_for_role(self.role)
         if not agent:
             return StepResult(success=False, error=f"No running agent with role '{self.role}'")
 
         message = self.message_template.format(**ctx.variables)
+        if ctx.variables.get("planning_feedback") and self.step_id in ctx.variables.get("planning_targets", []):
+            message += "\nDeveloper feedback and current draft (preserve developer decisions):\n" + ctx.variables["planning_feedback"]
+        if ctx.variables.get("approved_plan") and self.role in {"implementer", "reviewer"}:
+            message += "\nThe approved plan below supersedes historical planning outputs. Preserve the original request:\n" + ctx.variables["approved_plan"]
         if self.role == "implementer" and ctx.variables.get("task_worktree"):
             message += (
                 "\n\nThe task has selected this checkout: "

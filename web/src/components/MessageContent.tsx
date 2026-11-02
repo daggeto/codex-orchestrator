@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { BundledLanguage, ThemedToken } from 'shiki';
 
 function Code({ text, language }: { text: string; language: string }) {
@@ -15,7 +16,7 @@ function Code({ text, language }: { text: string; language: string }) {
   return <code>{tokens ? tokens.map((line, i) => <span key={i}>{line.map((token, j) => <span key={j} style={{ color: token.color }}>{token.content}</span>)}{'\n'}</span>) : text}</code>;
 }
 export function MessageContent({ text }: { text: string }) {
-  return <div className="message-content"><Markdown skipHtml urlTransform={url => /^(https?:\/\/|mailto:|#|\/[^/])/.test(url) ? url : ''}
+  return <div className="message-content"><Markdown remarkPlugins={[remarkGfm]} skipHtml urlTransform={url => /^(https?:\/\/|mailto:|#|\/[^/])/.test(url) ? url : ''}
     components={{
       a: ({ children, href }) => <a href={href} rel="noreferrer noopener">{children}</a>,
       img: ({ alt }) => <span>{alt}</span>,

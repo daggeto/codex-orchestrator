@@ -138,6 +138,17 @@ class WorkspaceService:
             if lease or (task['owner_pid'] and owner_alive(task['owner_pid'], task['owner_started'])):
                 continue
             run = await self.store.one('SELECT * FROM workflow_runs WHERE task_id=? ORDER BY updated_at DESC LIMIT 1', (task['task_id'],))
+            if (run and run['status'] in {'accepted', 'starting', 'running'}
+                    and run['state'].get('checkpoint', {}).get('variables', {}).get('_plan_action')):
+                record = await self.store.get_workflow_run(run['run_id'])
+                record.status = 'interrupted'
+                record.state.update(phase='interrupted', error='Plan operation interrupted; continue explicitly')
+                await self.store.save_workflow_run(record)
+                run['status'] = 'interrupted'
+                run['state'] = record.state
+            if run and run['state'].get('phase') == 'waiting_for_plan_approval':
+                await self.store.task_status(task['task_id'], 'waiting_input', 'Plan approval needed')
+                continue
             if run and run['status'] in {'completed', 'failed', 'cancelled', 'interrupted', 'paused'}:
                 status = 'interrupted' if run['status'] == 'paused' else run['status']
                 phase = run['state'].get('error') or run['state'].get('phase') or status

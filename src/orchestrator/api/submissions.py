@@ -220,6 +220,8 @@ async def _accept_continuation(request):
             return web.json_response({"run_id": record.run_id}, status=202)
         if record.status not in {"failed", "interrupted", "cancelled", "paused"}:
             return web.json_response({"error": "This workflow is already active or completed"}, status=409)
+        if record.state.get("phase") == "waiting_for_plan_approval":
+            return web.json_response({"error": "Use the plan approval controls to continue"}, status=409)
         workflow = orch.workflows.get(record.workflow_name)
         if workflow is None:
             raise ValueError("Workflow definition unavailable")
