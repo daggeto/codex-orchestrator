@@ -8,11 +8,12 @@ from __future__ import annotations
 
 def public_workflow(value):
     if isinstance(value, dict):
-        # Evidence may also appear under previous/current in assessment outputs.
-        if 'tracked_patch' in value or 'untracked_hashes' in value:
-            return {}
-        return {key: public_workflow(item) for key, item in value.items()
-                if key not in {'checkout_evidence', 'tracked_patch', 'untracked_hashes'}}
+        # Only the plan-approval model owns this private field. Workflow authors
+        # may legitimately use evidence-related names in variables and outputs.
+        plan = value.get('kind') == 'plan_approval'
+        return {key: public_workflow(item)
+                for key, item in value.items()
+                if not (plan and key == 'checkout_evidence')}
     if isinstance(value, (list, tuple)):
         return [public_workflow(item) for item in value]
     return value

@@ -6,7 +6,7 @@ import asyncio
 import logging
 import uuid
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from datetime import datetime, timezone
 from functools import wraps
@@ -14,16 +14,18 @@ from typing import Any, AsyncIterator
 
 from orchestrator.protocol.events import StreamEvent
 from orchestrator.roles.loader import RoleConfig
+from orchestrator.transcripts import private_assessment_payload
 
 logger = logging.getLogger(__name__)
 
 
 class AgentInput(str):
     """String compatible turn input with an originating message and task resources."""
-    def __new__(cls, text, message_id=None, attachments=None):
+    def __new__(cls, text, message_id=None, attachments=None, public_text=None):
         value = super().__new__(cls, text)
         value.message_id = message_id
         value.attachments = attachments or []
+        value.public_text = public_text
         return value
 
     def with_manifest(self):
@@ -58,13 +60,16 @@ def observed_stream(method):
         from orchestrator.state.store import ThreadRecord
         import json
         original = message
+        public_text = getattr(original, 'public_text', None)
         message = await self.prepare_input(message)
         self._turn_tasks[thread_id] = asyncio.current_task()
-        self._begin_activity(thread_id, message)
+        self._begin_activity(thread_id, public_text if public_text is not None else message)
         turn_id = uuid.uuid4().hex
         pending = []
         store = getattr(self, 'store', None)
         async def record(kind, payload, item_id=None):
+            if public_text is not None:
+                payload = private_assessment_payload(kind, payload)
             if store:
                 pending.append((getattr(self, 'task_id', None), self.agent_id, thread_id, turn_id, item_id,
                                 kind, json.dumps(payload), datetime.now(timezone.utc).isoformat()))
@@ -93,7 +98,8 @@ def observed_stream(method):
                 if message.message_id and event.is_turn_completed and store:
                     await store.write("UPDATE task_messages SET delivery_state=?,updated_at=? WHERE message_id=?",
                                       ('failed' if event.params.get('is_error') or event.params.get('turn', {}).get('error') else 'delivered', datetime.now(timezone.utc).isoformat(), message.message_id))
-                self._observe_event(thread_id, event)
+                observed = replace(event, params=private_assessment_payload(event.method, event.params)) if public_text is not None else event
+                self._observe_event(thread_id, observed)
                 completed = completed or event.is_turn_completed
                 yield event
             if not completed:
@@ -102,7 +108,7 @@ def observed_stream(method):
             self._activity_error = 'Turn interrupted'
             raise
         except Exception as exc:
-            self._activity_error = str(exc)
+            self._activity_error = 'Private recovery assessment failed' if public_text is not None else str(exc)
             await record('error', {'message': str(exc)})
             raise
         finally:
@@ -194,7 +200,7 @@ class Agent(ABC):
         if not message_id and getattr(self, 'store', None) and getattr(self, 'task_id', None):
             latest = await self.store.one('SELECT message_id FROM task_messages WHERE task_id=? ORDER BY created_at DESC LIMIT 1', (self.task_id,))
             message_id = latest['message_id'] if latest else None
-        value = AgentInput(str(message), message_id, resources)
+        value = AgentInput(str(message), message_id, resources, getattr(message, 'public_text', None))
         try:
             await self.validate_attachment_input(value)
         except Exception as exc:

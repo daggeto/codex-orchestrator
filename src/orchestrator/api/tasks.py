@@ -141,6 +141,15 @@ async def events(request):
     if not agent:
         raise LookupError('Agent not found')
     rows = await store.events(aid, int(request.query.get('after', 0)), int(request.query.get('limit', 200)), request.query.get('task_id'))
+    # Assessment threads are private even when saved by versions that persisted
+    # the full prompt. Project at read time; never rewrite durable evidence.
+    from orchestrator.transcripts import private_assessment_payload
+    assessments = await store.rows('SELECT thread_id FROM workflow_recoveries WHERE agent_id=? '
+        'UNION SELECT thread_id FROM recovery_attempts WHERE agent_id=? AND action=?',
+        (aid, aid, 'Assess blocker against saved plan and source'))
+    private_threads = {row['thread_id'] for row in assessments if row['thread_id']}
+    rows = [{**row, 'payload': private_assessment_payload(row['kind'], row['payload'])}
+            if row['thread_id'] in private_threads else row for row in rows]
     return web.json_response({'agent': agent, 'events': rows, 'next_cursor': rows[-1]['id'] if rows else int(request.query.get('after', 0))})
 
 

@@ -346,7 +346,9 @@ class WorkflowRecovery:
                 await store.write('UPDATE threads SET task_id=? WHERE thread_id=?', (ctx.variables.get('task_id'), thread.thread_id))
                 await store.write('UPDATE workflow_recoveries SET agent_id=?,thread_id=?,attempts=1 WHERE incident_id=?', (agent.agent_id, thread.thread_id, incident))
                 await store.write('UPDATE recovery_attempts SET agent_id=?,thread_id=? WHERE incident_id=? AND attempt=1', (agent.agent_id, thread.thread_id, incident))
-                response = await agent.send_message(thread.thread_id,
+                from orchestrator.agents.base import AgentInput
+                from orchestrator.transcripts import PRIVATE_ASSESSMENT
+                response = await agent.send_message(thread.thread_id, AgentInput(
                     'Inspect relevant current source and assess this blocker. Return only JSON with decision '
                     + ('(retry, review, repair, install, replan, or input), summary, and next_action. '
                        'Choose review when existing committed work only needs fresh reviewer approval; do not request unnecessary source edits. '
@@ -362,7 +364,8 @@ class WorkflowRecovery:
                     'Diagnose from authoritative evidence; do not claim a repair before service verification.\n'
                     + json.dumps({'issue': issue, 'evidence': evidence, 'request': ctx.variables.get('task_description'),
                                   'plan': (ctx.variables.get('plan_approval') or {}).get('markdown') or ctx.variables.get('plan')})
-                    + self.skill_instructions(role.name, {'cwd': ctx.variables.get('cwd'), 'bug_description': issue}))
+                    + self.skill_instructions(role.name, {'cwd': ctx.variables.get('cwd'), 'bug_description': issue}),
+                    public_text=PRIVATE_ASSESSMENT))
                 if not response.ok:
                     raise ValueError(response.error or 'Assistant turn failed')
                 candidate = json.loads(response.full_text)
