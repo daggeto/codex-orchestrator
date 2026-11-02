@@ -15,6 +15,7 @@ from orchestrator.roles.loader import RoleConfig
 from orchestrator.state import migrations
 from orchestrator.state.store import AgentRecord, StateStore, ThreadRecord, WorkItemRecord
 from orchestrator.tasks import TaskService
+from orchestrator.recovery import WorkflowRecovery
 from orchestrator.workspaces import WorkspaceService
 
 
@@ -29,6 +30,7 @@ class TaskAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.role = RoleConfig(name='writer')
         self.orch = Orchestrator.__new__(Orchestrator)
         self.orch.store = self.store
+        self.orch.recovery = WorkflowRecovery(self.orch)
         self.orch.config = SimpleNamespace(effective_project_dir=self.root)
         self.orch.workspaces = WorkspaceService(self.orch)
         self.orch.workspaces.register = AsyncMock()

@@ -9,6 +9,7 @@ from orchestrator.agents.base import TurnResult
 from orchestrator.api import tasks, workspaces
 from orchestrator.state.store import StateStore
 from orchestrator.tasks import TaskService
+from orchestrator.recovery import WorkflowRecovery
 
 
 class TaskNavigationApiTests(unittest.IsolatedAsyncioTestCase):
@@ -24,6 +25,7 @@ class TaskNavigationApiTests(unittest.IsolatedAsyncioTestCase):
             await self.store.write("INSERT INTO tasks (task_id,workspace_id,title,prompt,kind,status,phase,settings_json,fingerprint,created_at,updated_at) VALUES (?,'main','Task','Prompt','agent',?,'Phase','{}','fp','now','now')", (f't{n:03}', 'waiting_input' if n == 0 else 'completed'))
         orch = SimpleNamespace(store=self.store)
         orch.tasks = TaskService(orch)
+        orch.recovery = WorkflowRecovery(orch)
         app = web.Application(middlewares=[tasks.errors])
         app['orch'] = orch
         tasks.register(app)
@@ -50,7 +52,9 @@ class TaskNavigationApiTests(unittest.IsolatedAsyncioTestCase):
         archived = await (await self.client.get('/api/tasks?archived=only&limit=1')).json()
         self.assertEqual(['t024'], [t['task_id'] for t in archived['tasks']])
         preview = await (await self.client.get('/api/navigation')).json()
-        self.assertEqual(20, len(preview['tasks']))
+        # Recent twenty plus every unarchived task waiting for input.
+        self.assertEqual([f't{n:03}' for n in range(23, 3, -1)] + ['t000'],
+                         [task['task_id'] for task in preview['tasks']])
         self.assertNotIn('t024', [t['task_id'] for t in preview['tasks']])
         self.assertIn('t004', [t['task_id'] for t in preview['tasks']])
         response = await self.client.post('/api/tasks/t024/archive', json={'archived': False})

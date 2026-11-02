@@ -35,14 +35,23 @@ class Step(ABC):
         ...
 
 
-async def task_snapshot(ctx: WorkflowContext, *, require_clean: bool = True) -> str | None:
-    """Identify the selected checkout; implementation handoffs require it clean."""
+async def task_snapshot(
+    ctx: WorkflowContext, *, require_clean: bool = True, committed_only: bool = False,
+) -> str | None:
+    """Identify committed source or, for planning, the actual checkout contents.
+
+    Explicit committed-source observations exclude working edits. The default
+    retains the clean-checkout guard; planning fingerprints actual file contents
+    with require_clean=False.
+    """
     root = ctx.variables.get("task_worktree")
     if not root:
         return None
     from orchestrator.workflows.merge_request import _run
     if await _run(root, "git", "branch", "--show-current") != ctx.variables["task_branch"]:
         raise ValueError("Task branch changed; restore the selected checkout before continuing")
+    if committed_only:
+        return await _run(root, "git", "rev-parse", "HEAD")
     status = await _run(root, "git", "status", "--porcelain", "--untracked-files=all")
     if status and require_clean:
         raise ValueError("Uncommitted changes remain; finish implementation and commit task changes before review. Preserve unrelated edits.")

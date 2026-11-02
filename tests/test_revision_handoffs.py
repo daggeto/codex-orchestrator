@@ -30,8 +30,12 @@ class WorktreeTests(unittest.IsolatedAsyncioTestCase):
         async def acquire_thread(agent, step, **kwargs):
             return (await agent.start_thread(**kwargs)).thread_id
 
-        self.ctx = SimpleNamespace(run_id='test', variables={'cwd': self.root, 'create_mr': False},
-                                   acquire_thread=acquire_thread, persist_step_thread=AsyncMock())
+        self.ctx = SimpleNamespace(run_id='test', variables={
+            'cwd': self.root, 'create_mr': False, 'task_description': 'Fix the task',
+            'ux_assessment': 'Preserve existing interactions',
+            'ux_consultation': 'No UX consultation requested.',
+            'architecture_consultation': 'No architecture consultation requested.',
+        }, acquire_thread=AsyncMock(side_effect=acquire_thread), persist_step_thread=AsyncMock())
 
     async def asyncTearDown(self):
         checkout = self.ctx.variables.get('task_worktree')
@@ -78,6 +82,24 @@ class WorktreeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.success)
         self.assertIn('Uncommitted changes', result.error)
         self.assertEqual(Path(checkout, 'file').read_text(), 'partial implementation')
+
+    async def test_snapshot_modes_preserve_dirty_checkout_and_planning_evidence(self):
+        from orchestrator.workflows.steps import task_snapshot
+        prepared = await PrepareMergeRequestStep('prepare').execute(self.ctx)
+        self.assertTrue(prepared.success, prepared.error)
+        self.ctx.variables.update(prepared.output)
+        checkout = self.ctx.variables['cwd']
+        head = self.ctx.variables['task_baseline']
+        notes = Path(checkout, 'notes')
+        notes.write_text('first draft')
+        fingerprint = await task_snapshot(self.ctx, require_clean=False)
+        with self.assertRaisesRegex(ValueError, 'Uncommitted changes'):
+            await task_snapshot(self.ctx)
+        self.assertEqual(head, await task_snapshot(self.ctx, committed_only=True))
+        notes.write_text('second draft')
+        self.assertNotEqual(fingerprint, await task_snapshot(self.ctx, require_clean=False))
+        self.assertEqual('second draft', notes.read_text())
+        self.assertEqual(head, await _run(checkout, 'git', 'rev-parse', 'HEAD'))
 
     async def test_foreign_commit_invalidates_review_before_agent_starts(self):
         prepared = await PrepareMergeRequestStep('prepare').execute(self.ctx)

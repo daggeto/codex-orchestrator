@@ -97,7 +97,7 @@ class WorkspaceSelectionTests(unittest.IsolatedAsyncioTestCase):
         from orchestrator.workspaces import WorkspaceService
         with tempfile.TemporaryDirectory() as directory:
             orch = Mock()
-            orch.store.task = AsyncMock(return_value={'workspace_id': 'main'})
+            orch.store.task = AsyncMock(return_value={'workspace_id': 'main', 'title': 'Create isolated checkout'})
             orch.store.workspace_record = AsyncMock(return_value={'kind': 'main', 'status': 'active', 'path': directory})
             orch.workspace.create_worktree = AsyncMock(side_effect=RuntimeError('cannot create checkout'))
             with self.assertRaisesRegex(RuntimeError, 'cannot create checkout'):
