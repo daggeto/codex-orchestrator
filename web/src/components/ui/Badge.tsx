@@ -1,4 +1,5 @@
-import type { HTMLAttributes } from 'react';
-export function Badge({ children, className = '', variant, ...props }: HTMLAttributes<HTMLSpanElement> & { variant?: 'neutral' | 'warning' | 'danger' | 'success' }) {
-  return <span className={`badge ${variant ? `badge-${variant}` : ''} ${className}`} {...props}>{children}</span>;
+import type { ComponentProps } from 'react';
+import { Badge as Primitive } from './primitives/badge';
+export function Badge({ className = '', variant, ...props }: Omit<ComponentProps<typeof Primitive>, 'variant'> & { variant?: 'neutral' | 'warning' | 'danger' | 'success' }) {
+  return <Primitive variant={variant === 'danger' ? 'destructive' : 'outline'} className={`badge ${variant ? `badge-${variant}` : ''} ${className}`} {...props} />;
 }

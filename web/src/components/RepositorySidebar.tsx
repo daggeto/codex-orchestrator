@@ -1,16 +1,11 @@
+import { Button } from './ui/Button';
 import { Link, useLocation } from 'react-router';
 import { useNavigation } from '../navigation';
-import { useResource } from '../useResource';
-import type { TaskView } from '../types';
 import { TaskRow } from './TaskRow';
 import { workspaceLabel } from '../workspaceLabel';
 export function RepositorySidebar() {
-  const { data, error, expanded, toggle } = useNavigation();
+  const { data, error, expanded, toggle, selected, selectedId } = useNavigation();
   const { pathname, search } = useLocation();
-  const contextId = pathname.startsWith('/tasks/') ? decodeURIComponent(pathname.slice(7)) : pathname.startsWith('/agents/') ? new URLSearchParams(search).get('task_id') : null;
-  // Fetch detail independently of the capped preview, including on contextual agent routes.
-  const selected = useResource<TaskView>(contextId ? `/api/tasks/${encodeURIComponent(contextId)}` : null, contextId ? 3000 : 0);
-  const selectedId = pathname.startsWith('/agents/') && !selected.data?.agents.some(a => pathname === `/agents/${a.agent_id}`) ? null : contextId;
   const tasks = [...(data?.tasks || [])];
   if (selectedId && selected.data?.task.task_id === selectedId && !tasks.some(t => t.task_id === selectedId)) tasks.unshift(selected.data.task);
   const waiting = tasks.filter(task => task.status === 'waiting_input' && !task.archived_at);
@@ -24,7 +19,7 @@ export function RepositorySidebar() {
       const active = workspaces.some(w => tasks.some(t => t.workspace_id === w.workspace_id && t.task_id === selectedId));
       const open = expanded[repository.repository_id] !== false;
       return <section className={`repository-group ${active ? 'has-selection' : ''}`} key={repository.repository_id}>
-        <div className="repository-group-heading"><button aria-expanded={open} aria-label={`Toggle ${repository.name}`} onClick={() => toggle(repository.repository_id)}>{open ? '▾' : '▸'}</button><Link to={`/repositories/${repository.repository_id}`}>{repository.name}</Link></div>
+        <div className="repository-group-heading"><Button aria-expanded={open} aria-label={`Toggle ${repository.name}`} onClick={() => toggle(repository.repository_id)}>{open ? '▾' : '▸'}</Button><Link to={`/repositories/${repository.repository_id}`}>{repository.name}</Link></div>
         {workspaces.map(workspace => {
           const group = tasks.filter(t => t.workspace_id === workspace.workspace_id);
           const selected = group.some(t => t.task_id === selectedId);
@@ -35,7 +30,7 @@ export function RepositorySidebar() {
           const label = workspaceLabel(workspace);
           return <section className="workspace-group" key={workspace.workspace_id} aria-label={label}>
             <div className="repository-group-heading workspace-group-heading">
-              <button aria-expanded={workspaceOpen} aria-label={`Toggle ${label}`} onClick={() => toggle(key)}>{workspaceOpen ? '▾' : '▸'}</button>
+              <Button aria-expanded={workspaceOpen} aria-label={`Toggle ${label}`} onClick={() => toggle(key)}>{workspaceOpen ? '▾' : '▸'}</Button>
               <Link to={`/workspaces/${workspace.workspace_id}`} title={`${label} · ${workspace.branch} · ${workspace.path}`}><span>{label}</span><small>{workspace.branch || 'Detached HEAD'}{workspace.status !== 'active' && ` · ${workspace.status}`}</small></Link>
             </div>
             {(open && workspaceOpen ? group : group.filter(t => t.task_id === selectedId || (t.status === 'waiting_input' && !t.archived_at))).map(task => <TaskRow key={task.task_id} task={task} selected={task.task_id === selectedId} compact />)}

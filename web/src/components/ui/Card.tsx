@@ -1,5 +1,5 @@
-import type { HTMLAttributes } from 'react';
-// Adapted from Horizon UI's Card; see /third-party-notices.txt.
-export function Card({ className = '', ...props }: HTMLAttributes<HTMLElement>) {
-  return <section className={`card relative flex flex-col ${className}`} {...props} />;
+import type { ComponentProps } from 'react';
+import { Card as Primitive } from './primitives/card';
+export function Card({ className = '', ...props }: ComponentProps<typeof Primitive>) {
+  return <Primitive className={`card ${className}`} {...props} />;
 }

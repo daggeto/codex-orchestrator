@@ -1,54 +1,46 @@
 :root {
-  font-family: 'DM Sans', 'Segoe UI', system-ui, sans-serif;
+  font-family: 'Segoe UI', system-ui, sans-serif;
   font-size: 14px;
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 24px;
-  --space-6: 32px;
-  --radius-sm: 10px;
-  --radius-card: 20px;
-  --code-surface: #0d1117;
-  --code-text: #e6edf3;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px; --space-6: 32px;
+  --radius: .5rem;
   --font-mono: ui-monospace, SFMono-Regular, Consolas, monospace;
-}
-:root, :root[data-theme=dark] {
+  --task-row-height: 40px; --task-icon-size: 16px; --task-gap: 8px; --conversation-width: 960px;
   color-scheme: dark;
-  --canvas: #0b1437;
-  --surface: #111c44;
-  --surface-raised: #1b2855;
-  --input: #0d173b;
-  --text: #f4f6ff;
-  --muted: #acb8db;
-  --border: #2c3964;
-  --accent: #b4a1ff;
-  --accent-solid: #7551ff;
-  --accent-soft: #292251;
-  --danger: #ffb0bd;
-  --danger-soft: #3d223b;
-  --success: #79e4c3;
-  --warning: #ffda8a;
-  --warning-soft: #342e35;
-  --shadow: 0 12px 36px #050b221f;
+  --background: oklch(.145 0 0); --foreground: oklch(.985 0 0);
+  --card: oklch(.205 0 0); --card-foreground: var(--foreground);
+  --popover: var(--card); --popover-foreground: var(--foreground);
+  --primary: oklch(.922 0 0); --primary-foreground: oklch(.205 0 0);
+  --secondary: oklch(.269 0 0); --secondary-foreground: var(--foreground);
+  --muted: oklch(.269 0 0); --muted-foreground: oklch(.708 0 0);
+  --accent: oklch(.269 0 0); --accent-foreground: var(--foreground);
+  --destructive: oklch(.704 .191 22.216); --border: oklch(1 0 0 / 15%); --input: oklch(1 0 0 / 15%); --ring: oklch(.556 0 0);
+  --control-background: oklch(.18 0 0);
+  --danger: var(--destructive); --danger-soft: oklch(.25 .04 25);
+  --success: oklch(.8 .12 160); --warning: oklch(.85 .13 85); --warning-soft: oklch(.28 .03 85);
+  --code-surface: oklch(.16 0 0); --code-text: oklch(.95 0 0);
+  --shadow: 0 1px 3px oklch(0 0 0 / 10%);
+  --sidebar: var(--card); --sidebar-foreground: var(--foreground); --sidebar-primary: var(--primary); --sidebar-primary-foreground: var(--primary-foreground); --sidebar-accent: var(--accent); --sidebar-accent-foreground: var(--foreground); --sidebar-border: var(--border); --sidebar-ring: var(--ring);
 }
 :root[data-theme=light] {
   color-scheme: light;
-  --canvas: #f4f7fe;
-  --surface: #ffffff;
-  --surface-raised: #edf1fc;
-  --input: #f8faff;
-  --text: #1b2559;
-  --muted: #59668a;
-  --border: #dce2f1;
-  --accent: #5932cf;
-  --accent-solid: #623bdb;
-  --accent-soft: #eee8ff;
-  --danger: #af2344;
-  --danger-soft: #fff0f3;
-  --success: #14765d;
-  --warning: #805609;
-  --warning-soft: #fff7e4;
-  --shadow: 0 12px 36px #21336b08;
+  --background: oklch(.985 0 0); --foreground: oklch(.145 0 0);
+  --card: oklch(1 0 0); --primary: oklch(.205 0 0); --primary-foreground: oklch(.985 0 0);
+  --secondary: oklch(.97 0 0); --muted: oklch(.97 0 0); --muted-foreground: oklch(.45 0 0); --accent: oklch(.95 0 0);
+  --destructive: oklch(.577 .245 27.325); --border: oklch(.87 0 0); --input: oklch(.87 0 0); --ring: oklch(.55 0 0);
+  --control-background: oklch(1 0 0); --danger-soft: oklch(.97 .015 25);
+  --success: oklch(.4 .09 160); --warning: oklch(.44 .09 85); --warning-soft: oklch(.97 .03 85);
+  --code-surface: oklch(.96 0 0); --code-text: oklch(.2 0 0);
 }
-:root { --task-row-height: 40px; --task-icon-size: 16px; --task-gap: 8px; --conversation-width: 960px; }
+@theme inline {
+  --color-background: var(--background); --color-foreground: var(--foreground);
+  --color-card: var(--card); --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover); --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary); --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary); --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted); --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent); --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive); --color-border: var(--border); --color-input: var(--input); --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar); --color-sidebar-foreground: var(--sidebar-foreground); --color-sidebar-primary: var(--sidebar-primary); --color-sidebar-primary-foreground: var(--sidebar-primary-foreground); --color-sidebar-accent: var(--sidebar-accent); --color-sidebar-accent-foreground: var(--sidebar-accent-foreground); --color-sidebar-border: var(--sidebar-border); --color-sidebar-ring: var(--sidebar-ring);
+  --radius-sm: calc(var(--radius) - 4px); --radius-md: calc(var(--radius) - 2px); --radius-lg: var(--radius); --radius-xl: calc(var(--radius) + 4px);
+  --font-heading: 'Segoe UI', system-ui, sans-serif;
+}

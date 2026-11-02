@@ -7,6 +7,7 @@ const proxy = {
 };
 export default defineConfig({
   plugins: [tailwindcss()],
+  resolve: { alias: { '@': new URL('./src', import.meta.url).pathname } },
   server: { host: '127.0.0.1', proxy },
   preview: { host: '127.0.0.1', proxy },
 });

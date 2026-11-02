@@ -84,7 +84,12 @@ export async function uploadAttachment(draftId: string, uploadId: string, file: 
   return result as import('./types').Attachment;
 }
 const submissionKeys = new Map<string, { fingerprint: string; key: string }>();
-export function clearSubmissionIdentity(storageKey: string) {
+export function clearSubmissionIdentity(storageKey: string, expectedKey?: string) {
+  if (expectedKey) {
+    let key = submissionKeys.get(storageKey)?.key;
+    try { key = JSON.parse(sessionStorage.getItem(storageKey) || 'null')?.key ?? key; } catch { /* Use memory. */ }
+    if (key !== expectedKey) return;
+  }
   submissionKeys.delete(storageKey);
   try { sessionStorage.removeItem(storageKey); } catch { /* Optional storage. */ }
 }

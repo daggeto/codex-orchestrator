@@ -1,3 +1,4 @@
+import { NativeSelect } from './ui/primitives/native-select';
 import { useEffect, useRef, useState } from 'react';
 import { reduceConversation } from '../conversation';
 import { ActivityGroup } from './ActivityGroup';
@@ -61,5 +62,5 @@ export function AgentConversation({ cwd: _cwd }: { cwd: string }) {
   const [agents, setAgents] = useState<OwnedAgent[]>([]);
   const [selected, setSelected] = useState('');
   useEffect(() => { const controller = new AbortController(); void get<{ agents: OwnedAgent[] }>('/api/agents', controller.signal).then(result => setAgents(result.agents)).catch(() => {}); return () => controller.abort(); }, []);
-  return <><label>Agent history<select value={selected} onChange={event => setSelected(event.target.value)}><option value="">Select agent</option>{agents.map(agent => <option key={agent.agent_id} value={agent.agent_id}>{agent.role}</option>)}</select></label>{selected && <AgentHistory key={selected} agentId={selected} />}</>;
+  return <><label>Agent history<NativeSelect value={selected} onChange={event => setSelected(event.target.value)}><option value="">Select agent</option>{agents.map(agent => <option key={agent.agent_id} value={agent.agent_id}>{agent.role}</option>)}</NativeSelect></label>{selected && <AgentHistory key={selected} agentId={selected} />}</>;
 }
