@@ -16,6 +16,7 @@ class OrchestratorConfig:
     roles_dir: Path | None = None
     workflows_dir: Path | None = None
     project_dir: Path | None = None
+    feedback_repository_path: str | None = None
     base_port: int = 9001
     max_agents: int = 20
     health_check_interval: float = 10.0

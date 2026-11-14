@@ -1,4 +1,5 @@
 import { RemoveWorkspace } from '../components/RemoveWorkspace';
+import { WorktreeInstance } from '../components/WorktreeInstance';
 import { workspaceLabel } from '../workspaceLabel';
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router';
@@ -35,6 +36,7 @@ function WorkspaceDetails({ workspaceId }: { workspaceId: string }) {
     {error && <ResourceState error>{error} · Navigation may be stale.</ResourceState>}
     {workspace.status === 'active' && <TaskComposer key={workspace.workspace_id} workspace={workspace} stale={!!error} />}
     <Card><h2>Workspace details</h2><p>Branch: <code>{workspace.branch || 'Detached HEAD'}</code></p><p className="muted">Checkout: {workspace.kind === 'main' ? 'Main' : 'Worktree'}</p>
+    {workspace.kind === 'worktree' && workspace.status !== 'archived' && <WorktreeInstance workspaceId={workspaceId} disabled={!!error || workspace.status !== 'active'} />}
     {workspace.kind === 'worktree' && workspace.status !== 'archived' && <div className="workspace-merge">
       <p>Source: <code>{merge.eligibility.data?.source_branch || workspace.branch}</code>{' '}
         {merge.eligibility.data?.source_sha && <code>{merge.eligibility.data.source_sha}</code>}</p>

@@ -119,13 +119,19 @@ class TaskService:
                     role = settings['roles'][name]
                     role.update({key: value for key, value in overrides.items() if key != 'config_overrides'})
                     role['config_overrides'].update(overrides.get('config_overrides', {}))
+                if workflow.name == 'feedback-implementation':
+                    from orchestrator.workflows.feedback import RUNTIME_SAFETY
+                    for role in settings['roles'].values():
+                        role['system_prompt'] += '\n\n' + RUNTIME_SAFETY
                 variables = settings.setdefault('variables', {})
-                if workflow.name in {'small-change', 'ui-small'} and str(variables.get('create_mr', False)).lower() not in {'false', '0', 'no'}:
+                if workflow.name in {'small-change', 'ui-small', 'feedback-implementation'} and str(variables.get('create_mr', False)).lower() not in {'false', '0', 'no'}:
                     raise ValueError('This local workflow never publishes; select feature or backend-feature for PR/MR publication')
                 if workflow.publication_policy == 'optional':
                     variables.setdefault('create_mr', False)
                 if workflow.publication_policy == 'required' and str(variables.get('create_mr', True)).lower() in {'false','0','no'}:
                     raise ValueError('This workflow requires PR/MR publication')
+                if workflow.name == 'feedback-implementation' and (isolation != 'always' or workspace['kind'] != 'main'):
+                    raise ValueError('Feedback implementation must start from Orch Main with mandatory isolation')
                 isolate = isolation == 'always' or isolation == 'auto' and any(r['sandbox'] != 'read-only' for r in settings['roles'].values())
             else:
                 settings['effective_role'] = self.role(settings)
@@ -395,7 +401,7 @@ class TaskService:
             raise
         except Exception as exc:
             if owned:
-                if task['kind'] == 'workflow' and not assistance_only:
+                if task['kind'] == 'workflow' and not assistance_only and task['settings'].get('workflow') != 'feedback-analysis':
                     try:
                         await self.orch.recovery.preparation_failure(task_id, exc, leased=leased)
                     except Exception:

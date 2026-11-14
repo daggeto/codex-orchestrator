@@ -331,7 +331,7 @@ class WorkflowEngine:
                     ctx.variables['_recovery_pre_failure_mr_status'] = mr_status_before
                     ctx.variables.update(result.output)
                     recovery = getattr(ctx.registry, 'workflow_recovery', None)
-                    if recovery:
+                    if recovery and workflow.name != 'feedback-analysis':
                         try:
                             from orchestrator.recovery_actions import recover_step
                             result = await recover_step(recovery, ctx, workflow, step, result)

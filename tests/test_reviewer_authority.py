@@ -170,6 +170,11 @@ class ReviewerAuthorityTests(unittest.IsolatedAsyncioTestCase):
 
         async def execute(step):
             stages.append(step.step_id)
+            if step.step_id == 'validation-prepare':
+                return StepResult(True, output={'validation_environment_report': json.dumps({
+                    'status': 'ready', 'reason': 'Task-local dependencies prepared',
+                    'action': '', 'commands': [], 'qa_instructions': 'Use task-local tools',
+                })})
             if step.step_id == 'validation-qa':
                 current['qa'] += 1
                 checks = [dict(category=category, command='check-' + category,
@@ -192,6 +197,6 @@ class ReviewerAuthorityTests(unittest.IsolatedAsyncioTestCase):
         with patch('orchestrator.workflows.validation._run', git):
             result = await validation.execute(ctx)
         self.assertTrue(result.success, result.error)
-        self.assertEqual(stages, ['validation-qa', 'validation-repair', 'review',
-                                  'validation-source-revision', 'review', 'validation-qa'])
+        self.assertEqual(stages, ['validation-prepare', 'validation-qa', 'validation-repair', 'review',
+                                  'validation-source-revision', 'review', 'validation-prepare', 'validation-qa'])
         self.assertEqual(result.output['validation_commit'], 'review-fix')

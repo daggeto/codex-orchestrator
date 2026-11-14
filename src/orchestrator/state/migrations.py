@@ -1,7 +1,7 @@
 """Ordered, additive migrations. Historical records without evidence stay unowned."""
 from __future__ import annotations
 
-VERSION = 12
+VERSION = 16
 MIGRATIONS = {2: """
 CREATE TABLE repositories (
  repository_id TEXT PRIMARY KEY, name TEXT NOT NULL, main_path TEXT NOT NULL UNIQUE,
@@ -192,6 +192,39 @@ CREATE TABLE recovery_retry_requests (
  task_id TEXT REFERENCES tasks(task_id), operation_id TEXT,
  status TEXT NOT NULL DEFAULT 'accepted', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
+""", 13: """
+CREATE TABLE feedback (
+ feedback_id TEXT PRIMARY KEY, idempotency_key TEXT NOT NULL UNIQUE, fingerprint TEXT NOT NULL,
+ situation TEXT NOT NULL, improvements TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'submitted',
+ context_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ analysis_task_id TEXT REFERENCES tasks(task_id), implementation_task_id TEXT REFERENCES tasks(task_id)
+);
+CREATE TABLE feedback_evidence (
+ feedback_id TEXT NOT NULL REFERENCES feedback(feedback_id), kind TEXT NOT NULL,
+ media_type TEXT NOT NULL, contents BLOB NOT NULL, PRIMARY KEY(feedback_id,kind)
+);
+CREATE INDEX feedback_created ON feedback(created_at DESC);
+""", 14: """
+ALTER TABLE feedback ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE feedback ADD COLUMN analysis_json TEXT;
+ALTER TABLE feedback ADD COLUMN error TEXT;
+CREATE TABLE feedback_revisions (
+ feedback_id TEXT NOT NULL REFERENCES feedback(feedback_id), revision INTEGER NOT NULL,
+ kind TEXT NOT NULL, contents_json TEXT NOT NULL, created_at TEXT NOT NULL,
+ PRIMARY KEY(feedback_id,revision)
+);
+CREATE TABLE feedback_actions (
+ request_id TEXT PRIMARY KEY, feedback_id TEXT NOT NULL REFERENCES feedback(feedback_id),
+ fingerprint TEXT NOT NULL, created_at TEXT NOT NULL
+);
+""", 15: """
+ALTER TABLE feedback ADD COLUMN approved_json TEXT;
+ALTER TABLE feedback ADD COLUMN implementation_request_json TEXT;
+ALTER TABLE feedback ADD COLUMN completed_at TEXT;
+""", 16: """
+ALTER TABLE workspace_merges ADD COLUMN archive_after_merge INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE workspace_merges ADD COLUMN cleanup_status TEXT;
+ALTER TABLE workspace_merges ADD COLUMN cleanup_error TEXT;
 """}
 
 

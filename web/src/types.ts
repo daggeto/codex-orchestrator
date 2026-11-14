@@ -107,9 +107,12 @@ export type MergeState = 'accepted' | 'running' | 'merged' | 'already_integrated
 export interface MergeRequest {
   operation_id: string; source_branch: string; source_sha: string;
   destination_workspace_id: string; destination_path: string; destination_sha: string;
-  commit_changes?: boolean; changes?: Record<string, string>;
+  commit_changes?: boolean; archive_after_merge?: boolean; changes?: Record<string, string>;
 }
-export interface MergeOperation extends Omit<MergeRequest, 'changes' | 'commit_changes'> {
+export interface MergeOperation extends Omit<MergeRequest, 'changes' | 'commit_changes' | 'archive_after_merge'> {
+  archive_after_merge?: boolean | 0 | 1;
+  cleanup_status?: 'pending' | 'running' | 'completed' | 'failed' | null;
+  cleanup_error?: string | null;
   recoveries?: RecoveryIncident[];
   commit_changes?: boolean | 0 | 1;
   changes?: Record<string, string | { tree: string; path: string; original_sha: string }>;

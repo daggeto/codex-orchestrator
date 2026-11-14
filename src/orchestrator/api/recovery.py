@@ -107,9 +107,12 @@ async def retry_merge(request, iid, token):
     # branches need the ordinary Merge UI to present and accept their new snapshot.
     payload = {key: original[key] for key in ('source_branch', 'source_sha', 'destination_workspace_id', 'destination_path', 'destination_sha')}
     payload['operation_id'] = token
+    if original.get('archive_after_merge'):
+        payload['archive_after_merge'] = True
     operation, created = await orch.merges.begin(wid, payload)
     if created:
-        own_task(request.app, orch.merges.execute(operation['operation_id']))
+        from orchestrator.api.workspaces import execute_merge
+        own_task(request.app, execute_merge(request, operation['operation_id']))
     if not prior:
         await orch.store.write('INSERT OR IGNORE INTO recovery_retry_requests (request_id,incident_id,task_id,operation_id,created_at,updated_at) VALUES (?,?,?,?,?,?)',
             (token, iid, incident['task_id'], token, now(), now()))

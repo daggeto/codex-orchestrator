@@ -39,6 +39,10 @@ COMMANDS = (
             "accepts durable tasks asynchronously, and starts a task-owned team. "
             "Browser disconnects leave accepted work running; service shutdown interrupts it. "
             "Workspace details can merge a captured worktree commit into the checkout holding local main. "
+            "For Orchestrator worktrees, Start test instance launches checkout source on separate frontend/API ports with fresh temporary data. "
+            "Install that worktree's frontend dependencies first. Open test app opens its URL; Stop test instance or server shutdown stops its processes. "
+            "Test instances select a Vite-compatible Node from PATH or installed nvm versions; ORCH_NODE_BINARY supplies an explicit candidate. "
+            "Temporary data/logs remain for inspection; a later start creates fresh data. Stop the instance before removing its worktree. "
             "Local edits do not block Merge to main and remain uncommitted; Git rejects overwrites. The optional Commit and merge action generates messages using the configured commit_model "
             "(gpt-6-luna by default), commits captured tracked/untracked changes in both checkouts, then merges locally. "
             "Conflicts get up to three progressing recovery attempts within ten minutes (conflict-resolver uses gpt-6-luna, low effort by default); "
@@ -74,6 +78,7 @@ COMMANDS = (
             "Continuing a stopped workflow retains task-owned agents and the workspace lease, and updates the task when execution ends. "
             "Saved runs predating reviewer-only approval retain their workspace, implementation, plans, and budget; continuation obtains fresh reviewer approval before completion or publication. "
             "Continuing final validation authorizes fresh QA and up to three repair rounds with source review; repeated failures stop early. QA may request scoped execution approval and retry a sandbox-restricted command once per pass without consuming a repair round, subject to task/repository restrictions and approval decisions. Attempt- and commit-bound evidence is retained. Task pages show unresolved environment blockers, stopped repairs, and recovery actions. "
+            "Before each QA pass the implementer prepares declared dependencies and source resolution in checkout-local ignored environments, preserving source and existing edits, and supplies QA tool paths. Dependency/import-path-only blockers permit one setup repair and fresh QA per cycle without a source commit; external or persistent blockers stop with recovery guidance. Installation and check restrictions still apply. "
             "Continuation atomically queues its unarchived task, preventing archive until execution ends. "
             "Legacy workflow runs without an owning task must restart as workspace tasks. "
             "Checkouts reserved for a local-main merge or merge recovery reject task execution. "
@@ -124,13 +129,15 @@ COMMANDS = (
             "Requires AGENT_ID MESSAGE. Starts the selected saved non-task agent on demand inside a leased task in a Git checkout. Records task participation and retains continuation settings after interruption. Use --thread/-t to resume a thread and --cwd to set its working directory.",
             ("""make agent-send ARGS='design-agent "Continue the design" --thread THREAD_ID --cwd /path/to/repo'""",)),
     Command("workflow-list", "List workflows and their step counts.", "orch", ("workflow", "list"),
-            "Built-ins are small-change, ui-small, backend-feature, feature, bugfix, review, research, and pr-completion.",
+            "Built-ins are small-change, ui-small, backend-feature, feature, bugfix, review, research, pr-completion, and feedback-analysis (read-only feedback assessment), and feedback-implementation (approved feedback in an isolated worktree).",
             ("make workflow-list",)),
     Command("workflow-run", "Run a named workflow with variables and a target directory.", "orch", ("workflow", "run"),
             "Requires NAME. Repeat --var/-v KEY=VALUE for workflow inputs. --cwd sets the target repository; "
             "--roles-dir selects role definitions independently. Required roles are started within the owning task. "
             "Built-in workflow roles have no elapsed-time turn limit; max_turn_seconds=0 disables it, while a positive role value opts into a hard timeout. "
-            "Cancellation and workflow step limits still apply. "
+            "Cancellation and workflow step limits still apply. feedback-analysis is managed by Feedback Loop; it categorises feedback and returns clarification questions or an editable brief without implementing changes. "
+            "feedback-implementation adds a read-only planner to small-change after explicit Feedback Loop approval, requires an isolated Orch worktree, and retains changes for review without publication or live-service restart. "
+            "Its approval guard ignores surrounding prompt whitespace and reports the specific approval or isolation mismatch. "
             "small-change implements directly, combines correctness and usability review, permits up to 10 source revisions, "
             "and generates its summary without another model call. It never publishes. small-change and ui-small "
             "require one clear outcome, straightforward acceptance criteria, a localized change using existing patterns and contracts, "
@@ -151,6 +158,7 @@ COMMANDS = (
             "capture the current checkout on explicit approval and verify it again before implementation. "
             "In every implementation flow the reviewer owns source approval and checks the request against all supplied UX and architecture criteria. "
             "Revisions, including source revisions after QA repairs, return directly to the reviewer until approval, subject to revision and step limits. "
+            "Before final QA, the implementer prepares checkout-local dependencies and correct Python imports, supplies tool paths, and preserves source and existing edits. Dependency/import-path-only QA blockers permit one setup repair and fresh check pass per cycle without a new source commit; external or persistent blockers stop with recovery guidance. Installation and testing restrictions still apply. "
             "Unclear decisions stop without requesting implementation; unchanged rejected commits stop with the implementer report. "
             "ui-small uses a brief UX plan and reviewer approval; backend-feature uses architecture planning and reviewer approval; bugfix uses investigation and reviewer approval. "
             "Only material decisions trigger a scoped UX or architecture consultation. "
@@ -200,15 +208,19 @@ COMMANDS = (
     Command("dev", "Start repository navigation, task conversations, and the monitor.", "npm", ("run", "dev"),
             "Runs Vite in web/ with compact task navigation, a reversible task Archive, and task-scoped participant history. "
             "Tasks awaiting input remain visible beneath collapsed workspace groups with their review or input status. "
-            "Worktree removal remains a separate confirmed operation. Start make start in another terminal for the API on port 8420. "
+            "Worktree removal remains a separate confirmed operation. The toolbar can start, stop, or restart this checkout's backend on port 8420 while Vite stays running. "
+            "Controls require a local same-origin connection, python3, lsof, ps, and an installed .venv. Stop and restart interrupt active tasks. "
+            "Backend launches write to .backend.log; stop/start retains launch arguments while Vite stays running, and restart preserves the current CLI arguments. "
+            "Launches use this checkout's .venv/bin/python and include its src directory on PYTHONPATH; restart checks backend imports with that same interpreter before stopping the current process. "
             "The development server proxies /api and /health to that API. Task home defaults to small-change "
             "with local commits and no publication. Scope stops show suggested task splits with standalone prompts, recommended workflows, "
             "required inputs, explicit start buttons and persistent links to accepted tasks. "
+            "Before QA, the implementer prepares checkout-local dependencies and Python source resolution and hands off tool paths. Dependency/import-path-only blockers permit one setup repair per validation cycle without a source commit; installation restrictions remain in force. "
             "ui-small adds a brief UX plan, reviewer-owned approval, optional advisory UX reporting, and up to 10 source revision rounds; backend-feature omits UX stages and discloses UI edits. Implementation workflows finish with applicable QA checks and up to three validation repairs per accepted cycle. QA may request scoped execution approval and retry a sandbox-restricted command once per pass, subject to task/repository restrictions and approval decisions. Failed checks reach the implementer even alongside environment blockers; repeated failures or unresolved blockers stop with task-page recovery guidance. Publication is opt-in for feature/backend-feature and "
             "required for pr-completion. The monitor remains read-only.",
             ("make dev", 'make dev ARGS="--port 5174"')),
     Command("preview", "Serve the production web build locally.", "npm", ("run", "preview"),
-            "Runs Vite preview in web/. Run make build first and keep the orchestrator API running.",
+            "Runs Vite preview in web/. Run make build first. Local toolbar controls can start, stop, or restart this checkout's API on port 8420, interrupting active tasks on stop/restart; launches write to .backend.log.",
             ("make preview", 'make preview ARGS="--port 4174"')),
     Command("typecheck", "Check frontend TypeScript without emitting files.", "npm", ("run", "typecheck"),
             "Runs the web package's TypeScript compiler with --noEmit.",

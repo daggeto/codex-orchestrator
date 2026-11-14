@@ -1,4 +1,5 @@
 import { HashRouter, Link, Navigate, Route, Routes } from 'react-router';
+import { FeedbackListPage, FeedbackPage } from './pages/FeedbackPage';
 import { Monitor } from './Monitor';
 import { NavigationProvider } from './navigation';
 import { AppShell } from './components/AppShell';
@@ -17,6 +18,8 @@ export function App() {
     <Route path="/tasks" element={<TasksPage />} />
     <Route path="/tasks/:taskId" element={<TaskPage />} />
     <Route path="/agents/:agentId" element={<AgentPage />} />
+    <Route path="/feedback" element={<FeedbackListPage />} />
+    <Route path="/feedback/:feedbackId" element={<FeedbackPage />} />
     <Route path="/monitor" element={<Monitor />} />
     <Route path="*" element={<p>Page not found. <Link to="/">Repositories</Link></p>} />
   </Routes></AppShell></NavigationProvider></HashRouter>;

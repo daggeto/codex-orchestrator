@@ -204,6 +204,10 @@ class OwnershipStore:
                     SELECT destination_workspace_id FROM workspace_merges WHERE operation_id=?)
                     AND status IN ('merging','merge_recovery_required')""",
                     ('merge_recovery_required' if state == 'recovery_required' else 'active', now(), operation_id, operation_id))
+                if state in {'merged', 'already_integrated'}:
+                    await db.execute("""UPDATE workspaces SET status='merge_cleanup_pending',updated_at=?
+                        WHERE workspace_id=(SELECT source_workspace_id FROM workspace_merges
+                            WHERE operation_id=? AND archive_after_merge=1) AND status='active'""", (now(), operation_id))
                 await db.commit()
             except BaseException:
                 await db.rollback()

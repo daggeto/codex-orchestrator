@@ -49,6 +49,6 @@ export function RepositorySidebar() {
     })}
     {error && <p role="alert" className="error">{error} · {data ? 'Showing saved navigation. Retrying automatically.' : 'Retrying automatically.'}</p>}
     {selected.error && <p role="alert" className="error">Selected task: {selected.error} · Retrying automatically.</p>}
-    <div className="secondary-navigation"><Link to="/">Repositories / Add repository</Link><Link to="/monitor">Service monitor</Link></div>
+    <div className="secondary-navigation"><Link to="/">Repositories / Add repository</Link><Link to="/feedback">Feedback Loop</Link><Link to="/monitor">Service monitor</Link></div>
   </nav></aside>;
 }

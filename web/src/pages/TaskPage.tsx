@@ -17,6 +17,8 @@ import { MessageContent } from '../components/MessageContent';
 import { PlanApproval } from '../components/PlanApproval';
 import { ScopeSuggestions } from '../components/ScopeSuggestions';
 import { RecoveryHistory } from '../components/RecoveryHistory';
+import { MergeAndArchive } from '../components/MergeAndArchive';
+import { WorktreeInstance } from '../components/WorktreeInstance';
 export function TaskPage() {
   const { taskId } = useParams();
   return <TaskContent key={taskId} taskId={taskId || ''} />;
@@ -46,6 +48,7 @@ function TaskContent({ taskId }: { taskId: string }) {
   const report = variables && typeof variables === 'object' && 'summary' in variables
     && typeof variables.summary === 'string' ? variables.summary : '';
   const closed = ['completed','cancelled','failed'].includes(task.status);
+  const workspace = navigation.data?.workspaces.find(item => item.workspace_id === task.workspace_id);
   const busy = ['queued','waiting_input'].includes(task.status) || task.phase === 'Agent running' || task.phase === 'Starting agents';
   const progress = data.workflow_progress;
   const currentAgents = progress ? agents.filter(agent => progress.agent_ids.includes(agent.agent_id)) : agents;
@@ -61,6 +64,11 @@ function TaskContent({ taskId }: { taskId: string }) {
     finally { lock.current = false; setPending(''); }
   }
   return <section className="task-page"><TaskContext task={task} />
+    {closed && workspace?.kind === 'worktree' && workspace.status !== 'archived' && <WorktreeInstance
+      key={workspace.workspace_id} workspaceId={workspace.workspace_id}
+      disabled={!!error || !!navigation.error || workspace.status !== 'active'} />}
+    {closed && workspace?.kind === 'worktree' && <MergeAndArchive key={workspace.workspace_id} workspaceId={workspace.workspace_id}
+      disabled={!!error || !!navigation.error || !!pending} />}
     {!envelopeDurable && <p role="alert">Question recovery is held only in memory. Keep this page open.</p>}
     {[...retained, ...pending_input.filter(input => !retained.some(old => old.request_id === input.request_id))].filter(input => !dismissed.includes(input.request_id)).map(input => <PendingInput key={input.request_id} input={input} messages={data.messages} attachmentContext={{ workspaceId: task.workspace_id, taskId }} disabled={!!error} inactive={!pending_input.some(active => active.request_id === input.request_id)} onDismiss={() => { setDismissed(previous => [...previous, input.request_id]); setRetained(previous => previous.filter(item => item.request_id !== input.request_id)); }} onResolved={() => { setDismissed(previous => [...previous, input.request_id]); setRetained(previous => previous.filter(item => item.request_id !== input.request_id)); refresh(); }} />)}
     <RecoveryHistory key={taskId} incidents={data.recoveries}

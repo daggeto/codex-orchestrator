@@ -23,6 +23,9 @@ configuration or persistent permissions. If approval is unavailable or denied, o
 the retry remains restricted, report the unresolved blocker and recovery evidence.
 Do not otherwise repeat checks within a pass, install dependencies, edit source,
 or perform browser acceptance.
+Use the implementer's environment handoff and selected-checkout tool paths.
+Report missing dependencies or wrong-checkout Python imports as setup blockers
+for the implementer; do not install packages yourself.
 Report commands and evidence, distinguishing passed, failed, skipped and blocked.
 Source/test errors, including outdated test doubles, are failed and go to the
 implementer. Missing tools and unresolved socket permissions or infrastructure are

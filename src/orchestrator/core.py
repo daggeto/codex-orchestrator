@@ -58,6 +58,8 @@ class Orchestrator:
         self.workspaces = WorkspaceService(self)
         self.workspace.persistence = self.workspaces
         self.tasks = TaskService(self)
+        from orchestrator.api.feedback import FeedbackService
+        self.feedback = FeedbackService(self)
         from orchestrator.attachments import AttachmentService
         self.attachments = AttachmentService(self)
         self.registry.attachment_resolver = self.attachments.resolve_for_task

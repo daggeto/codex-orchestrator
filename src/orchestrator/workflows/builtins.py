@@ -497,7 +497,10 @@ def backend_feature_workflow():
     return _final_checks(workflow)
 
 
+from orchestrator.workflows.feedback import feedback_analysis_workflow
+
 BUILTIN_WORKFLOWS: dict[str, Workflow] = {
+    "feedback-analysis": feedback_analysis_workflow(),
     "small-change": small_change_workflow(),
     "ui-small": ui_small_workflow(),
     "backend-feature": backend_feature_workflow(),
@@ -507,3 +510,7 @@ BUILTIN_WORKFLOWS: dict[str, Workflow] = {
     "research": research_workflow(),
     "pr-completion": pr_completion_workflow(),
 }
+
+# Build after the default factory is defined to reuse all default review/validation gates.
+from orchestrator.workflows.feedback import feedback_implementation_workflow
+BUILTIN_WORKFLOWS['feedback-implementation'] = feedback_implementation_workflow()

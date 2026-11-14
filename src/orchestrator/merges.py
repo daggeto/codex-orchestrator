@@ -40,6 +40,7 @@ class MergeService:
         self.orch = orch
         self.store = orch.store
         self.running = set()
+        self.cleaning = set()
         self.owner_pid = os.getpid()
         self.owner_started = process_identity(self.owner_pid)
 
@@ -243,6 +244,8 @@ class MergeService:
 
     def fingerprint(self, workspace_id, request):
         fields = {k: request[k] for k in IDENTITY}
+        if request.get('archive_after_merge'):
+            fields['archive_after_merge'] = True
         if request.get('commit_changes'):
             fields.update(commit_changes=True, changes=request['changes'])
         return hashlib.sha256(json.dumps([workspace_id, fields], sort_keys=True).encode()).hexdigest()
@@ -250,9 +253,14 @@ class MergeService:
     async def begin(self, workspace_id, request):
         expected = {'operation_id', *IDENTITY}
         committing = request.get('commit_changes') is True
+        archiving = request.get('archive_after_merge') is True
+        if 'archive_after_merge' in request:
+            if not archiving:
+                raise ValueError('archive_after_merge must be true when supplied')
+            expected.add('archive_after_merge')
         if set(request) != (expected | {'commit_changes', 'changes'} if committing else expected):
             raise ValueError('Expected operation_id and source/destination identities and SHAs, optionally commit_changes=true with captured changes')
-        if any(not isinstance(request[k], str) or not request[k] for k in expected):
+        if any(not isinstance(request[k], str) or not request[k] for k in expected if k != 'archive_after_merge'):
             raise ValueError('Merge request fields must be nonempty strings')
         if committing and (not isinstance(request['changes'], dict) or not request['changes'] or
                            any(not isinstance(k, str) or not isinstance(v, str) for k, v in request['changes'].items())):
@@ -291,6 +299,12 @@ class MergeService:
                 if committing and eligibility['changes'] != request['changes']:
                     raise MergeBlocked('Working changes changed; refresh eligibility before committing', eligibility)
                 source = await self.store.workspace_record(workspace_id)
+                if archiving:
+                    repository = await self.store.one('SELECT * FROM repositories WHERE repository_id=?', (source['repository_id'],))
+                    if Path(request['destination_path']).resolve() != Path(repository['main_path']).resolve():
+                        raise MergeBlocked('Merge and archive must target the project main checkout', eligibility)
+                    if workspace_id in eligibility['changes'] and not committing:
+                        raise MergeBlocked('Commit source worktree changes before merging and archiving', eligibility)
                 changes = {}
                 for wid, tree in eligibility['changes'].items():
                     workspace = await self.store.workspace_record(wid)
@@ -298,6 +312,7 @@ class MergeService:
                                         original_sha=request['source_sha'] if wid == workspace_id else request['destination_sha'])
                 operation = {**{k: request[k] for k in expected}, 'repository_id': source['repository_id'], 'source_workspace_id': workspace_id,
                              'commit_changes': int(committing), 'changes_json': json.dumps(changes),
+                             'archive_after_merge': int(archiving), 'cleanup_status': 'pending' if archiving else None,
                              'phase': 'committing' if committing else 'merge',
                              'fingerprint': fingerprint, 'state': 'accepted', 'owner_pid': self.owner_pid,
                              'owner_started': self.owner_started, 'created_at': now(), 'updated_at': now()}
@@ -680,6 +695,34 @@ class MergeService:
                 iid = incident['incident_id'] if incident else await self.orch.recovery.merge_incident(current, current.get('error_message') or 'Merge failed', conflicts)
                 await self.orch.recovery.finish_merge(iid, current, diagnostics)
             await self.store.write("UPDATE recovery_retry_requests SET status='finished',updated_at=? WHERE operation_id=?", (now(), operation_id))
+
+    async def cleanup(self, operation_id, instances, retry=False):
+        """Remove only a successfully integrated checkout; retain failures for retry."""
+        if operation_id in self.cleaning:
+            return
+        self.cleaning.add(operation_id)
+        try:
+            async with instances.lock:
+                operation = await self.store.merge_operation(operation_id)
+                if not operation or not operation.get('archive_after_merge') or operation['state'] not in {'merged', 'already_integrated'}:
+                    return
+                if operation['cleanup_status'] == 'completed' or (operation['cleanup_status'] == 'failed' and not retry):
+                    return
+                workspace = await self.store.workspace_record(operation['source_workspace_id'])
+                await instances.stop(workspace['workspace_id'])
+                await self.store.write("UPDATE workspace_merges SET cleanup_status='running',cleanup_error=NULL,updated_at=? WHERE operation_id=?", (now(), operation_id))
+                if workspace['status'] != 'archived':
+                    workspace, aid = await self.orch.archives.begin(workspace['workspace_id'], merged_operation=operation)
+                    await self.orch.archives.execute_archive(workspace, aid)
+                # Removing a shared worktree closes its whole task history.
+                await self.store.write("UPDATE tasks SET archived_at=COALESCE(archived_at,?),updated_at=? WHERE workspace_id=?", (now(), now(), workspace['workspace_id']))
+                await self.store.write("UPDATE workspace_merges SET cleanup_status='completed',cleanup_error=NULL,updated_at=? WHERE operation_id=?", (now(), operation_id))
+        except BaseException as exc:
+            await self.store.write("UPDATE workspace_merges SET cleanup_status='failed',cleanup_error=?,updated_at=? WHERE operation_id=?", (str(exc) or 'Cleanup interrupted; retry to finish archiving', now(), operation_id))
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+        finally:
+            self.cleaning.discard(operation_id)
 
     async def reconcile(self):
         for operation in await self.store.rows("SELECT * FROM workspace_merges WHERE state IN ('accepted','running','recovery_required')"):

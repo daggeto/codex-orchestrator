@@ -15,9 +15,34 @@ DEFER_CHECKS = (
     "Report pending browser acceptance separately."
 )
 MAX_REPAIRS = 3
+MAX_ENVIRONMENT_REPAIRS = 1
+MAX_VALIDATION_ATTEMPTS = MAX_REPAIRS + MAX_ENVIRONMENT_REPAIRS + 1
+
+PREPARE_ENVIRONMENT = (
+    'Prepare the selected checkout {cwd} for final QA. Request: {task_description}\n'
+    'You own dependency and test environment preparation. Reuse the assigned checkout and branch. '
+    'Read repository instructions and setup/check command definitions, using make help when available. '
+    'Install missing declared dependencies using repository setup commands and existing lockfiles. '
+    'Use only checkout-local ignored environments and dependency directories. Never reuse a virtualenv '
+    'or node_modules symlink that points to another checkout; do not modify its target. '
+    'For Python, use a checkout-local virtualenv and ensure editable imports resolve to this checkout. '
+    'Inspect interpreter/tool paths and import origins with lightweight probes; do not run tests, '
+    'typecheck, lint, builds, watch mode, browser checks, or application services. '
+    'Do not edit or commit source, manifests, lockfiles, tracked files or existing working edits. '
+    'Do not change global environments, configuration, permissions, live services or runtime data. '
+    'Honor task/repository installation restrictions and approval denials. If installation is prohibited '
+    'or unavailable, report blocked with the exact command/error and required recovery action. '
+    'This setup-only assignment does not require a commit. '
+    'Previous validation evidence: {validation_environment_evidence}\n'
+    'Return ONLY JSON with status (ready, blocked, skipped), reason, action, commands '
+    '(an array of commands actually executed), and qa_instructions (a string specifying absolute '
+    'interpreter/tool paths and command environment needed by QA). Use skipped only when all checks '
+    'are explicitly prohibited or the repository defines none; explain why. '
+    'Ready means dependencies and source resolution are prepared, not that checks passed.'
+)
 
 
-def validation_report(text):
+def _final_report(text, field):
     """Read the final JSON report even when streamed commentary precedes it."""
     decoder = json.JSONDecoder()
     reports = []
@@ -28,12 +53,29 @@ def validation_report(text):
             value, end = decoder.raw_decode(text, offset)
         except ValueError:
             continue
-        if (isinstance(value, dict) and 'checks' in value
+        if (isinstance(value, dict) and field in value
                 and text[end:].strip() in ('', '```')):
             reports.append(value)
     if len(reports) != 1:
-        raise ValueError('QA must provide one final JSON validation report')
+        raise ValueError('Agent must provide one final JSON report with ' + field)
     return reports[0]
+
+
+def validation_report(text):
+    return _final_report(text, 'checks')
+
+
+async def _source_snapshot(root):
+    """Detect setup edits while excluding ignored dependency directories."""
+    state = [await _run(root, 'git', *args) for args in (
+        ('branch', '--show-current'), ('diff', 'HEAD', '--binary', '--no-ext-diff'),
+        ('diff', '--cached', '--binary', '--no-ext-diff'),
+        ('status', '--porcelain', '--untracked-files=all'),
+    )]
+    untracked = await _run(root, 'git', 'ls-files', '--others', '--exclude-standard', '-z')
+    for path in filter(None, untracked.split('\0')):
+        state.append((path, await _run(root, 'git', 'hash-object', '--', path)))
+    return state
 
 
 class FinalValidationStep(Step):
@@ -96,21 +138,22 @@ class FinalValidationStep(Step):
                 # Only explicit Continue grants another bounded repair cycle.
                 v.setdefault('validation_history', []).append({
                     'request_id': resume_request,
-                    'attempts': [deepcopy(v.get(f'validation_attempt_{i}')) for i in range(MAX_REPAIRS + 1)],
+                    'attempts': [deepcopy(v.get(f'validation_attempt_{i}')) for i in range(MAX_VALIDATION_ATTEMPTS)],
                     'report': v.get('validation_report'),
                     'stop': deepcopy(v.get('validation_stop')),
                 })
-                for i in range(MAX_REPAIRS + 1):
+                for i in range(MAX_VALIDATION_ATTEMPTS):
                     v.pop(f'validation_attempt_{i}', None)
                 v.pop('validation_report', None)
                 v.pop('validation_repair_used', None)
                 v['validation_repairs_used'] = 0
+                v['validation_environment_repairs_used'] = 0
                 v['validation_failure_signatures'] = []
                 v.pop('validation_stop', None)
             elif v.get('validation_stop'):
                 return StepResult(success=False, error=v['validation_stop']['reason'])
             await ctx.persist()
-            for attempt in range(MAX_REPAIRS + 1):
+            for attempt in range(MAX_VALIDATION_ATTEMPTS):
                 key = f'validation_attempt_{attempt}'
                 previous = v.get(key)
                 if previous:
@@ -127,6 +170,37 @@ class FinalValidationStep(Step):
                 v['validation_expected_commit'] = head
                 v[key] = {'attempt_id': attempt_id, 'commit': head, 'status': 'running'}
                 await ctx.persist()
+                # Runtime assignment preserves compatibility with saved workflow definitions.
+                v['validation_environment_evidence'] = v.get('validation_report', 'No previous QA report.')
+                v.pop('validation_environment_report', None)
+                before_setup = await _source_snapshot(root)
+                setup = await ctx.execute_step(AssignStep(
+                    step_id='validation-prepare', role='implementer',
+                    output_key='validation_environment_report', message_template=PREPARE_ENVIRONMENT,
+                    thread_key=f'validation-prepare:{attempt_id}',
+                ))
+                v.update(setup.output)
+                if await identity() != head or await _source_snapshot(root) != before_setup:
+                    return await stop('review', 'Environment preparation changed checkout contents.',
+                                      ['Inspect setup changes and obtain current source approval before continuing.'])
+                if not setup.success:
+                    return await stop('environment', setup.error or 'Environment preparation did not complete.',
+                                      ['Inspect the implementer setup report, resolve its blocker, then choose Continue.'])
+                environment = _final_report(v['validation_environment_report'], 'qa_instructions')
+                if (environment.get('status') not in {'ready', 'blocked', 'skipped'}
+                        or any(not isinstance(environment.get(field), str)
+                               for field in ('reason', 'action', 'qa_instructions'))
+                        or not isinstance(environment.get('commands'), list)
+                        or any(not isinstance(command, str) for command in environment['commands'])
+                        or (environment['status'] == 'ready' and not environment['qa_instructions'].strip())
+                        or (environment['status'] != 'ready' and not environment['reason'].strip())):
+                    raise ValueError('Invalid environment preparation report')
+                v[key]['environment'] = environment
+                await ctx.persist()
+                if environment['status'] == 'blocked':
+                    return await stop('environment', environment['reason'] or 'Environment preparation is blocked.',
+                                      [environment['action'] or 'Resolve the setup blocker, then choose Continue.'])
+                v['validation_qa_environment'] = environment['qa_instructions']
                 # Keep the step identity for durable history, but isolate the QA
                 # conversation from earlier passes and their once-only limits.
                 qa = self.sub_steps[0]
@@ -166,6 +240,11 @@ class FinalValidationStep(Step):
                         'what could not be recovered automatically and the minimum user action needed. '
                         'For failed entries include fingerprint using stable test names and error types, '
                         'without timestamps or temporary paths. Recheck the environment on every pass.'
+                        '\nImplementer environment handoff: {validation_qa_environment}\n'
+                        'Use the prepared absolute tool paths and environment for each check command. '
+                        'For dependency or wrong-checkout import blockers, include blocker_kind="dependencies" '
+                        'or blocker_kind="import_path" respectively. Other environment blockers must use '
+                        'blocker_kind="external". QA must not install dependencies; the implementer owns setup.'
                     ),
                     thread_key=f'{qa.step_id}:{attempt_id}',
                 )
@@ -200,7 +279,7 @@ class FinalValidationStep(Step):
                         check['fingerprint'] = check['reason']
                 if await identity() != head:
                     raise ValueError('Checkout changed during final validation')
-                v[key] = {'attempt_id': attempt_id, 'commit': head, 'checks': checks, 'status': 'finished'}
+                v[key].update({'checks': checks, 'status': 'finished'})
                 await ctx.persist()
                 if all(c['status'] in {'passed', 'skipped'} for c in checks):
                     v.pop('validation_stop', None)
@@ -209,6 +288,15 @@ class FinalValidationStep(Step):
                 failures = [c for c in checks if c['status'] == 'failed']
                 blockers = [c for c in checks if c['status'] == 'blocked']
                 if not failures:
+                    recoverable = any(c.get('blocker_kind') in {'dependencies', 'import_path'} for c in blockers)
+                    external = any(c.get('blocker_kind') not in {'dependencies', 'import_path'} for c in blockers)
+                    environment_used = v.get('validation_environment_repairs_used', 0)
+                    if recoverable and not external and environment_used < MAX_ENVIRONMENT_REPAIRS:
+                        v['validation_environment_repairs_used'] = environment_used + 1
+                        await ctx.persist()
+                        # A setup-only repair can retain HEAD and its source approval.
+                        # The next pass prepares afresh with this report as evidence.
+                        continue
                     return await stop('environment', 'Validation is blocked by the execution environment.',
                                       [c.get('action') or c['reason'] for c in blockers] +
                                       ['After resolving these blockers, choose Continue to rerun QA.'], checks)
@@ -288,6 +376,8 @@ class FinalValidationStep(Step):
                             return await stop('review', revised.error or 'Source revision requires a scope decision.',
                                               ['Inspect the implementer report and resolve its blocker before continuing.'], checks)
                 await ctx.persist()
+            return await stop('repair_limit', 'Validation exhausted its bounded QA passes.',
+                              ['Inspect the saved validation reports, then choose Continue for a fresh cycle.'])
         except (ValueError, KeyError, TypeError, OSError, RuntimeError) as exc:
             return await stop('validation', f'Final validation blocked: {exc}',
                               ['Inspect the QA report and checkout state, resolve the reported problem, then choose Continue.'])

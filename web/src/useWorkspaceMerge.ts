@@ -88,7 +88,7 @@ export function useWorkspaceMerge(workspaceId: string) {
     !ownOperation && !pendingOutcome
     ? state.transportWarning?.message : '';
 
-  async function merge(commitChanges = false) {
+  async function merge(commitChanges = false, archiveAfterMerge = false) {
     const id = workspaceId;
     if (state.busy || sending.current) return;
     sending.current = true;
@@ -129,7 +129,8 @@ export function useWorkspaceMerge(workspaceId: string) {
         }
         request = { operation_id: crypto.randomUUID(), source_branch: check.source_branch, source_sha: check.source_sha,
           destination_workspace_id: check.destination_workspace_id, destination_path: check.destination_path, destination_sha: check.destination_sha,
-          ...(committing ? { commit_changes: true, changes: check.changes } : {}) };
+          ...(committing ? { commit_changes: true, changes: check.changes } : {}),
+          ...(archiveAfterMerge ? { archive_after_merge: true } : {}) };
       }
       if (!active()) return;
       // Persist before sending. Failure to persist prevents an unrecoverable submission.

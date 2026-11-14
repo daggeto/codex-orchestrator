@@ -41,10 +41,14 @@ async def workspaces(request):
 
 async def delete(request):
     async def accept():
-        service = request.app['orch'].archives
-        workspace, aid = await service.begin(request.match_info['workspace_id'])
-        own_task(request.app, service.execute_archive(workspace, aid))
-        return web.json_response({'archive_id': aid, 'status_url': '/api/workspaces/' + workspace['workspace_id'] + '/archive'}, status=202)
+        instances = request.app['test_instances']
+        async with instances.lock:
+            if instances.status(request.match_info['workspace_id'])['state'] != 'stopped':
+                raise ValueError('Stop the test instance before removing this worktree.')
+            service = request.app['orch'].archives
+            workspace, aid = await service.begin(request.match_info['workspace_id'])
+            own_task(request.app, service.execute_archive(workspace, aid))
+            return web.json_response({'archive_id': aid, 'status_url': '/api/workspaces/' + workspace['workspace_id'] + '/archive'}, status=202)
     return await asyncio.shield(own_task(request.app, accept()))
 
 
@@ -75,10 +79,36 @@ async def navigation(request):
         'agents': await store.rows('SELECT agent_id,task_id,role,status,retired_at FROM agents WHERE task_id IS NOT NULL UNION SELECT a.agent_id,p.task_id,a.role,a.status,a.retired_at FROM task_agents p JOIN agents a USING(agent_id)')})
 
 
+def resume_cleanup(request, operation):
+    if (operation and operation.get('archive_after_merge') and
+            operation['state'] in {'merged', 'already_integrated'} and
+            operation.get('cleanup_status') in {'pending', 'running'}):
+        own_task(request.app, request.app['orch'].merges.cleanup(operation['operation_id'], request.app['test_instances']))
+
+
+async def execute_merge(request, operation_id):
+    service = request.app['orch'].merges
+    await service.execute(operation_id)
+    await service.cleanup(operation_id, request.app['test_instances'])
+
+
+async def retry_cleanup(request):
+    service = request.app['orch'].merges
+    operation = await service.store.merge_operation(request.match_info['operation_id'])
+    if not operation or operation['source_workspace_id'] != request.match_info['workspace_id']:
+        raise LookupError('Merge operation not found for this workspace')
+    if not operation.get('archive_after_merge') or operation['state'] not in {'merged', 'already_integrated'}:
+        raise ValueError('Cleanup requires a successful merge and archive operation')
+    own_task(request.app, service.cleanup(operation['operation_id'], request.app['test_instances'], retry=True))
+    return web.json_response({'operation': operation}, status=202)
+
+
 async def merge_eligibility(request):
     service = request.app['orch'].merges
     await service.reconcile()
-    return web.json_response(await service.preflight(request.match_info['workspace_id']))
+    eligibility = await service.preflight(request.match_info['workspace_id'])
+    resume_cleanup(request, eligibility.get('latest_operation'))
+    return web.json_response(eligibility)
 
 
 async def merge_status(request):
@@ -87,6 +117,7 @@ async def merge_status(request):
     operation = await service.store.merge_operation(request.match_info['operation_id'])
     if not operation or request.match_info['workspace_id'] not in {operation['source_workspace_id'], operation['destination_workspace_id']}:
         raise LookupError('Merge operation not found for this workspace')
+    resume_cleanup(request, operation)
     operation['recoveries'] = await service.orch.recovery.history(operation_id=operation['operation_id'],
         before=request.query.get('before'), limit=request.query.get('limit', 20))
     return web.json_response({'operation': operation})
@@ -99,15 +130,25 @@ async def merge(request):
         await service.reconcile()
         operation, created = await service.begin(request.match_info['workspace_id'], data)
         if created:
-            own_task(request.app, service.execute(operation['operation_id']))
+            own_task(request.app, execute_merge(request, operation['operation_id']))
         return web.json_response({'operation': operation, 'status_url':
             '/api/workspaces/' + operation['source_workspace_id'] + '/merges/' + operation['operation_id']}, status=202)
     return await asyncio.shield(own_task(request.app, accept()))
 
 
+async def recover_cleanup(app):
+    operations = await app['orch'].store.rows("""SELECT operation_id FROM workspace_merges
+        WHERE archive_after_merge=1 AND state IN ('merged','already_integrated')
+        AND cleanup_status IN ('pending','running')""")
+    for operation in operations:
+        own_task(app, app['orch'].merges.cleanup(operation['operation_id'], app['test_instances']))
+
+
 def register(app):
+    app.on_startup.append(recover_cleanup)
     from orchestrator.api.recovery import retry
     app.router.add_post('/api/workspaces/{workspace_id}/recoveries/{incident_id}/retry', retry)
+    app.router.add_post('/api/workspaces/{workspace_id}/merges/{operation_id}/cleanup', retry_cleanup)
     app.router.add_get('/api/workspaces/{workspace_id}/merge', merge_eligibility)
     app.router.add_post('/api/workspaces/{workspace_id}/merge', merge)
     app.router.add_get('/api/workspaces/{workspace_id}/merges/{operation_id}', merge_status)

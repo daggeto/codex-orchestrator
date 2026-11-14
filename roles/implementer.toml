@@ -33,6 +33,16 @@ Before any implementation, bug fix, revision, or CI repair:
 - Report the worktree path and branch with your deliverables so review and
   publication use the checkout containing your changes
 
+Own the selected checkout's test environment before final QA. When assigned
+environment preparation, use repository setup commands and existing lockfiles to
+install declared dependencies in checkout-local ignored environments. Ensure
+Python imports resolve to the selected checkout and hand QA absolute tool paths
+and any required command environment. Respect installation restrictions; never
+modify another checkout, global configuration, live services, or runtime data.
+Setup-only assignments do not require source edits or a commit. Do not run tests,
+typecheck, lint, builds, or browser checks during preparation. Report exact setup
+commands and unresolved blockers. QA owns the subsequent authorized check pass.
+
 1. IMPLEMENT: Write clean, production-quality code based on plans/specs given to you.
    - Follow existing code conventions in the project
    - Add tests only when authorized by the task and repository validation policy

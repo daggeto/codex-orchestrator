@@ -91,7 +91,7 @@ class ArchiveService:
     async def stage(self, aid, stage, error=None):
         await self.store.write('UPDATE archives SET stage=?,error=?,updated_at=? WHERE archive_id=?', (stage, error, now(), aid))
 
-    async def begin(self, workspace_id):
+    async def begin(self, workspace_id, merged_operation=None):
         async with self.orch.tasks.accept_lock:
             workspace = await self.store.workspace_record(workspace_id)
             if not workspace:
@@ -108,6 +108,20 @@ class ArchiveService:
                     raise Conflict('Deletion belongs to another live or unverifiable service')
             if workspace_id in self.running:
                 raise Conflict('Deletion is already running')
+            if merged_operation:
+                # Fence task acceptance while checking the integrated source.
+                merges = self.orch.merges
+                await merges.idle(workspace)
+                repository = await self.store.one('SELECT * FROM repositories WHERE repository_id=?', (workspace['repository_id'],))
+                head = merged_operation['source_sha']
+                if Path(workspace['path']).exists():
+                    head = await merges.checkout(workspace, repository, merged_operation['source_branch'])
+                    if (await merges.clean(workspace['path'])).strip():
+                        raise Conflict('Worktree has uncommitted changes after merging; checkout retained')
+                destination = await self.store.workspace_record(merged_operation['destination_workspace_id'])
+                main_head = await merges.checkout(destination, repository, 'main')
+                if head != merged_operation['source_sha'] or not await merges.ancestor(destination['path'], head, main_head):
+                    raise Conflict('Worktree or main changed after merging; checkout retained')
             aid = uuid.uuid4().hex
             claimed = await self.store.write("UPDATE workspaces SET status='archiving',updated_at=? WHERE workspace_id=? AND updated_at=? AND status NOT IN ('merging','merge_recovery_required')", (now(), workspace_id, workspace['updated_at']))
             if not claimed:

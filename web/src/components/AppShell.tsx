@@ -3,6 +3,8 @@ import type { ReactNode } from 'react';
 import { useLocation } from 'react-router';
 import { useAppearance } from '../appearance';
 import { useIsMobile } from '../hooks/use-mobile';
+import { FeedbackWidget } from './FeedbackWidget';
+import { BackendControls } from './BackendControls';
 import { RepositorySidebar } from './RepositorySidebar';
 import { Button } from './ui/Button';
 import { Sidebar, SidebarProvider } from './ui/primitives/sidebar';
@@ -30,10 +32,12 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="app-body">
         <div className="shell-toolbar"><SheetTrigger ref={trigger} render={<Button className="mobile-menu" />} onClick={() => { destination.current = false; }}>Open navigation</SheetTrigger>
           <span className="shell-context">Workspace / <strong>{location.pathname === '/monitor' ? 'Service monitor' : 'Orchestrator'}</strong></span>
+          <BackendControls />
           <Button onClick={toggleTheme} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</Button>
         </div>
         <main id="page-content" className="repository-content" tabIndex={-1}>{children}</main>
       </div>
     </Sheet>
+    <FeedbackWidget />
   </SidebarProvider>;
 }

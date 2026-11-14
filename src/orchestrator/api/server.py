@@ -14,7 +14,7 @@ from typing import Any
 from aiohttp import web
 
 from orchestrator.core import Orchestrator
-from orchestrator.api import projects, submissions, tasks, workspaces, filesystem, attachments
+from orchestrator.api import projects, submissions, tasks, workspaces, filesystem, attachments, feedback, instances
 from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
@@ -42,9 +42,11 @@ def create_app(orch: Orchestrator) -> web.Application:
     app.on_startup.append(submissions.recover_submissions)
     app.on_shutdown.append(_stop_submitted_tasks)
 
+    feedback.register(app)
     attachments.register(app)
     tasks.register(app)
     workspaces.register(app)
+    instances.register(app)
     app.router.add_get('/api/filesystem/directories', filesystem.directories)
     app.router.add_get("/health", health)
     app.router.add_get("/api/session", session_info)

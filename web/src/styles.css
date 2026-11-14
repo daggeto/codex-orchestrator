@@ -52,6 +52,9 @@ small, time, .muted { color: var(--muted-foreground); }
 .shell-toolbar { display: flex; gap: 16px; align-items: center; justify-content: space-between; padding: 20px 32px 0; }
 .shell-context { color: var(--muted-foreground); font-size: 12px; }
 .shell-context strong { color: var(--foreground); font-weight: 500; }
+.shell-toolbar { flex-wrap: wrap; }
+.backend-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
+.backend-control-error { flex-basis: 100%; max-width: 480px; color: var(--destructive); overflow-wrap: anywhere; }
 .repository-content { padding: 28px 32px 48px; width: 100%; max-width: 1600px; margin: 0 auto; min-width: 0; overflow-wrap: anywhere; }
 .repository-content:focus { outline: none; }
 .mobile-menu { display: none; }
@@ -360,3 +363,17 @@ input[type=checkbox], input[type=radio] { width: 1rem; height: 1rem; }
 .style-nova .cn-sidebar-menu-button.task-row { height: auto; min-height: var(--task-row-height); text-decoration: none; }
 .cn-font-heading { font-family: var(--font-heading); }
 [dir=rtl] .cn-rtl-flip { transform: scaleX(-1); }
+
+.feedback-float { position: fixed; bottom: 20px; right: 20px; z-index: 40; }
+.feedback-backdrop { position: fixed; inset: 0; background: #0009; z-index: 60; }
+.feedback-modal { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(560px, calc(100vw - 32px)); max-height: 90dvh; overflow: auto; padding: 24px; background: var(--background, #fff); color: var(--foreground, #111); border-radius: 12px; z-index: 61; }
+.feedback-modal label { display: grid; gap: 6px; margin: 16px 0; }
+.feedback-modal textarea { min-height: 100px; width: 100%; padding: 8px; border: 1px solid currentColor; border-radius: 6px; background: transparent; color: inherit; }
+.feedback-preview { width: 100%; height: auto; }
+.feedback-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.feedback-list { list-style: none; padding: 0; }
+.feedback-list li { display: flex; flex-wrap: wrap; gap: 12px; padding: 16px 0; border-bottom: 1px solid var(--border, #888); }
+.feedback-list li a { flex: 1; min-width: 180px; }
+.feedback-text { white-space: pre-wrap; }
+.feedback-context { max-height: 450px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.feedback-editor { display: block; width: 100%; min-height: 130px; margin: 8px 0 12px; padding: 8px; background: transparent; color: inherit; border: 1px solid var(--border, #888); border-radius: 6px; }

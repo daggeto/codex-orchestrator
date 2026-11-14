@@ -28,6 +28,8 @@ Place the block before the final standalone SCOPE_ESCALATION line."""
 
 def proposals(value, workflow):
     """Reject malformed model output as a whole; never silently launch a partial split."""
+    if workflow == 'feedback-implementation':
+        workflow = 'small-change'
     if workflow not in {'small-change', 'ui-small'} or not isinstance(value, list) or not 1 <= len(value) <= 6:
         raise ValueError('Expected 1 to 6 scope proposals for a small workflow')
     result = []
